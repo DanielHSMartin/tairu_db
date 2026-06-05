@@ -3,15 +3,15 @@
 [general]
 name=TairuDB
 qgisMinimumVersion=3.20
-description=Gera arquivos .tairudb para o aplicativo móvel Tairu Maps, exportando tiles raster e camadas vetoriais a partir de projetos QGIS.
+description=Generates .tairudb files for the Tairu Maps mobile app, exporting raster tiles and vector layers from QGIS projects.
 version=1.2
 author=Daniel Hulshof Saint Martin
 email=danielhsmartin@gmail.com
 
-about=O plugin TairuDB converte dados geográficos de projetos QGIS para o formato .tairudb, utilizado pelo aplicativo móvel Tairu Maps (iOS e Android).
-  O arquivo .tairudb é um banco de dados SQLite que armazena tiles raster em formato TMS (PNG, JPG ou WebP) organizados por região, camadas vetoriais (pontos, linhas e polígonos) com atributos e estilos, e metadados de navegação.
-  Como usar: (1) Abra um projeto QGIS com as camadas raster desejadas visíveis; (2) Crie ou importe um polígono delimitando a área de interesse; (3) Execute o algoritmo TairuDB em Processamento > Caixa de Ferramentas; (4) Configure polígono de área, resolução (0,5 m/px a 32 m/px), formato de imagem e camadas vetoriais opcionais; (5) Importe o arquivo .tairudb gerado no aplicativo Tairu Maps.
-  Também inclui o conversor GeoPDF (geopdf_converter.py) para converter arquivos GeoPDF diretamente para o formato .tairudb.
+about=TairuDB converts geographic data from QGIS projects into the .tairudb format used by the Tairu Maps mobile app (iOS and Android).
+  A .tairudb file is a SQLite database that stores raster tiles in TMS format (PNG, JPG or WebP) organised by region, vector layers (points, lines and polygons) with attributes and styles, and navigation metadata.
+  How to use: (1) Open a QGIS project with the desired raster layers visible; (2) Create or import a polygon defining the area of interest; (3) Run the TairuDB algorithm via Processing > Toolbox; (4) Set the area polygon, resolution (0.5 m/px to 32 m/px), image format and optional vector layers; (5) Import the generated .tairudb file into the Tairu Maps app.
+  Also includes a GeoPDF converter (geopdf_converter.py) to convert GeoPDF files directly to .tairudb format.
 
 tracker=https://github.com/DanielHSMartin/tairu_db/issues
 repository=https://github.com/DanielHSMartin/tairu_db
@@ -19,9 +19,9 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
-  1.2 - Suporte a múltiplas regiões (um polígono de entrada por região); exportação de camadas vetoriais com atributos JSON; retry automático em tiles com falha; suporte a WebP
-  1.1 - Adição do conversor GeoPDF; melhorias no desempenho de renderização
-  1.0 - Versão inicial: geração de tiles raster para o Tairu Maps
+  1.2 - Multi-region support (one polygon feature per region); vector layer export with JSON attributes; automatic tile retry on failure; WebP support; dry run mode for estimating tile count, file size and processing time
+  1.1 - GeoPDF converter added; rendering performance improvements
+  1.0 - Initial release: raster tile generation for Tairu Maps
 
 tags=tairu maps, offline maps, tiles, tairudb, sqlite, raster, vector, mobile, export
 
