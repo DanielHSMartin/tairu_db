@@ -3,15 +3,14 @@
 [general]
 name=TairuDB
 qgisMinimumVersion=3.20
-description=Generates .tairudb files for the Tairu Maps mobile app, exporting raster tiles and vector layers from QGIS projects.
+description=Generates .tairudb files for the Tairu Maps mobile app, exporting raster tiles and vector layers from QGIS projects. / Gera arquivos .tairudb para o Tairu Maps, exportando tiles raster e camadas vetoriais a partir do QGIS.
 version=1.2
 author=Daniel Hulshof Saint Martin
 email=danielhsmartin@gmail.com
 
-about=TairuDB converts geographic data from QGIS projects into the .tairudb format used by the Tairu Maps mobile app (iOS and Android).
-  A .tairudb file is a SQLite database that stores raster tiles in TMS format (PNG, JPG or WebP) organised by region, vector layers (points, lines and polygons) with attributes and styles, and navigation metadata.
-  How to use: (1) Open a QGIS project with the desired raster layers visible; (2) Create or import a polygon defining the area of interest; (3) Run the TairuDB algorithm via Processing > Toolbox; (4) Set the area polygon, resolution (0.5 m/px to 32 m/px), image format and optional vector layers; (5) Import the generated .tairudb file into the Tairu Maps app.
-  Also includes a GeoPDF converter (geopdf_converter.py) to convert GeoPDF files directly to .tairudb format.
+about=TairuDB exports QGIS map data to .tairudb (SQLite), used by the Tairu Maps mobile app (iOS/Android). Stores raster tiles (PNG/JPG/WebP), vector layers with attributes, and navigation metadata. Run via Processing > Toolbox: set an area polygon, resolution (0.5–32 m/px), image format and optional vector layers, then import the file into Tairu Maps. Includes a GeoPDF converter.
+  ---
+  Exporta dados do QGIS para o formato .tairudb (SQLite), usado pelo aplicativo Tairu Maps (iOS/Android). Armazena tiles raster (PNG/JPG/WebP), camadas vetoriais com atributos e metadados de navegação. Execute via Processamento > Caixa de Ferramentas: defina um polígono de área, resolução (0,5–32 m/px), formato de imagem e camadas vetoriais opcionais, e importe o arquivo no Tairu Maps. Inclui conversor GeoPDF.
 
 tracker=https://github.com/DanielHSMartin/tairu_db/issues
 repository=https://github.com/DanielHSMartin/tairu_db
