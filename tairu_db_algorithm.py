@@ -30,8 +30,30 @@ from qgis.core import (
     Qgis,
     QgsGeometry,
     QgsProcessingParameterMultipleLayers,
-    QgsMapLayerType,
 )
+
+# QGIS 4 (PyQt6) / QGIS 3 (PyQt5) compatibility constants
+try:
+    _RASTER_LAYER_TYPE = Qgis.LayerType.Raster        # QGIS 4
+except AttributeError:
+    from qgis.core import QgsMapLayerType              # QGIS 3
+    _RASTER_LAYER_TYPE = QgsMapLayerType.RasterLayer
+
+try:
+    from qgis.PyQt.QtCore import QIODeviceBase
+    _OPEN_WRITE_ONLY = QIODeviceBase.WriteOnly         # PyQt6
+except ImportError:
+    _OPEN_WRITE_ONLY = QBuffer.WriteOnly               # PyQt5
+
+try:
+    _FMT_ARGB32 = QImage.Format.Format_ARGB32          # PyQt6
+except AttributeError:
+    _FMT_ARGB32 = QImage.Format_ARGB32                 # PyQt5
+
+try:
+    _FLAG_NO_THREADING = QgsProcessingAlgorithm.Flag.FlagNoThreading
+except AttributeError:
+    _FLAG_NO_THREADING = QgsProcessingAlgorithm.FlagNoThreading
 
 
 def qvariant_to_python(value):
@@ -509,7 +531,7 @@ def TairuDBAlgorithm():
                 self.tairudb_writer = None
 
         def flags(self):
-            return QgsProcessingAlgorithm.Flag.FlagNoThreading
+            return _FLAG_NO_THREADING
 
         def tr(self, text):
             return text
@@ -638,7 +660,7 @@ def TairuDBAlgorithm():
             self.layers = [layer for layer in QgsProject.instance().mapLayers().values() 
                if QgsProject.instance().layerTreeRoot().findLayer(layer.id()) and 
                QgsProject.instance().layerTreeRoot().findLayer(layer.id()).isVisible() and
-               layer.type() in [QgsMapLayerType.RasterLayer]]
+               layer.type() in [_RASTER_LAYER_TYPE]]
 
             if not self.layers:
                 feedback.reportError(self.tr("Nenhuma camada encontrada para renderizar."))
@@ -1465,9 +1487,8 @@ def TairuDBAlgorithm():
             
             # Additional check with alpha channel
             if tile_image.hasAlphaChannel():
-                alpha_format = QImage.Format_ARGB32
-                if tile_image.format() != alpha_format:
-                    tile_image = tile_image.convertToFormat(alpha_format)
+                if tile_image.format() != _FMT_ARGB32:
+                    tile_image = tile_image.convertToFormat(_FMT_ARGB32)
                 
                 # Check if all pixels are transparent
                 for x, y in sample_points:
@@ -1485,7 +1506,7 @@ def TairuDBAlgorithm():
                 quality = self.jpg_quality
                 tile_data = QByteArray()
                 buffer = QBuffer(tile_data)
-                buffer.open(QBuffer.WriteOnly)
+                buffer.open(_OPEN_WRITE_ONLY)
                 
                 success = False
                 if self.tile_format == "PNG":

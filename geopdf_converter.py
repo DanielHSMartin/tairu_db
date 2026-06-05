@@ -48,6 +48,18 @@ except ImportError as e:
 # Import from the plugin
 from tairu_db_algorithm import TairuDBWriter, MetaTile, qvariant_to_python  # type: ignore
 
+# QGIS 4 (PyQt6) / QGIS 3 (PyQt5) compatibility constants
+try:
+    from qgis.PyQt.QtCore import QIODeviceBase
+    _OPEN_WRITE_ONLY = QIODeviceBase.WriteOnly         # PyQt6
+except ImportError:
+    _OPEN_WRITE_ONLY = QBuffer.WriteOnly               # PyQt5
+
+try:
+    _FMT_ARGB32 = QImage.Format.Format_ARGB32          # PyQt6
+except AttributeError:
+    _FMT_ARGB32 = QImage.Format_ARGB32                 # PyQt5
+
 
 # Resolution table: zoom -> meters per pixel at equator
 # Web Mercator standard: each zoom level halves the resolution
@@ -435,9 +447,8 @@ class GeoPDFConverter:
         
         # If has alpha channel, check if ALL pixels are fully transparent
         if tile_image.hasAlphaChannel():
-            alpha_format = QImage.Format_ARGB32
-            if tile_image.format() != alpha_format:
-                tile_image = tile_image.convertToFormat(alpha_format)
+            if tile_image.format() != _FMT_ARGB32:
+                tile_image = tile_image.convertToFormat(_FMT_ARGB32)
             
             # Sample more points to be thorough
             sample_points = []
@@ -599,8 +610,8 @@ class GeoPDFConverter:
                     continue
                 
                 # Convert to ARGB32 format to ensure alpha channel is preserved
-                if tile_image.format() != QImage.Format_ARGB32:
-                    tile_image = tile_image.convertToFormat(QImage.Format_ARGB32)
+                if tile_image.format() != _FMT_ARGB32:
+                    tile_image = tile_image.convertToFormat(_FMT_ARGB32)
                 
                 # For layers with transparency, save all tiles (even fully transparent)
                 # Otherwise skip completely empty tiles to save space
@@ -613,7 +624,7 @@ class GeoPDFConverter:
                 # Convert to format
                 tile_data = QByteArray()
                 buffer = QBuffer(tile_data)
-                buffer.open(QBuffer.WriteOnly)
+                buffer.open(_OPEN_WRITE_ONLY)
                 
                 success = False
                 if self.tile_format == "PNG":

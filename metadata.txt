@@ -3,6 +3,7 @@
 [general]
 name=TairuDB
 qgisMinimumVersion=3.20
+qgisMaximumVersion=4.99
 description=Generates .tairudb files for the Tairu Maps mobile app, exporting raster tiles and vector layers from QGIS projects. / Gera arquivos .tairudb para o Tairu Maps, exportando tiles raster e camadas vetoriais a partir do QGIS.
 version=1.2
 author=Daniel Hulshof Saint Martin
