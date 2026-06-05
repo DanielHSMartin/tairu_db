@@ -1,0 +1,34 @@
+# This file contains metadata for your plugin.
+
+[general]
+name=TairuDB
+qgisMinimumVersion=3.20
+description=Gera arquivos .tairudb para o aplicativo móvel Tairu Maps, exportando tiles raster e camadas vetoriais a partir de projetos QGIS.
+version=1.2
+author=Daniel Hulshof Saint Martin
+email=danielhsmartin@gmail.com
+
+about=O plugin TairuDB converte dados geográficos de projetos QGIS para o formato .tairudb, utilizado pelo aplicativo móvel Tairu Maps (iOS e Android).
+  O arquivo .tairudb é um banco de dados SQLite que armazena tiles raster em formato TMS (PNG, JPG ou WebP) organizados por região, camadas vetoriais (pontos, linhas e polígonos) com atributos e estilos, e metadados de navegação.
+  Como usar: (1) Abra um projeto QGIS com as camadas raster desejadas visíveis; (2) Crie ou importe um polígono delimitando a área de interesse; (3) Execute o algoritmo TairuDB em Processamento > Caixa de Ferramentas; (4) Configure polígono de área, resolução (0,5 m/px a 32 m/px), formato de imagem e camadas vetoriais opcionais; (5) Importe o arquivo .tairudb gerado no aplicativo Tairu Maps.
+  Também inclui o conversor GeoPDF (geopdf_converter.py) para converter arquivos GeoPDF diretamente para o formato .tairudb.
+
+tracker=https://github.com/DanielHSMartin/tairu_db/issues
+repository=https://github.com/DanielHSMartin/tairu_db
+
+hasProcessingProvider=yes
+
+changelog=
+  1.2 - Suporte a múltiplas regiões (um polígono de entrada por região); exportação de camadas vetoriais com atributos JSON; retry automático em tiles com falha; suporte a WebP
+  1.1 - Adição do conversor GeoPDF; melhorias no desempenho de renderização
+  1.0 - Versão inicial: geração de tiles raster para o Tairu Maps
+
+tags=tairu maps, offline maps, tiles, tairudb, sqlite, raster, vector, mobile, export
+
+homepage=https://tairumaps.com
+category=Database
+icon=icon.png
+
+experimental=False
+deprecated=False
+server=False

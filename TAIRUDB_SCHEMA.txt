@@ -1,0 +1,223 @@
+================================================================================
+TairuDB SQLite Database Schema
+================================================================================
+Version: 1.2
+Format: SQLite3
+Description: Geographic database format for the Geop mobile application
+================================================================================
+
+TABLE: metadata
+--------------------------------------------------------------------------------
+Stores configuration and database metadata as key-value pairs.
+
+CREATE TABLE IF NOT EXISTS metadata (
+    name TEXT,
+    value TEXT
+);
+
+Common metadata keys:
+  - format       : Tile image format (png, jpg, webp)
+  - name         : Database name
+  - description  : Database description
+  - version      : Schema version (e.g., "1.2")
+  - type         : Database type (e.g., "overlay")
+  - minzoom      : Minimum zoom level (integer as string)
+  - maxzoom      : Maximum zoom level (integer as string)
+  - center       : Center point as "longitude,latitude,zoom"
+  - generator    : Tool that created the database
+  - created      : ISO format timestamp
+
+
+TABLE: vector_layers
+--------------------------------------------------------------------------------
+Defines vector layers with unique identifiers.
+
+CREATE TABLE IF NOT EXISTS vector_layers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT UNIQUE NOT NULL,
+    type TEXT,
+    name TEXT,
+    description TEXT
+);
+
+Fields:
+  - id          : Auto-incrementing primary key
+  - uuid        : Unique identifier (UUID v4 format)
+  - type        : Layer geometry type ("point", "line", "polygon")
+  - name        : Layer display name
+  - description : Layer description (optional)
+
+
+TABLE: features
+--------------------------------------------------------------------------------
+Stores individual vector features with geometry, styling, and attributes.
+
+CREATE TABLE IF NOT EXISTS features (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT UNIQUE NOT NULL,
+    layer_id TEXT,
+    type TEXT,
+    name TEXT,
+    attributes TEXT,
+    color TEXT,
+    size INTEGER,
+    iconType TEXT,
+    points TEXT,
+    FOREIGN KEY(layer_id) REFERENCES vector_layers(uuid)
+);
+
+Fields:
+  - id         : Auto-incrementing primary key
+  - uuid       : Unique identifier (UUID v4 format)
+  - layer_id   : References vector_layers.uuid (parent layer)
+  - type       : Feature geometry type ("point", "line", "polygon")
+  - name       : Feature display name
+  - attributes : JSON string of additional attributes
+  - color      : Hex color code (e.g., "#FF0000" for red)
+  - size       : Size in pixels (icon size or line width)
+  - iconType   : Icon type identifier (e.g., "locationOn", "line", "polygon")
+  - points     : Coordinate string in WKT-style format
+
+Points format examples:
+  - Single point    : "lon lat"
+  - Line/polygon    : "lon1 lat1, lon2 lat2, lon3 lat3"
+  - Multi-geometry  : "lon1 lat1, lon2 lat2; lon3 lat3, lon4 lat4"
+                      (semicolon separates multiple geometries)
+
+
+TABLE: regions
+--------------------------------------------------------------------------------
+Defines spatial regions with zoom levels and geographic bounds.
+
+CREATE TABLE IF NOT EXISTS regions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid TEXT UNIQUE NOT NULL,
+    name TEXT,
+    minzoom INTEGER,
+    maxzoom INTEGER,
+    bounds TEXT
+);
+
+Fields:
+  - id      : Region identifier (0, 1, 2, ...)
+  - uuid    : Unique identifier (UUID v4 format)
+  - name    : Region display name
+  - minzoom : Minimum zoom level for this region
+  - maxzoom : Maximum zoom level for this region
+  - bounds  : WKT-style bounding box coordinates
+
+Bounds format:
+  "minLon minLat, maxLon minLat, maxLon maxLat, minLon maxLat"
+  Example: "-46.5 -23.7, -46.4 -23.7, -46.4 -23.6, -46.5 -23.6"
+
+
+TABLES: tiles_region_{N} (dynamic, one per region)
+--------------------------------------------------------------------------------
+Stores raster tiles in TMS (Tile Map Service) format. One table is created for
+each region defined in the regions table, with {N} corresponding to region ID.
+
+CREATE TABLE IF NOT EXISTS tiles_region_0 (
+    zoom_level INTEGER, 
+    tile_column INTEGER, 
+    tile_row INTEGER, 
+    tile_data BLOB
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS tiles_region_0_index 
+    ON tiles_region_0 (zoom_level, tile_column, tile_row);
+
+Fields:
+  - zoom_level  : Tile pyramid zoom level
+  - tile_column : Tile X coordinate (TMS standard)
+  - tile_row    : Tile Y coordinate (TMS standard, Y-flipped from XYZ)
+  - tile_data   : Binary image data (PNG, JPG, or WebP format)
+
+Index:
+  - Unique composite index on (zoom_level, tile_column, tile_row) for fast lookup
+
+Tile coordinate system:
+  - Uses TMS (Tile Map Service) coordinates
+  - Origin (0,0) is at bottom-left (southwest corner)
+  - Y-axis increases northward (opposite of XYZ/Google Maps convention)
+  - Convert from XYZ to TMS: tms_y = (2^zoom - 1) - xyz_y
+
+
+================================================================================
+Schema Relationships
+================================================================================
+
+vector_layers (1) ──────< (N) features
+    uuid                       layer_id
+
+regions (1) ──────< (1) tiles_region_{N}
+    id                   implicit (N in table name)
+
+metadata
+    (standalone key-value store, no foreign keys)
+
+
+================================================================================
+Database Usage Notes
+================================================================================
+
+1. Coordinate System:
+   - All geographic coordinates use WGS84 (EPSG:4326)
+   - Longitude, Latitude order (lon, lat)
+   - Tile rendering uses Web Mercator (EPSG:3857)
+
+2. Tile Storage:
+   - Each region can have its own tile table
+   - Tiles are stored with TMS coordinates
+   - Empty/transparent tiles may be omitted to save space
+   - Tile format specified in metadata.format
+
+3. Vector Features:
+   - Features are organized into layers via layer_id
+   - Geometry stored as text coordinate strings (not WKB/WKT)
+   - Attributes stored as JSON for flexibility
+   - Colors use hex format with # prefix
+
+4. Region Management:
+   - Region ID 0 is typically the default/main region
+   - Multiple regions support layered map overlays
+   - Each region has independent zoom levels and bounds
+
+5. Database Operations:
+   - Use INSERT OR REPLACE for tile updates
+   - Use INSERT OR IGNORE for layer deduplication
+   - Perform VACUUM after bulk operations
+   - Use transactions for batch inserts
+
+
+================================================================================
+Example Queries
+================================================================================
+
+-- Get all metadata
+SELECT * FROM metadata;
+
+-- Get tile count per zoom level for region 0
+SELECT zoom_level, COUNT(*) as count 
+FROM tiles_region_0 
+GROUP BY zoom_level;
+
+-- Get all features for a specific layer
+SELECT f.* 
+FROM features f
+JOIN vector_layers l ON f.layer_id = l.uuid
+WHERE l.name = 'Points of Interest';
+
+-- Get database bounds
+SELECT bounds FROM regions WHERE id = 0;
+
+-- Get tile data for specific coordinate
+SELECT tile_data 
+FROM tiles_region_0 
+WHERE zoom_level = 18 
+  AND tile_column = 12345 
+  AND tile_row = 67890;
+
+
+================================================================================
+End of Schema Documentation
+================================================================================
