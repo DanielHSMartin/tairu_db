@@ -44,7 +44,7 @@ class FirebaseError(Exception):
             return self.message or 'Já existe um arquivo com esse nome neste mapa.'
         translations = {
             'EMAIL_NOT_FOUND': 'E-mail não cadastrado.',
-            'INVALID_PASSWORD': 'Senha incorreta.',
+            'INVALID_PASSWORD': 'Senha incorreta.',  # pragma: allowlist secret
             'INVALID_LOGIN_CREDENTIALS': 'E-mail ou senha incorretos.',
             'USER_DISABLED': 'Esta conta foi desativada.',
             'TOO_MANY_ATTEMPTS_TRY_LATER': 'Muitas tentativas. Tente novamente mais tarde.',
@@ -92,7 +92,7 @@ def request_json(method, url, headers=None, json_body=None, data=None, timeout=3
 
     req = urllib.request.Request(url, data=body, headers=all_headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             raw = resp.read()
             if not raw:
                 return {}

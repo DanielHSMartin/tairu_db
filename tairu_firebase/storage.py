@@ -69,7 +69,7 @@ class StorageClient:
 
         tmp_path = dest_path + '.part'
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
                 total = int(resp.headers.get('Content-Length') or 0)
                 done = 0
                 with open(tmp_path, 'wb') as out:
@@ -123,7 +123,7 @@ class StorageClient:
             raise ValueError(f'Only HTTPS URLs are permitted: {start_url!r}')
         req = urllib.request.Request(start_url, data=metadata, headers=headers, method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=60) as resp:  # nosec B310
                 upload_url = resp.headers.get('X-Goog-Upload-URL')
         except urllib.error.HTTPError as e:
             raise _storage_error(e.code, e.read()) from e
@@ -154,7 +154,7 @@ class StorageClient:
                     raise ValueError(f'Only HTTPS URLs are permitted: {upload_url!r}')
                 req = urllib.request.Request(upload_url, data=chunk, headers=chunk_headers, method='POST')
                 try:
-                    with urllib.request.urlopen(req, timeout=300) as resp:
+                    with urllib.request.urlopen(req, timeout=300) as resp:  # nosec B310
                         body = resp.read()
                         if is_last and body:
                             final_response = jsonlib.loads(body.decode('utf-8'))
@@ -180,7 +180,7 @@ class StorageClient:
                 headers={'User-Agent': USER_AGENT, 'X-Goog-Upload-Command': 'cancel'},
                 method='POST',
             )
-            urllib.request.urlopen(req, timeout=15).read()
+            urllib.request.urlopen(req, timeout=15).read()  # nosec B310
         except Exception:
             pass  # best effort
 

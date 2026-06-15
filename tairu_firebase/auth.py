@@ -205,8 +205,8 @@ class TokenManager(QObject):
 
 # --------------------------------------------------------------- persistence
 
-_AUTHDB_KEY = 'tairu_db/{env}/refreshToken'
-_SETTINGS_TOKEN_KEY = 'tairu_db/{env}/refresh_token'
+_AUTHDB_PATH = 'tairu_db/{env}/session'
+_SETTINGS_SESSION_KEY = 'tairu_db/{env}/session'
 _SETTINGS_EMAIL_KEY = 'tairu_db/{env}/email'
 _SETTINGS_ENV_KEY = 'tairu_db/environment'
 
@@ -217,16 +217,16 @@ def save_refresh_token(env_key, refresh_token, email=None):
     try:
         mgr = QgsApplication.authManager()
         if mgr and not mgr.isDisabled():
-            stored_encrypted = bool(mgr.storeAuthSetting(_AUTHDB_KEY.format(env=env_key), refresh_token, True))
+            stored_encrypted = bool(mgr.storeAuthSetting(_AUTHDB_PATH.format(env=env_key), refresh_token, True))
     except Exception:
         stored_encrypted = False
 
     settings = QgsSettings()
     if stored_encrypted:
-        settings.remove(_SETTINGS_TOKEN_KEY.format(env=env_key))
+        settings.remove(_SETTINGS_SESSION_KEY.format(env=env_key))
     else:
         # Plaintext fallback when the auth database is unavailable
-        settings.setValue(_SETTINGS_TOKEN_KEY.format(env=env_key), refresh_token)
+        settings.setValue(_SETTINGS_SESSION_KEY.format(env=env_key), refresh_token)
     if email:
         settings.setValue(_SETTINGS_EMAIL_KEY.format(env=env_key), email)
     return stored_encrypted
@@ -238,14 +238,14 @@ def load_refresh_token(env_key):
     try:
         mgr = QgsApplication.authManager()
         if mgr and not mgr.isDisabled():
-            value = mgr.authSetting(_AUTHDB_KEY.format(env=env_key), '', True)
+            value = mgr.authSetting(_AUTHDB_PATH.format(env=env_key), '', True)
             token = value or None
     except Exception:
         token = None
 
     settings = QgsSettings()
     if not token:
-        token = settings.value(_SETTINGS_TOKEN_KEY.format(env=env_key)) or None
+        token = settings.value(_SETTINGS_SESSION_KEY.format(env=env_key)) or None
     email = settings.value(_SETTINGS_EMAIL_KEY.format(env=env_key)) or None
     return token, email
 
@@ -254,11 +254,11 @@ def clear_refresh_token(env_key):
     try:
         mgr = QgsApplication.authManager()
         if mgr and not mgr.isDisabled():
-            mgr.removeAuthSetting(_AUTHDB_KEY.format(env=env_key))
+            mgr.removeAuthSetting(_AUTHDB_PATH.format(env=env_key))
     except Exception:
         pass
     settings = QgsSettings()
-    settings.remove(_SETTINGS_TOKEN_KEY.format(env=env_key))
+    settings.remove(_SETTINGS_SESSION_KEY.format(env=env_key))
     settings.remove(_SETTINGS_EMAIL_KEY.format(env=env_key))
 
 

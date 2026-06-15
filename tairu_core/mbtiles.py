@@ -87,7 +87,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
         multi = len(tile_tables) > 1
         for idx, table in enumerate(sorted(tile_tables, key=lambda t: int(t.rsplit('_', 1)[-1]))):
             table_index = int(table.rsplit('_', 1)[-1])
-            count = src.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            count = src.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]  # nosec B608
             if count == 0:
                 continue
 
@@ -108,7 +108,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
                             '(zoom_level, tile_column, tile_row);')
 
                 zmin, zmax = src.execute(
-                    f'SELECT MIN(zoom_level), MAX(zoom_level) FROM "{table}"').fetchone()
+                    f'SELECT MIN(zoom_level), MAX(zoom_level) FROM "{table}"').fetchone()  # nosec B608
 
                 meta = {
                     'name': f'{metadata.get("name", base_name)} — {region_label}',
@@ -127,7 +127,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
 
                 # Verbatim copy: tairudb rows are already TMS like MBTiles
                 cursor = src.execute(
-                    f'SELECT zoom_level, tile_column, tile_row, tile_data FROM "{table}"')
+                    f'SELECT zoom_level, tile_column, tile_row, tile_data FROM "{table}"')  # nosec B608
                 copied = 0
                 while True:
                     rows = cursor.fetchmany(500)

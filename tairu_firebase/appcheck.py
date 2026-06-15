@@ -101,7 +101,7 @@ class AppCheckManager:
             raise ValueError(f'Only HTTPS URLs are permitted: {url!r}')
         req = urllib.request.Request(url, data=body, headers=headers, method='POST')
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
                 raw = resp.read()
         except urllib.error.HTTPError as e:
             body_bytes = e.read()
