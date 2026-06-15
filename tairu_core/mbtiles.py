@@ -14,7 +14,10 @@ ids in the same insertion order; the mapping handles both conventions.
 """
 
 import os
+import re
 import sqlite3
+
+_TILE_TABLE_RE = re.compile(r'^tiles_region_\d+$')
 
 
 def _parse_bounds_ring(ring_str):
@@ -75,6 +78,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
             row[0] for row in src.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'tiles_region_%'"
             )
+            if _TILE_TABLE_RE.fullmatch(row[0])
         ]
         if not tile_tables:
             raise ValueError('O arquivo não contém tabelas de tiles (tiles_region_N).')

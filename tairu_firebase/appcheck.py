@@ -97,6 +97,8 @@ class AppCheckManager:
             'Content-Type': 'application/json',
             'Authorization': f'Bearer {id_token}',
         }
+        if not url.startswith('https://'):
+            raise ValueError(f'Only HTTPS URLs are permitted: {url!r}')
         req = urllib.request.Request(url, data=body, headers=headers, method='POST')
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:

@@ -79,6 +79,8 @@ def request_json(method, url, headers=None, json_body=None, data=None, timeout=3
     data: raw bytes body (caller sets Content-Type via headers).
     Raises FirebaseError on non-2xx responses or network failures.
     """
+    if not url.startswith('https://'):
+        raise ValueError(f'Only HTTPS URLs are permitted: {url!r}')
     all_headers = {'User-Agent': USER_AGENT}
     if headers:
         all_headers.update(headers)

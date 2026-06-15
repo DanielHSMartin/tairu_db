@@ -63,6 +63,8 @@ class StorageClient:
         url = f'{self._object_url(object_path)}?alt=media'
         headers = {'User-Agent': USER_AGENT}
         headers.update(self._session.auth_header())
+        if not url.startswith('https://'):
+            raise ValueError(f'Only HTTPS URLs are permitted: {url!r}')
         req = urllib.request.Request(url, headers=headers)
 
         tmp_path = dest_path + '.part'
@@ -117,6 +119,8 @@ class StorageClient:
         }
         headers.update(self._session.auth_header())
 
+        if not start_url.startswith('https://'):
+            raise ValueError(f'Only HTTPS URLs are permitted: {start_url!r}')
         req = urllib.request.Request(start_url, data=metadata, headers=headers, method='POST')
         try:
             with urllib.request.urlopen(req, timeout=60) as resp:
@@ -146,6 +150,8 @@ class StorageClient:
                     'X-Goog-Upload-Command': command,
                     'X-Goog-Upload-Offset': str(offset),
                 }
+                if not upload_url.startswith('https://'):
+                    raise ValueError(f'Only HTTPS URLs are permitted: {upload_url!r}')
                 req = urllib.request.Request(upload_url, data=chunk, headers=chunk_headers, method='POST')
                 try:
                     with urllib.request.urlopen(req, timeout=300) as resp:
@@ -167,6 +173,8 @@ class StorageClient:
 
     def _cancel_upload(self, upload_url):
         try:
+            if not upload_url.startswith('https://'):
+                return
             req = urllib.request.Request(
                 upload_url,
                 headers={'User-Agent': USER_AGENT, 'X-Goog-Upload-Command': 'cancel'},
