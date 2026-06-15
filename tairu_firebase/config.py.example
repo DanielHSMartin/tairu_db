@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Environment:
-    key: str              # settings key ('prod' / 'dev')
+    key: str              # settings key
     label: str            # display label
     project_id: str
     api_key: str          # Firebase web API key
@@ -33,14 +33,6 @@ ENVIRONMENTS = {
         api_key='YOUR_PROD_API_KEY',
         bucket='YOUR_PROD_PROJECT_ID.firebasestorage.app',
         auth_page='https://YOUR_PROD_PROJECT_ID.firebaseapp.com/qgis-auth/',
-    ),
-    'dev': Environment(
-        key='dev',
-        label='Development',
-        project_id='YOUR_DEV_PROJECT_ID',
-        api_key='YOUR_DEV_API_KEY',
-        bucket='YOUR_DEV_PROJECT_ID.firebasestorage.app',
-        auth_page='https://YOUR_DEV_PROJECT_ID.firebaseapp.com/qgis-auth/',
     ),
 }
 
