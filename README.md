@@ -1,10 +1,42 @@
 # TairuDB — QGIS Plugin
 
-Generates **`.tairudb`** files for the [Tairu Maps](https://tairumaps.com) mobile app (iOS and Android).
-Exports raster tiles and vector layers from QGIS projects into a portable SQLite database.
+Connects QGIS to the [Tairu Maps](https://tairumaps.com) mobile app (iOS and Android):
+two-way cloud sync through the **Tairu Cloud** dock, plus local **`.tairudb`** file generation.
 
-> Gera arquivos **`.tairudb`** para o aplicativo [Tairu Maps](https://tairumaps.com) (iOS e Android).
-> Exporta tiles raster e camadas vetoriais de projetos QGIS para um banco SQLite portátil.
+> Conecta o QGIS ao aplicativo [Tairu Maps](https://tairumaps.com) (iOS e Android):
+> sincronização bidirecional pelo painel **Tairu Cloud** e geração local de arquivos **`.tairudb`**.
+
+---
+
+## Tairu Cloud (novo na versão 2.0)
+
+O botão **Tairu Cloud** na barra de ferramentas abre um painel acoplado que conecta o QGIS
+diretamente à sua conta do Tairu Maps (Firebase Authentication, Firestore e Storage).
+
+**Login** — e-mail/senha direto no painel, ou Google/Apple pelo navegador (uma página de
+login hospedada envia as credenciais de volta ao QGIS automaticamente; se o navegador
+bloquear, use "Colar código de acesso"). A sessão fica salva no banco de autenticação
+criptografado do QGIS. **Recursos de nuvem exigem plano Online ou Tempo Real.**
+
+**Receber do Tairu Maps (Pull)**
+- *Registros → camadas*: os registros do mapa viram camadas editáveis em um GeoPackage por
+  mapa (`tairu_workspace/` na pasta de perfil do QGIS), separadas por geometria
+  (pontos, linhas, polígonos, círculos e sem geometria), com cores do app aplicadas.
+  Repetir o pull atualiza as camadas pela chave `recordId`, sem duplicar.
+- *Arquivos TairuDB*: baixe qualquer arquivo do mapa; cada região vira uma camada raster
+  (MBTiles) georreferenciada no grupo `Tairu/{mapa}`.
+
+**Enviar para o Tairu Maps (Push)**
+- *Camada → registros*: converte feições de qualquer camada vetorial em registros, com
+  mapeamento de campos (nome/descrição), tipo/subtipo e **prévia das alterações**
+  (novos / atualizados / inalterados / sem permissão) antes de enviar. Camadas baixadas
+  pelo pull fazem ida-e-volta preservando os atributos por feição.
+- *Gerar e enviar raster*: assistente que gera um `.tairudb` da área escolhida (polígono de
+  camada ou retângulo desenhado no mapa), com estimativa de tamanho (limite do servidor:
+  100 MB) e upload direto para o mapa. Requer papel de dono ou administrador.
+
+Permissões refletem as regras do servidor: membros leem tudo e criam/editam os próprios
+registros; donos e administradores editam tudo e enviam arquivos raster.
 
 ---
 

@@ -1,0 +1,53 @@
+# -*- coding: utf-8 -*-
+
+"""
+Tairu Maps Firebase environment definitions.
+
+Copy this file to config.py and fill in the values from your Firebase project.
+The distribution zip already ships with a pre-filled config.py — this file
+exists only so the repository does not expose API keys publicly.
+
+The web API keys are public identifiers (they ship inside the web app);
+access control is enforced server-side by Firestore/Storage security rules.
+"""
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class Environment:
+    key: str              # settings key ('prod' / 'dev')
+    label: str            # display label
+    project_id: str
+    api_key: str          # Firebase web API key
+    bucket: str           # default Storage bucket
+    auth_page: str        # hosted browser sign-in page (Google/Apple)
+    functions_region: str = 'southamerica-east1'
+
+
+ENVIRONMENTS = {
+    'prod': Environment(
+        key='prod',
+        label='Production',
+        project_id='YOUR_PROD_PROJECT_ID',
+        api_key='YOUR_PROD_API_KEY',
+        bucket='YOUR_PROD_PROJECT_ID.firebasestorage.app',
+        auth_page='https://YOUR_PROD_PROJECT_ID.firebaseapp.com/qgis-auth/',
+    ),
+    'dev': Environment(
+        key='dev',
+        label='Development',
+        project_id='YOUR_DEV_PROJECT_ID',
+        api_key='YOUR_DEV_API_KEY',
+        bucket='YOUR_DEV_PROJECT_ID.firebasestorage.app',
+        auth_page='https://YOUR_DEV_PROJECT_ID.firebaseapp.com/qgis-auth/',
+    ),
+}
+
+DEFAULT_ENVIRONMENT_KEY = 'prod'
+
+# Storage object path for a map's tairudb files (must match storage.rules)
+TAIRUDB_OBJECT_PATH = 'tairu_data/{map_id}/tairudb/{file_name}'
+
+# Plan gate: Firestore rules only grant map-data access to these versions
+ALLOWED_APP_VERSIONS = ('online', 'realtime')

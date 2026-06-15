@@ -47,6 +47,7 @@ class TairuDBPlugin(object):
         self.iface = iface
         self.provider = None
         self.action = None
+        self.dock = None
         self.icon_path = os.path.join(os.path.dirname(__file__), 'icon.png')
 
     def initProcessing(self):
@@ -61,17 +62,30 @@ class TairuDBPlugin(object):
             'TairuDB',
             self.iface.mainWindow()
         )
-        self.action.setToolTip('Gerar arquivo TairuDB para o Tairu Maps')
-        self.action.triggered.connect(self._run)
+        self.action.setToolTip('Abrir painel do Tairu Maps')
+        self.action.triggered.connect(self._show_dock)
 
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu('TairuDB', self.action)
 
     def unload(self):
+        if self.dock is not None:
+            try:
+                self.dock.shutdown()
+            except Exception:
+                pass
+            self.iface.removeDockWidget(self.dock)
+            self.dock.deleteLater()
+            self.dock = None
         self.iface.removeToolBarIcon(self.action)
         self.iface.removePluginMenu('TairuDB', self.action)
         QgsApplication.processingRegistry().removeProvider(self.provider)
 
-    def _run(self):
-        import processing
-        processing.execAlgorithmDialog('Tairu:tairudbgenerator')
+    def _show_dock(self):
+        if self.dock is None:
+            from .compat import _DOCK_RIGHT_AREA
+            from .tairu_ui.dock_widget import TairuDockWidget
+            self.dock = TairuDockWidget(self.iface, self.iface.mainWindow())
+            self.iface.addDockWidget(_DOCK_RIGHT_AREA, self.dock)
+        self.dock.show()
+        self.dock.raise_()

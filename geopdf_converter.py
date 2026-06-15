@@ -47,6 +47,10 @@ except ImportError as e:
 
 # Import from the plugin
 from tairu_db_algorithm import TairuDBWriter, MetaTile, qvariant_to_python  # type: ignore
+try:
+    from tairu_core.vector_types import tairudb_type_for_fields
+except ImportError:
+    from .tairu_core.vector_types import tairudb_type_for_fields
 
 # QGIS 4 (PyQt6) / QGIS 3 (PyQt5) compatibility constants
 try:
@@ -719,6 +723,16 @@ class GeoPDFConverter:
                 type_str = "unknown"
                 icon_type = "locationOn"
                 size = 10
+
+            layer_def = layer.GetLayerDefn()
+            field_names = [
+                layer_def.GetFieldDefn(j).GetName()
+                for j in range(layer_def.GetFieldCount())
+            ]
+            type_str = tairudb_type_for_fields(type_str, field_names)
+            if type_str == "contourLine":
+                icon_type = "line"
+                size = 3
             
             feature_count = layer.GetFeatureCount()
             self.log(f"  Exporting layer: {layer_name} ({type_str}, {feature_count} features)")
@@ -857,7 +871,6 @@ class GeoPDFConverter:
                 
                 # Get attributes
                 attributes = {}
-                layer_def = layer.GetLayerDefn()
                 for j in range(layer_def.GetFieldCount()):
                     field_def = layer_def.GetFieldDefn(j)
                     field_name = field_def.GetName()

@@ -1,99 +1,141 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>TairuDB Plugin</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 16px; color: #333; }
+    body { font-family: Arial, sans-serif; max-width: 860px; margin: 0 auto; padding: 16px; color: #333; }
     h1 { color: #1a7a2e; }
-    h2 { color: #2a5c3f; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+    h2 { color: #2a5c3f; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 28px; }
     code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-    pre { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }
-    table { border-collapse: collapse; width: 100%; }
+    pre  { background: #f4f4f4; padding: 12px; border-radius: 4px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
     th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
     th { background: #e8f5e9; }
-    .note { background: #fff8e1; border-left: 4px solid #ffc107; padding: 8px 12px; margin: 12px 0; }
+    .note  { background: #fff8e1; border-left: 4px solid #ffc107; padding: 8px 14px; margin: 14px 0; }
+    .cloud { background: #e3f2fd; border-left: 4px solid #1976d2; padding: 8px 14px; margin: 14px 0; }
+    ul li { margin-bottom: 4px; }
   </style>
 </head>
 <body>
 
-<h1>TairuDB Plugin para QGIS</h1>
+<h1>TairuDB — QGIS Plugin v2.0</h1>
 <p>
-  Plugin para geração de arquivos <code>.tairudb</code> compatíveis com o aplicativo móvel
-  <strong>Tairu Maps</strong> (iOS, Android e Web). Permite exportar mapas offline — incluindo tiles
-  raster e camadas vetoriais — diretamente de projetos QGIS.
+  <strong>TairuDB</strong> connects QGIS to the <strong>Tairu Maps</strong> app (iOS / Android).
+  It provides a dockable panel for two-way synchronisation with your Tairu Maps account
+  and a Processing algorithm (<em>Tairu &gt; TairuDB</em>) for generating <code>.tairudb</code>
+  offline-map packages from any QGIS project.
 </p>
 
-<h2>O que é o Tairu Maps?</h2>
+<div class="cloud">
+  <strong>Cloud features</strong> (Tairu Maps dock) require an <em>Online</em> or
+  <em>Real-time</em> Tairu Maps plan. The Processing algorithm and GeoPDF converter work
+  fully offline without any account.
+</div>
+
+<h2>What is Tairu Maps?</h2>
 <p>
-  O <strong>Tairu Maps</strong> é um aplicativo móvel de mapas colaborativos voltado para uso em campo,
-  com suporte a mapas offline, compartilhamento de localização em tempo real, registros georreferenciados
-  e integração com dados geográficos produzidos no QGIS. O arquivo <code>.tairudb</code> é o formato
-  nativo de importação de mapas offline no Tairu Maps.
+  <a href="https://tairumaps.com">Tairu Maps</a> is a collaborative mobile mapping app for
+  field use. It supports offline maps, real-time location sharing, geo-referenced records,
+  and direct integration with QGIS data. The <code>.tairudb</code> file is the native format
+  for importing offline maps into Tairu Maps.
 </p>
 
-<h2>O arquivo .tairudb</h2>
+<h2>Tairu Maps Dock (two-way sync)</h2>
 <p>
-  Um arquivo <code>.tairudb</code> é um banco de dados <strong>SQLite3</strong> com as seguintes tabelas:
+  Click the <strong>TairuDB toolbar button</strong> or go to <em>Plugins &gt; TairuDB</em> to
+  open the dock panel. From there you can:
 </p>
-<table>
-  <tr><th>Tabela</th><th>Conteúdo</th></tr>
-  <tr><td><code>metadata</code></td><td>Configurações gerais (formato, zoom, centro, versão)</td></tr>
-  <tr><td><code>regions</code></td><td>Regiões geográficas com bounds e níveis de zoom</td></tr>
-  <tr><td><code>tiles_region_N</code></td><td>Tiles raster em formato TMS por região (PNG, JPG ou WebP)</td></tr>
-  <tr><td><code>vector_layers</code></td><td>Camadas vetoriais exportadas (ponto, linha, polígono)</td></tr>
-  <tr><td><code>features</code></td><td>Feições com geometria, estilo e atributos em JSON</td></tr>
-</table>
+<ul>
+  <li><strong>Sign in</strong> with e-mail, Google or Apple to your Tairu Maps account.</li>
+  <li><strong>Browse</strong> all your maps in a list.</li>
+  <li><strong>Pull records</strong> — download the editable vector records of any map as a
+      GeoPackage layer in your QGIS project.</li>
+  <li><strong>Pull raster files</strong> — download <code>.tairudb</code> raster packages and
+      load them as raster layers via MBTiles.</li>
+  <li><strong>Push vector layers</strong> — upload a QGIS vector layer as records to a map,
+      with a diff preview so you can review what will change before confirming.</li>
+  <li><strong>Generate &amp; upload rasters</strong> — use the built-in wizard to generate a
+      <code>.tairudb</code> raster for a chosen area and upload it directly to a selected map.</li>
+</ul>
 
-<h2>Como usar</h2>
+<h2>Processing Algorithm — Tairu &gt; TairuDB</h2>
+<p>
+  The classic Processing algorithm is still available for scripting and batch use.
+  Go to <em>Processing &gt; Toolbox</em>, expand the <strong>Tairu</strong> group and run
+  <strong>TairuDB</strong>.
+</p>
+
+<h3>Workflow</h3>
 <ol>
-  <li>Abra o QGIS com um projeto contendo as camadas raster desejadas e deixe-as visíveis.</li>
-  <li>Crie ou importe uma camada vetorial com o(s) polígono(s) delimitando a(s) área(s) de interesse.</li>
-  <li>Acesse <strong>Processamento &gt; Caixa de Ferramentas</strong> e procure por <strong>TairuDB</strong>.</li>
-  <li>Preencha os parâmetros e clique em <em>Executar</em>.</li>
-  <li>Transfira o arquivo <code>.tairudb</code> gerado para o seu dispositivo e importe-o no Tairu Maps.</li>
+  <li>Open a QGIS project with the raster layers you want to export and make them visible.</li>
+  <li>Create or import a polygon vector layer delimiting the area(s) of interest.
+      Each polygon feature becomes an independent region in the output file.</li>
+  <li>Open the algorithm (<em>Processing &gt; Toolbox &gt; Tairu &gt; TairuDB</em>).</li>
+  <li>Fill in the parameters and click <em>Run</em>.</li>
+  <li>Transfer the generated <code>.tairudb</code> file to your device and import it in Tairu Maps.</li>
 </ol>
 
-<h2>Parâmetros</h2>
+<h3>Parameters</h3>
 <table>
-  <tr><th>Parâmetro</th><th>Descrição</th></tr>
-  <tr><td>Área de interesse (polígono)</td><td>Camada vetorial de polígonos. Cada feição gera uma região independente no arquivo de saída.</td></tr>
-  <tr><td>Resolução do mapa</td><td>Define o nível de zoom máximo: de Altíssima (0,5 m/px, zoom 18) a Muito Baixa (32 m/px, zoom 12).</td></tr>
-  <tr><td>Formato da imagem</td><td>PNG (sem perda), JPG ou WebP. JPG e WebP produzem arquivos menores com perda de qualidade configurável.</td></tr>
-  <tr><td>Qualidade</td><td>Qualidade de compressão para JPG/WebP (1–100). Padrão: 90.</td></tr>
-  <tr><td>Camadas vetoriais para exportar</td><td>(Opcional) Camadas vetoriais do projeto a serem incluídas no arquivo, com cor e atributos.</td></tr>
-  <tr><td>Arquivo de saída</td><td>Caminho para o arquivo <code>.tairudb</code> a ser gerado.</td></tr>
+  <tr><th>Parameter</th><th>Description</th></tr>
+  <tr><td>Area of interest (polygon)</td><td>Polygon vector layer. Each feature generates an independent region.</td></tr>
+  <tr><td>Map resolution</td><td>Sets the maximum zoom level (see table below).</td></tr>
+  <tr><td>Image format</td><td>PNG (lossless), JPG or WebP. JPG and WebP produce smaller files.</td></tr>
+  <tr><td>Quality</td><td>Compression quality for JPG/WebP (1–100). Default: 90.</td></tr>
+  <tr><td>Vector layers to export</td><td>(Optional) Vector layers to include, with QGIS colour and JSON attributes.</td></tr>
+  <tr><td>Output file</td><td>Path for the generated <code>.tairudb</code> file.</td></tr>
 </table>
 
-<h2>Conversor GeoPDF</h2>
-<p>
-  O arquivo <code>geopdf_converter.py</code> permite converter arquivos <strong>GeoPDF</strong> para o
-  formato <code>.tairudb</code>, extraindo o fundo raster como tiles e as geometrias vetoriais como camadas.
-  Requer GDAL, pyproj e as bibliotecas Python do QGIS.
-</p>
-<pre>python geopdf_converter.py entrada.pdf saida.tairudb [opções]</pre>
-
-<h2>Recomendações de resolução</h2>
+<h3>Resolution reference</h3>
 <table>
-  <tr><th>Resolução</th><th>Zoom</th><th>Uso indicado</th></tr>
-  <tr><td>Altíssima (0,5 m/px)</td><td>18</td><td>Plantas, levantamentos de detalhe</td></tr>
-  <tr><td>Alta (1 m/px)</td><td>17</td><td>Áreas urbanas, trilhas</td></tr>
-  <tr><td>Médio Alta (2 m/px)</td><td>16</td><td>Bairros, parques</td></tr>
-  <tr><td>Média (4 m/px)</td><td>15</td><td>Cidades pequenas</td></tr>
-  <tr><td>Médio Baixa (8 m/px)</td><td>14</td><td>Municípios</td></tr>
-  <tr><td>Baixa (16 m/px)</td><td>13</td><td>Regiões</td></tr>
-  <tr><td>Muito Baixa (32 m/px)</td><td>12</td><td>Estados, visão geral</td></tr>
+  <tr><th>Resolution</th><th>Zoom</th><th>Typical use</th></tr>
+  <tr><td>Very High (0.5 m/px)</td><td>18</td><td>Floor plans, survey detail</td></tr>
+  <tr><td>High (1 m/px)</td><td>17</td><td>Urban areas, trails</td></tr>
+  <tr><td>Medium-High (2 m/px)</td><td>16</td><td>Neighbourhoods, parks</td></tr>
+  <tr><td>Medium (4 m/px)</td><td>15</td><td>Small towns</td></tr>
+  <tr><td>Medium-Low (8 m/px)</td><td>14</td><td>Municipalities</td></tr>
+  <tr><td>Low (16 m/px)</td><td>13</td><td>Regions</td></tr>
+  <tr><td>Very Low (32 m/px)</td><td>12</td><td>States / overview</td></tr>
 </table>
 
 <div class="note">
-  <strong>Atenção:</strong> Resoluções altas em áreas grandes podem gerar milhares de tiles e demorar vários minutos.
-  Avalie a relação entre tamanho da área e resolução antes de executar.
+  <strong>Note:</strong> High resolutions over large areas can generate thousands of tiles and
+  take several minutes. Evaluate the area / resolution ratio before running.
 </div>
 
-<h2>Versão</h2>
-<p>1.2 &mdash; Daniel Hulshof Saint Martin &lt;danielhsmartin@gmail.com&gt;</p>
+<h2>GeoPDF Converter</h2>
 <p>
-  Repositório: <a href="https://github.com/DanielHSMartin/tairu_db">github.com/DanielHSMartin/tairu_db</a><br>
+  <code>geopdf_converter.py</code> converts <strong>GeoPDF</strong> files to
+  <code>.tairudb</code>, extracting the raster background as tiles and vector geometries as
+  layers. Requires GDAL, pyproj and QGIS Python libraries.
+</p>
+<pre>python geopdf_converter.py input.pdf output.tairudb [options]</pre>
+
+<h2>The .tairudb format</h2>
+<p>A <code>.tairudb</code> file is a SQLite3 database with the following tables:</p>
+<table>
+  <tr><th>Table</th><th>Contents</th></tr>
+  <tr><td><code>metadata</code></td><td>General settings (format, zoom, centre, version)</td></tr>
+  <tr><td><code>regions</code></td><td>Geographic regions with bounds and zoom levels</td></tr>
+  <tr><td><code>tiles_region_N</code></td><td>TMS raster tiles per region (PNG, JPG or WebP)</td></tr>
+  <tr><td><code>vector_layers</code></td><td>Exported vector layers (point, line, polygon)</td></tr>
+  <tr><td><code>features</code></td><td>Features with geometry, style and JSON attributes</td></tr>
+</table>
+<p>Full schema details in <code>TAIRUDB_SCHEMA.txt</code>.</p>
+
+<h2>Version history</h2>
+<table>
+  <tr><th>Version</th><th>Changes</th></tr>
+  <tr><td>2.0</td><td>Tairu Maps dock with Firebase login (e-mail, Google, Apple); pull records as editable GeoPackage layers and .tairudb files as raster; push vector layers as records with diff preview; wizard to generate and upload .tairudb rasters directly to a map</td></tr>
+  <tr><td>1.2.1</td><td>Support for QGIS 4</td></tr>
+  <tr><td>1.2</td><td>Multi-region support; vector layer export with JSON attributes; automatic tile retry; WebP support; dry-run mode for estimating tile count and file size</td></tr>
+  <tr><td>1.1</td><td>GeoPDF converter; rendering performance improvements</td></tr>
+  <tr><td>1.0</td><td>Initial release: raster tile generation for Tairu Maps</td></tr>
+</table>
+
+<p>
+  Repository: <a href="https://github.com/DanielHSMartin/tairu_db">github.com/DanielHSMartin/tairu_db</a><br>
   Tairu Maps: <a href="https://tairumaps.com">tairumaps.com</a>
 </p>
 

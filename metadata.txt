@@ -4,14 +4,14 @@
 name=TairuDB
 qgisMinimumVersion=3.20
 qgisMaximumVersion=4.99
-description=Generates .tairudb files for the Tairu Maps mobile app, exporting raster tiles and vector layers from QGIS projects. / Gera arquivos .tairudb para o Tairu Maps, exportando tiles raster e camadas vetoriais a partir do QGIS.
-version=1.2
+description=Two-way sync with Tairu Maps (Tairu Maps dock) plus .tairudb generation from QGIS projects. / Sincronização bidirecional com o Tairu Maps (painel Tairu Maps) e geração de arquivos .tairudb a partir do QGIS.
+version=2.0.0
 author=Daniel Hulshof Saint Martin
-email=danielhsmartin@gmail.com
+email=daniel.hulshof@gmail.com
 
-about=TairuDB exports QGIS map data to .tairudb (SQLite), used by the Tairu Maps mobile app (iOS/Android). Stores raster tiles (PNG/JPG/WebP), vector layers with attributes, and navigation metadata. Run via Processing > Toolbox: set an area polygon, resolution (0.5–32 m/px), image format and optional vector layers, then import the file into Tairu Maps. Includes a GeoPDF converter.
+about=TairuDB connects QGIS to the Tairu Maps app (iOS/Android). The Tairu Maps dock signs into your Tairu Maps account (e-mail, Google or Apple), lists your maps and exchanges data both ways: pull records as editable GeoPackage layers and tairudb files as raster layers; push vector layers as records (with diff preview) and generate+upload .tairudb rasters of a chosen area. The classic Processing algorithm (Tairu > TairuDB) and the GeoPDF converter remain available. Requires an Online or Real-time Tairu Maps plan for cloud features.
   ---
-  Exporta dados do QGIS para o formato .tairudb (SQLite), usado pelo aplicativo Tairu Maps (iOS/Android). Armazena tiles raster (PNG/JPG/WebP), camadas vetoriais com atributos e metadados de navegação. Execute via Processamento > Caixa de Ferramentas: defina um polígono de área, resolução (0,5–32 m/px), formato de imagem e camadas vetoriais opcionais, e importe o arquivo no Tairu Maps. Inclui conversor GeoPDF.
+  Conecta o QGIS ao aplicativo Tairu Maps (iOS/Android). O painel Tairu Maps entra na sua conta Tairu Maps (e-mail, Google ou Apple), lista seus mapas e troca dados nos dois sentidos: baixa registros como camadas GeoPackage editáveis e arquivos tairudb como camadas raster; envia camadas vetoriais como registros (com prévia das alterações) e gera+envia rasters .tairudb da área escolhida. O algoritmo de Processamento (Tairu > TairuDB) e o conversor GeoPDF continuam disponíveis. Recursos de nuvem exigem plano Online ou Tempo Real do Tairu Maps.
 
 tracker=https://github.com/DanielHSMartin/tairu_db/issues
 repository=https://github.com/DanielHSMartin/tairu_db
@@ -19,13 +19,15 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
+  2.0 - Tairu Maps: painel acoplado com login Firebase (e-mail, Google, Apple); pull de registros como camadas GeoPackage e de arquivos tairudb como raster (MBTiles); push de camadas vetoriais como registros com prévia de alterações; assistente para gerar e enviar rasters .tairudb direto para o mapa
+  1.2.1 - Support for QGIS 4
   1.2 - Multi-region support (one polygon feature per region); vector layer export with JSON attributes; automatic tile retry on failure; WebP support; dry run mode for estimating tile count, file size and processing time
   1.1 - GeoPDF converter added; rendering performance improvements
   1.0 - Initial release: raster tile generation for Tairu Maps
 
 tags=tairu maps, offline maps, tiles, tairudb, sqlite, raster, vector, mobile, export
 
-homepage=https://tairumaps.com
+homepage=https://github.com/DanielHSMartin/tairu_db
 category=Database
 icon=icon.png
 

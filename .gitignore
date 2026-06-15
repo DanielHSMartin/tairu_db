@@ -124,3 +124,6 @@ PARNA BSB 2.pdf
 *.aux.xml
 CONVERSION_SUMMARY.md
 FEATURE_STATUS.md
+
+# Firebase config with API keys — distribute via plugin zip only, never commit
+tairu_firebase/config.py
