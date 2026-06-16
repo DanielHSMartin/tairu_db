@@ -45,6 +45,7 @@ try:
         format_estimate_report,
     )
     from .tairu_core.vector_export import qvariant_to_python, export_vector_layers  # noqa: F401 (re-export)
+    from .tairu_sync.record_convert import is_record_sync_layer
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
     from tairu_core.feedback import ProcessingFeedbackAdapter
@@ -57,6 +58,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         format_estimate_report,
     )
     from tairu_core.vector_export import qvariant_to_python, export_vector_layers  # noqa: F401
+    from tairu_sync.record_convert import is_record_sync_layer
 
 
 def TairuDBAlgorithm():
@@ -200,6 +202,23 @@ def TairuDBAlgorithm():
                         lyr = all_layers.get(lid)
                         if lyr and lyr.isValid():
                             self.selected_vector_layers.append(lyr)
+
+            # Never bake the Tairu records-sync GeoPackage into the .tairudb:
+            # those features are duplicates of the live records and would render
+            # as unstyled "ghost" geometry on top of every record in the app.
+            skipped_record_layers = [
+                lyr for lyr in self.selected_vector_layers if is_record_sync_layer(lyr)
+            ]
+            if skipped_record_layers:
+                self.selected_vector_layers = [
+                    lyr for lyr in self.selected_vector_layers
+                    if lyr not in skipped_record_layers
+                ]
+                feedback.pushWarning(self.tr(
+                    "Camada(s) de registros do Tairu ignorada(s) na exportação vetorial "
+                    "({names}): os registros já são sincronizados pelo app e incluí-los "
+                    "no .tairudb criaria geometrias duplicadas no mapa.").format(
+                        names=", ".join(lyr.name() for lyr in skipped_record_layers)))
 
             # --- Get polygon geometry for extent ---
             source = self.parameterAsSource(parameters, EXTENT_POLYGON, context)

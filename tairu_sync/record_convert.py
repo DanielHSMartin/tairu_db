@@ -309,6 +309,27 @@ def ensure_record_layer_fields(layer):
         return False
 
 
+def is_record_sync_layer(layer):
+    """True when `layer` is a Tairu records-sync layer (the per-map records
+    GeoPackage), not an ordinary user vector layer.
+
+    Identity is the field schema written by `ensure_gpkg` /
+    `ensure_record_layer_fields`: every records layer carries both `recordId`
+    and the `tairuSyncHash` sync field. This survives layer renames and the
+    push/pull state (the custom `tairu/syncSnapshot` property is only set after
+    a push, so it is not a reliable marker). Used to keep these layers out of
+    the .tairudb VECTOR_LAYERS export, which would otherwise bake every record's
+    geometry into the basemap file as an unstyled duplicate of the live record.
+    """
+    if layer is None:
+        return False
+    try:
+        fields = layer.fields()
+    except Exception:
+        return False
+    return fields.indexOf('recordId') >= 0 and fields.indexOf(SYNC_HASH_FIELD) >= 0
+
+
 def layer_sync_snapshot(layer):
     if layer is None:
         return {}
