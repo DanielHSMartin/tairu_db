@@ -127,3 +127,7 @@ FEATURE_STATUS.md
 
 # Firebase config with API keys — distribute via plugin zip only, never commit
 tairu_firebase/config.py
+
+# macOS junk and build artifacts (release zip is built by build_release.sh)
+.DS_Store
+*.zip

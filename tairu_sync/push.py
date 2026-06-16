@@ -15,8 +15,8 @@ serialization); only coordinates and radius/colors/styling matter.
 from dataclasses import dataclass, field
 
 from qgis.core import (
-    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject,
-    QgsRenderContext,
+    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsExpressionContext,
+    QgsExpressionContextUtils, QgsProject, QgsRenderContext,
 )
 
 try:
@@ -25,11 +25,11 @@ try:
         bounds_json_from_points,
     )
     from .record_convert import (
-        hex_to_argb, TYPE_COLORS, _COLOR_FALLBACK,
-        configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, normalized_geometry_points, record_to_attribute_map,
-        resolved_background_argb, resolved_color_argb, sync_record_hash,
-        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
+        layer_sync_snapshot, normalized_geometry_points,
+        record_to_attribute_map, resolved_background_argb,
+        resolved_color_argb, sync_record_hash, SYNC_HASH_FIELD,
+        SYNC_LAST_MODIFIED_FIELD,
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
@@ -38,11 +38,11 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         bounds_json_from_points,
     )
     from tairu_sync.record_convert import (
-        hex_to_argb, TYPE_COLORS, _COLOR_FALLBACK,
-        configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, normalized_geometry_points, record_to_attribute_map,
-        resolved_background_argb, resolved_color_argb, sync_record_hash,
-        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
+        layer_sync_snapshot, normalized_geometry_points,
+        record_to_attribute_map, resolved_background_argb,
+        resolved_color_argb, sync_record_hash, SYNC_HASH_FIELD,
+        SYNC_LAST_MODIFIED_FIELD,
     )
     from tairu_sync.tasks import run_task
 
@@ -56,6 +56,18 @@ _DEFAULT_GEOMETRY_SIZE = {
 }
 
 _COORD_PRECISION = 9  # ~0.1 mm; avoids float-noise diffs
+
+# Symbol-layer data-defined property keys (the QgsSymbolLayer.Property enum).
+# Defined explicitly so color extraction never references a name that only
+# exists inside QGIS's render context — the source of the historical
+# "name '_PROP_FILL_COLOR_' is not defined" crash on push.
+try:
+    from qgis.core import QgsSymbolLayer
+    _PROP_FILL_COLOR = QgsSymbolLayer.PropertyFillColor
+    _PROP_STROKE_COLOR = QgsSymbolLayer.PropertyStrokeColor
+except Exception:  # pragma: no cover - fallback for QGIS API variations
+    _PROP_FILL_COLOR = 3   # QgsSymbolLayer.PropertyFillColor
+    _PROP_STROKE_COLOR = 4  # QgsSymbolLayer.PropertyStrokeColor
 
 
 @dataclass
@@ -94,34 +106,312 @@ class PushPlan:
 
 # ------------------------------------------------------------- conversion
 
-def _color_to_argb(color):
-    return ((color.alpha() & 0xFF) << 24) | ((color.red() & 0xFF) << 16) \
+def _color_to_argb(color, opacity=1.0):
+    alpha = int(round((color.alpha() & 0xFF) * _opacity_value(opacity)))
+    return ((alpha & 0xFF) << 24) | ((color.red() & 0xFF) << 16) \
         | ((color.green() & 0xFF) << 8) | (color.blue() & 0xFF)
+
+
+def _is_valid_color(color):
+    if color is None:
+        return False
+    try:
+        return bool(color.isValid())
+    except Exception:
+        return True
+
+
+def _first_defined(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _opacity_value(value):
+    try:
+        opacity = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return min(1.0, max(0.0, opacity))
+
+
+def _object_opacity(obj):
+    try:
+        return _opacity_value(obj.opacity())
+    except Exception:
+        return 1.0
+
+
+def _field_argb(feature, name):
+    idx = feature.fields().indexOf(name)
+    if idx < 0:
+        return None
+    value = feature.attribute(idx)
+    if value is None or (hasattr(value, 'isNull') and value.isNull()):
+        return None
+    return hex_to_argb(str(value))
+
+
+def _simple_property_field(prop):
+    candidates = []
+    for accessor in ('field', 'asExpression', 'expressionString'):
+        try:
+            value = getattr(prop, accessor)()
+        except Exception:
+            continue
+        if value:
+            candidates.append(str(value).strip())
+    for value in candidates:
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
+        if value.replace('_', '').isalnum():
+            return value
+    return None
+
+
+def _expression_context(layer, feature):
+    context = QgsExpressionContext()
+    try:
+        context.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+    except Exception:
+        pass
+    try:
+        context.setFields(layer.fields())
+    except Exception:
+        pass
+    try:
+        context.setFeature(feature)
+    except Exception:
+        pass
+    try:
+        context.setGeometry(feature.geometry())
+    except Exception:
+        pass
+    return context
+
+
+def _render_context(layer, feature):
+    context = QgsRenderContext()
+    try:
+        context.setExpressionContext(_expression_context(layer, feature))
+    except Exception:
+        pass
+    return context
+
+
+def _static_layer_argb(symbol_layer, accessors, opacity=1.0):
+    for accessor in accessors:
+        try:
+            color = getattr(symbol_layer, accessor)()
+        except Exception:
+            continue
+        if _is_valid_color(color):
+            return _color_to_argb(color, opacity)
+    return None
+
+
+def _data_defined_layer_argb(
+        symbol_layer, prop_key, expr_context, feature, default_argb, opacity=1.0):
+    try:
+        props = symbol_layer.dataDefinedProperties()
+    except Exception:
+        return None, False
+    try:
+        if not props.isActive(prop_key):
+            return None, False
+    except Exception:
+        return None, False
+
+    default_color = None
+    try:
+        from qgis.PyQt.QtGui import QColor
+        default_color = QColor.fromRgba(int(default_argb) & 0xFFFFFFFF) \
+            if default_argb is not None else QColor()
+    except Exception:
+        pass
+    try:
+        if default_color is None:
+            result = props.valueAsColor(prop_key, expr_context)
+        else:
+            result = props.valueAsColor(prop_key, expr_context, default_color)
+        color, ok = result if isinstance(result, tuple) else (result, True)
+        if ok and _is_valid_color(color):
+            return _color_to_argb(color, opacity), True
+    except Exception:
+        pass
+
+    try:
+        prop = props.property(prop_key)
+        field = _simple_property_field(prop)
+    except Exception:
+        field = None
+    if field:
+        value = _field_argb(feature, field) if feature is not None else None
+        if value is not None:
+            return value, True
+    return None, True
+
+
+def _symbol_layer_argb(symbol_layer, prop_key, expr_context, feature, accessors, opacity=1.0):
+    static_argb = _static_layer_argb(symbol_layer, accessors, opacity)
+    dynamic_argb, had_dynamic = _data_defined_layer_argb(
+        symbol_layer, prop_key, expr_context, feature, static_argb, opacity)
+    if had_dynamic:
+        return dynamic_argb
+    return static_argb
+
+
+def _symbol_style_argbs(symbol, expr_context, feature, spec_key, inherited_opacity=1.0):
+    fg_argb = None
+    bg_argb = None
+    symbol_opacity = _opacity_value(inherited_opacity) * _object_opacity(symbol)
+    try:
+        symbol_layers = symbol.symbolLayers()
+    except Exception:
+        symbol_layers = []
+
+    for symbol_layer in symbol_layers:
+        try:
+            if hasattr(symbol_layer, 'enabled') and not symbol_layer.enabled():
+                continue
+        except Exception:
+            pass
+
+        layer_opacity = symbol_opacity * _object_opacity(symbol_layer)
+        fill_argb = _symbol_layer_argb(
+            symbol_layer, _PROP_FILL_COLOR, expr_context, feature,
+            ('fillColor', 'color'), layer_opacity)
+        stroke_argb = _symbol_layer_argb(
+            symbol_layer, _PROP_STROKE_COLOR, expr_context, feature,
+            ('strokeColor', 'color'), layer_opacity)
+
+        if spec_key == 'polygon':
+            bg_argb = _first_defined(bg_argb, fill_argb)
+            fg_argb = _first_defined(fg_argb, stroke_argb, fill_argb)
+        elif spec_key == 'circle':
+            fg_argb = _first_defined(fg_argb, fill_argb, stroke_argb)
+        elif spec_key == 'line':
+            fg_argb = _first_defined(fg_argb, stroke_argb, fill_argb)
+        else:
+            fg_argb = _first_defined(fg_argb, fill_argb, stroke_argb)
+
+        try:
+            sub_symbol = symbol_layer.subSymbol()
+        except Exception:
+            sub_symbol = None
+        if sub_symbol is not None:
+            sub_fg, sub_bg = _symbol_style_argbs(
+                sub_symbol, expr_context, feature,
+                'polygon' if spec_key == 'circle' else spec_key,
+                layer_opacity)
+            fg_argb = _first_defined(fg_argb, sub_fg)
+            bg_argb = _first_defined(bg_argb, sub_bg)
+
+    if fg_argb is None:
+        try:
+            fg_argb = _color_to_argb(symbol.color(), symbol_opacity)
+        except Exception:
+            pass
+    return fg_argb, bg_argb
+
+
+def _symbols_style_argbs(symbols, expr_context, feature, spec_key, field_fg, field_bg):
+    for symbol in symbols:
+        fg_argb, bg_argb = _symbol_style_argbs(symbol, expr_context, feature, spec_key)
+        fg_argb = _first_defined(fg_argb, field_fg)
+        bg_argb = _first_defined(bg_argb, field_bg)
+        if fg_argb is not None or bg_argb is not None:
+            return fg_argb, bg_argb
+    return None, None
 
 
 def _layer_symbol_argb(layer):
     """Base symbol color of the layer renderer, as ARGB int."""
     try:
-        return _color_to_argb(layer.renderer().symbol().color())
-    except Exception:
-        return 0xFF2196F3
-
-
-def _feature_symbol_argb(layer, feature):
-    """Renderer color for a specific feature, falling back to the base symbol."""
-    try:
-        renderer = layer.renderer()
-        context = QgsRenderContext()
-        renderer.startRender(context, layer.fields())
-        try:
-            symbol = renderer.symbolForFeature(feature, context)
-        finally:
-            renderer.stopRender(context)
-        if symbol is not None:
-            return _color_to_argb(symbol.color())
+        symbol = layer.renderer().symbol()
+        fg_argb, _bg_argb = _symbol_style_argbs(symbol, QgsExpressionContext(), None, None)
+        if fg_argb is not None:
+            return fg_argb
     except Exception:
         pass
-    return _layer_symbol_argb(layer)
+    return None
+
+
+def _feature_symbol_argbs(layer, feature, spec_key):
+    """Renderer colors for a specific feature, falling back to stored fields."""
+    field_fg = _field_argb(feature, 'geometryColor')
+    field_bg = _field_argb(feature, 'geometryBackgroundColor')
+    renderer = None
+    context = _render_context(layer, feature)
+    expr_context = context.expressionContext()
+    try:
+        renderer = layer.renderer()
+        renderer.startRender(context, layer.fields())
+        try:
+            symbols = []
+            try:
+                symbols = renderer.symbolsForFeature(feature, context) or []
+            except Exception:
+                pass
+            if not symbols:
+                symbol = renderer.symbolForFeature(feature, context)
+                symbols = [symbol] if symbol is not None else []
+            if not symbols:
+                symbols = _rule_symbols_for_feature(renderer, feature, context)
+            fg_argb, bg_argb = _symbols_style_argbs(
+                symbols, expr_context, feature, spec_key, field_fg, field_bg)
+            if fg_argb is not None or bg_argb is not None:
+                return fg_argb, bg_argb
+        finally:
+            renderer.stopRender(context)
+    except Exception:
+        pass
+    if renderer is not None:
+        symbols = _rule_symbols_for_feature(renderer, feature, context)
+        fg_argb, bg_argb = _symbols_style_argbs(
+            symbols, expr_context, feature, spec_key, field_fg, field_bg)
+        if fg_argb is not None or bg_argb is not None:
+            return fg_argb, bg_argb
+    return _first_defined(field_fg, _layer_symbol_argb(layer)), field_bg
+
+
+def _rule_symbols_for_feature(renderer, feature, context):
+    """Best-effort fallback for QgsRuleBasedRenderer layers."""
+    try:
+        root_rule = renderer.rootRule()
+    except Exception:
+        return []
+    for only_active in (True, False):
+        try:
+            rules = root_rule.rulesForFeature(feature, context, only_active) or []
+        except Exception:
+            rules = []
+        symbols = []
+        for rule in rules:
+            if not only_active:
+                try:
+                    if not rule.active():
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if not rule.isFilterOK(feature, context):
+                        continue
+                except Exception:
+                    pass
+            try:
+                symbol = rule.symbol()
+            except Exception:
+                symbol = None
+            if symbol is not None:
+                symbols.append(symbol)
+        if symbols:
+            return symbols
+    try:
+        return root_rule.symbolsForFeature(feature, context) or []
+    except Exception:
+        return []
 
 
 def _attr(feature, name):
@@ -148,11 +438,118 @@ def _attr_millis(feature, name):
         return 0
 
 
+_CONTOUR_ELEV_FIELD = 'ELEV'  # matched case-insensitively
+# Master (index) contours occur every 5th line; their style stands out.
+_CONTOUR_MASTER_EVERY = 5
+_CONTOUR_MASTER_SIZE = 3.0
+_CONTOUR_NORMAL_SIZE = 2.0
+_CONTOUR_MASTER_OPACITY = 0.8
+_CONTOUR_NORMAL_OPACITY = 0.5
+_FLOAT_EPS = 1e-6
+
+
+def _elev_field_name(fields):
+    """The actual (case-preserving) name of the ELEV field, or None."""
+    for field in fields:
+        if field.name().strip().upper() == _CONTOUR_ELEV_FIELD:
+            return field.name()
+    return None
+
+
+def _contour_elevation_value(feature):
+    """The feature's ELEV as float, or None when absent/unparseable."""
+    name = _elev_field_name(feature.fields())
+    if name is None:
+        return None
+    value = _attr(feature, name)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _contour_elevation_name(feature):
+    """'Curva {elev}m' when the feature carries an ELEV attribute, else None.
+
+    Integer elevations render without a decimal point ('Curva 140m'); fractional
+    ones keep it ('Curva 12.5m').
+    """
+    elev = _contour_elevation_value(feature)
+    if elev is None:
+        return None
+    elev = int(elev) if elev == int(elev) else elev
+    return f'Curva {elev}m'
+
+
+def _contour_master_modulo(layer):
+    """Elevation modulo identifying master contours: 5 * h.
+
+    h (the vertical interval between adjacent contours) is inferred from the
+    smallest positive gap between the layer's distinct ELEV values — robust even
+    when some contours are missing inside the clip. Returns None when it can't be
+    determined (no ELEV field or fewer than two distinct elevations), in which
+    case every contour is treated as a normal (intermediate) line.
+    """
+    if layer is None:
+        return None
+    name = _elev_field_name(layer.fields())
+    if name is None:
+        return None
+    idx = layer.fields().indexOf(name)
+    if idx < 0:
+        return None
+    try:
+        from qgis.core import QgsFeatureRequest
+        request = QgsFeatureRequest().setSubsetOfAttributes([idx]).setFlags(QgsFeatureRequest.NoGeometry)
+    except Exception:
+        request = None
+
+    elevations = set()
+    features = layer.getFeatures(request) if request is not None else layer.getFeatures()
+    for feat in features:
+        value = feat.attribute(idx)
+        if value is None or (hasattr(value, 'isNull') and value.isNull()):
+            continue
+        try:
+            elevations.add(float(value))
+        except (TypeError, ValueError):
+            continue
+
+    if len(elevations) < 2:
+        return None
+    ordered = sorted(elevations)
+    gaps = [b - a for a, b in zip(ordered, ordered[1:]) if b - a > _FLOAT_EPS]
+    if not gaps:
+        return None
+    return _CONTOUR_MASTER_EVERY * min(gaps)
+
+
+def _is_master_contour(elev, master_modulo):
+    """True when elev sits on a master (index) contour for the given modulo."""
+    if not master_modulo or master_modulo <= 0:
+        return False
+    remainder = elev % master_modulo
+    return remainder < _FLOAT_EPS or abs(remainder - master_modulo) < _FLOAT_EPS
+
+
+def _apply_alpha(argb, opacity):
+    """Return argb with its alpha channel replaced by opacity (0..1); None stays None."""
+    if argb is None:
+        return None
+    alpha = int(round(max(0.0, min(1.0, opacity)) * 255))
+    return ((alpha & 0xFF) << 24) | (int(argb) & 0x00FFFFFF)
+
+
 def _feature_name(feature, mapping, layer_name, index):
     if mapping.get('nome_field'):
         value = _attr(feature, mapping['nome_field'])
         if value:
             return str(value)
+    contour_name = _contour_elevation_name(feature)
+    if contour_name:
+        return contour_name
     for candidate in ('name', 'Name', 'nome', 'Nome'):
         value = _attr(feature, candidate)
         if value:
@@ -219,8 +616,12 @@ def _geometry_points(feature, transform):
     return [], 'none', 'tipo de geometria não suportado'
 
 
-def feature_to_record(feature, layer, mapping, uid, transform, index):
-    """Build the candidate TairuRecord for one feature. Returns (rec, warning)."""
+def feature_to_record(feature, layer, mapping, uid, transform, index, contour_master_modulo=None):
+    """Build the candidate TairuRecord for one feature. Returns (rec, warning).
+
+    contour_master_modulo (5 * vertical interval) styles contour lines: master
+    contours get a wider, more opaque stroke than intermediate ones.
+    """
     points, spec_key, warning = _geometry_points(feature, transform)
     record_id = _attr(feature, 'recordId')
 
@@ -247,35 +648,12 @@ def feature_to_record(feature, layer, mapping, uid, transform, index):
     if situation is None:
         situation = mapping.get('situation') or ''
 
-    # Round-trip layers carry a pre-resolved geometryColor (always non-null since
-    # this session). We strip back the type-default so records that never had an
-    # explicit color in the app round-trip as "unchanged" on push.
-    # Arbitrary layers (no geometryColor field) get the layer symbol color.
-    if feature.fields().indexOf('geometryColor') >= 0:
-        color_attr = _attr(feature, 'geometryColor')          # '#AARRGGBB' or None
-        raw_color = hex_to_argb(color_attr) if color_attr else None
-        if raw_color is not None:
-            tipo_val = str(_attr(feature, 'tipoRegistro') or 'local')
-            type_hex = TYPE_COLORS.get(tipo_val, _COLOR_FALLBACK)
-            # If the stored color is just the type-default, treat as not set
-            color_argb = None if _norm_argb(raw_color) == _norm_argb(hex_to_argb(type_hex)) else raw_color
-        else:
-            color_argb = (mapping.get('color_argb') or _feature_symbol_argb(layer, feature)) \
-                if not record_id else None
-        # Background: strip default (30% alpha of resolved fg) to avoid false diffs
-        bg_attr = _attr(feature, 'geometryBackgroundColor')
-        raw_bg = hex_to_argb(bg_attr) if bg_attr else None
-        if raw_bg is not None:
-            resolved_fg = color_attr or TYPE_COLORS.get(
-                str(_attr(feature, 'tipoRegistro') or 'local'), _COLOR_FALLBACK)
-            default_bg = hex_to_argb('#4D' + resolved_fg[3:9]) if resolved_fg else None
-            bg_argb = None if (default_bg and _norm_argb(raw_bg) == _norm_argb(default_bg)) else raw_bg
-        else:
-            bg_argb = None
-    else:
-        color_argb = mapping.get('color_argb') or _feature_symbol_argb(layer, feature)
-        bg_attr = _attr(feature, 'geometryBackgroundColor')
-        bg_argb = hex_to_argb(bg_attr) if bg_attr else None
+    # The cloud record should mirror the color rendered by QGIS for this feature.
+    # For pulled Tairu layers this may come from data-defined geometryColor fields;
+    # for regular layers it comes from the layer renderer/category/rule symbol.
+    symbol_fg_argb, symbol_bg_argb = _feature_symbol_argbs(layer, feature, spec_key)
+    color_argb = _first_defined(mapping.get('color_argb'), symbol_fg_argb)
+    bg_argb = symbol_bg_argb
 
     descricao = ''
     if mapping.get('descricao_field'):
@@ -298,6 +676,19 @@ def feature_to_record(feature, layer, mapping, uid, transform, index):
     geometry_size = float(geometry_size_attr) if geometry_size_attr is not None else None
     if geometry_size is None and not record_id:
         geometry_size = _default_geometry_size(spec_key)
+
+    # Contour lines carry a fixed, elevation-aware style overriding the renderer:
+    # master (index) contours — ELEV % (5*h) == 0, with h auto-detected — get a
+    # wider, more opaque stroke than the intermediate ones. Applied on every push
+    # so the style is deterministic and stable across round-trips.
+    contour_elev = _contour_elevation_value(feature)
+    if contour_elev is not None and spec_key == 'line':
+        if _is_master_contour(contour_elev, contour_master_modulo):
+            geometry_size = _CONTOUR_MASTER_SIZE
+            color_argb = _apply_alpha(color_argb, _CONTOUR_MASTER_OPACITY)
+        else:
+            geometry_size = _CONTOUR_NORMAL_SIZE
+            color_argb = _apply_alpha(color_argb, _CONTOUR_NORMAL_OPACITY)
 
     rec = TairuRecord(
         record_id=str(record_id) if record_id else '',
@@ -478,9 +869,13 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
     plan = PushPlan(map_id=tmap.map_id)
     seen_ids = set()
     sync_snapshot = layer_sync_snapshot(layer)
+    # One scan of the layer's ELEV values infers the contour interval up front so
+    # every feature can be classified master/normal without re-scanning.
+    contour_master_modulo = _contour_master_modulo(layer)
 
     for index, feature in enumerate(layer.getFeatures(), start=1):
-        candidate, warning = feature_to_record(feature, layer, mapping, uid, transform, index)
+        candidate, warning = feature_to_record(
+            feature, layer, mapping, uid, transform, index, contour_master_modulo)
 
         if candidate.record_id:
             # Existing record from a previous pull.
@@ -542,8 +937,14 @@ def build_writes(fs, plan, uid):
             fields['isDeleted'] = False
             writes.append(fs.build_create_write(path, fields))
         elif item.action == 'update':
-            mask = list(dict.fromkeys(item.changed_fields + ['lastModified']))
+            # Always assert the record is live. A feature present in the source
+            # layer must clear any prior soft-delete (isDeleted=True) on the
+            # remote record; otherwise re-pushing a feature whose record was
+            # deleted in the app just patches a tombstone that pull keeps hiding
+            # (apply_pull skips isDeleted records), so the feature never reappears.
+            mask = list(dict.fromkeys(item.changed_fields + ['lastModified', 'isDeleted']))
             rec.last_modified = now_millis()
+            rec.is_deleted = False
             all_fields = rec.to_fields()
             fields = {k: all_fields[k] for k in mask if k in all_fields}
             # circleRadius may be in the mask but absent (circle -> other type)

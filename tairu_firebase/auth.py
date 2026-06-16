@@ -211,12 +211,26 @@ _SETTINGS_EMAIL_KEY = 'tairu_db/{env}/email'
 _SETTINGS_ENV_KEY = 'tairu_db/environment'
 
 
+def _auth_manager_is_ready():
+    """True only when the auth manager is already unlocked (master password in memory).
+
+    Checking this before encrypted read/write avoids triggering a Keychain
+    lookup on macOS — which logs spurious OSStatus -25293 errors when QGIS
+    lacks a valid code signature.
+    """
+    try:
+        mgr = QgsApplication.authManager()
+        return bool(mgr and not mgr.isDisabled() and mgr.masterPasswordIsSet())
+    except Exception:
+        return False
+
+
 def save_refresh_token(env_key, refresh_token, email=None):
     """Persist the refresh token, preferring the encrypted QGIS auth database."""
     stored_encrypted = False
     try:
-        mgr = QgsApplication.authManager()
-        if mgr and not mgr.isDisabled():
+        if _auth_manager_is_ready():
+            mgr = QgsApplication.authManager()
             stored_encrypted = bool(mgr.storeAuthSetting(_AUTHDB_PATH.format(env=env_key), refresh_token, True))
     except Exception:
         stored_encrypted = False
@@ -236,8 +250,8 @@ def load_refresh_token(env_key):
     """Returns (refresh_token or None, email or None)."""
     token = None
     try:
-        mgr = QgsApplication.authManager()
-        if mgr and not mgr.isDisabled():
+        if _auth_manager_is_ready():
+            mgr = QgsApplication.authManager()
             value = mgr.authSetting(_AUTHDB_PATH.format(env=env_key), '', True)
             token = value or None
     except Exception:
@@ -252,9 +266,8 @@ def load_refresh_token(env_key):
 
 def clear_refresh_token(env_key):
     try:
-        mgr = QgsApplication.authManager()
-        if mgr and not mgr.isDisabled():
-            mgr.removeAuthSetting(_AUTHDB_PATH.format(env=env_key))
+        if _auth_manager_is_ready():
+            QgsApplication.authManager().removeAuthSetting(_AUTHDB_PATH.format(env=env_key))
     except Exception:
         pass
     settings = QgsSettings()

@@ -207,10 +207,6 @@ class TairuDockWidget(QgsDockWidget):
         if remember and self.tokens.refresh_token:
             encrypted = auth_store.save_refresh_token(
                 self.env.key, self.tokens.refresh_token, email=self.tokens.email)
-            if not encrypted:
-                self.iface.messageBar().pushWarning(
-                    'Tairu Maps',
-                    'Banco de autenticação do QGIS indisponível — credenciais salvas sem criptografia.')
         auth_store.save_environment_key(self.env.key)
 
         self.account_label.setText(self.tokens.email or self.tokens.uid)
