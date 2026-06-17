@@ -5,7 +5,7 @@ name=TairuDB
 qgisMinimumVersion=3.20
 qgisMaximumVersion=4.99
 description=Two-way sync with Tairu Maps (Tairu Maps dock) plus .tairudb generation from QGIS projects. / Sincronização bidirecional com o Tairu Maps (painel Tairu Maps) e geração de arquivos .tairudb a partir do QGIS.
-version=2.0.3
+version=2.0.4
 author=Daniel Hulshof Saint Martin
 email=daniel.hulshof@gmail.com
 
@@ -19,6 +19,7 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
+  2.0.4 - Exportação vetorial para .tairudb: a cor, a transparência e a largura de cada feição passam a ser lidas da simbologia por feição (renderizadores graduado/categorizado/por regras), em vez de cair na cor azul padrão. Curvas de nível seguem a mesma lógica da conversão para registro - linhas mestras mais grossas e opacas, intermediárias mais finas e translúcidas.
   2.0.3 - Geração de .tairudb: camadas de registros do Tairu (GeoPackage de sincronização) são automaticamente ignoradas na exportação vetorial, com aviso. Evita geometrias duplicadas ("fantasmas") no mapa, que surgiam quando a camada de registros era incluída no arquivo .tairudb.
   2.0.2 - Curvas de nível: correção da cor na importação (resolve o erro "_PROP_FILL_COLOR_ is not defined" em camadas com simbologia graduada/por regras); título por elevação ("Curva 140m"); estilo automático distinguindo curvas mestras (mais grossas e opacas - largura 3, opacidade 0,8) das normais (mais finas e translúcidas - largura 2, opacidade 0,5), com intervalo vertical detectado automaticamente. Correção: reenviar um registro que havia sido excluído no app agora o restaura, em vez de atualizar silenciosamente um registro oculto.
   2.0.1 - Security hardening: HTTPS enforced on all outbound requests; SQL table names validated against strict regex; static analysis suppressions documented

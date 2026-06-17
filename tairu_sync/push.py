@@ -616,6 +616,40 @@ def _geometry_points(feature, transform):
     return [], 'none', 'tipo de geometria não suportado'
 
 
+def contour_master_modulo(layer):
+    """Public alias of the contour master-interval detector (5 * vertical interval).
+
+    Computed once per layer and passed into feature_export_style/feature_to_record.
+    """
+    return _contour_master_modulo(layer)
+
+
+def feature_export_style(layer, feature, spec_key, master_modulo=None):
+    """(color_argb, size) for one feature, mirroring feature_to_record's styling.
+
+    Used by the .tairudb vector export so an exported feature carries the same
+    rendered color/opacity/width as the record that the same feature would push:
+    the per-feature renderer color (graduated/categorized/rule-based aware, with
+    layer/symbol opacity folded in), and — for contour lines (ELEV present) — the
+    elevation-aware master/intermediate stroke width and opacity.
+
+    color_argb is an ARGB int carrying alpha (use argb_to_hex for '#AARRGGBB'), or
+    None when no renderer color could be resolved. size is the line/point width in
+    px, or None to let the caller apply its geometry-type default.
+    """
+    color_argb, _bg_argb = _feature_symbol_argbs(layer, feature, spec_key)
+    size = None
+    contour_elev = _contour_elevation_value(feature)
+    if contour_elev is not None and spec_key == 'line':
+        if _is_master_contour(contour_elev, master_modulo):
+            size = _CONTOUR_MASTER_SIZE
+            color_argb = _apply_alpha(color_argb, _CONTOUR_MASTER_OPACITY)
+        else:
+            size = _CONTOUR_NORMAL_SIZE
+            color_argb = _apply_alpha(color_argb, _CONTOUR_NORMAL_OPACITY)
+    return color_argb, size
+
+
 def feature_to_record(feature, layer, mapping, uid, transform, index, contour_master_modulo=None):
     """Build the candidate TairuRecord for one feature. Returns (rec, warning).
 

@@ -54,6 +54,32 @@ def qvariant_to_python(value):
     return value
 
 
+def _load_record_style_helpers():
+    """Lazily import the per-feature styling used by the records push so the
+    .tairudb export renders colors/opacity/widths identically (same code path,
+    not a parallel implementation).
+
+    Returns (feature_export_style, contour_master_modulo, argb_to_hex); all None
+    when unavailable (e.g. tairu_sync not importable), in which case the export
+    falls back to the layer's base symbol color and geometry-type default size.
+    Imported lazily to keep tairu_core import-time independent of tairu_sync.
+    """
+    try:
+        from ..tairu_sync.push import feature_export_style, contour_master_modulo
+        from ..tairu_sync.record_convert import argb_to_hex
+        return feature_export_style, contour_master_modulo, argb_to_hex
+    except ImportError:
+        pass
+    except Exception:
+        return None, None, None
+    try:
+        from tairu_sync.push import feature_export_style, contour_master_modulo
+        from tairu_sync.record_convert import argb_to_hex
+        return feature_export_style, contour_master_modulo, argb_to_hex
+    except Exception:
+        return None, None, None
+
+
 def export_vector_layers(writer, layers, transform_context, feedback,
                          progress_start=90, progress_span=10):
     """Write the given QGIS vector layers into a TairuDBWriter's vector tables.
@@ -68,6 +94,8 @@ def export_vector_layers(writer, layers, transform_context, feedback,
 
     if transform_context is None:
         transform_context = QgsProject.instance().transformContext()
+
+    style_fn, modulo_fn, argb_to_hex = _load_record_style_helpers()
 
     for layer_idx, layer in enumerate(layers):
         if feedback.is_canceled():
@@ -107,12 +135,17 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         layer_name = layer.name()
         layer_desc = layer.abstract() if hasattr(layer, "abstract") else ""
 
-        # Read color from symbology
+        # Per-feature styling mirrors the records push: the renderer color for
+        # each feature (graduated/categorized/rule-based aware, with opacity), and
+        # contour-aware width/opacity for ELEV lines. Resolved inside the feature
+        # loop below; `default_color` is the fallback when it can't be resolved.
         try:
-            symbol = layer.renderer().symbol()
-            color = symbol.color().name()  # "#RRGGBB"
+            default_color = layer.renderer().symbol().color().name()  # "#RRGGBB"
         except Exception:
-            color = "#0000FF"  # fallback
+            default_color = "#0000FF"
+
+        spec_key = {0: 'point', 1: 'line', 2: 'polygon'}.get(vector_type)
+        master_modulo = modulo_fn(layer) if modulo_fn is not None else None
 
         # Prepare transformation to WGS84
         layer_crs = layer.crs()
@@ -193,13 +226,28 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                         ring = poly[0]
                         points_groups.append(", ".join(f"{pt.x()} {pt.y()}" for pt in ring))
             points_str = "; ".join(points_groups)
+
+            # Resolve this feature's rendered color/width the same way the records
+            # push does. Falls back to the layer's base color / default size.
+            feat_color = default_color
+            feat_size = size
+            if style_fn is not None:
+                try:
+                    style_argb, style_size = style_fn(layer, feat, spec_key, master_modulo)
+                    if style_argb is not None and argb_to_hex is not None:
+                        feat_color = argb_to_hex(style_argb)  # "#AARRGGBB" (alpha = opacity)
+                    if style_size is not None:
+                        feat_size = style_size
+                except Exception:
+                    pass
+
             # Insert each feature as a row
             writer.insertFeature(
                 type_str,
                 feat_name,
                 feat_attr,
-                color,
-                size,
+                feat_color,
+                feat_size,
                 iconType,
                 points_str,
                 layer_uuid
