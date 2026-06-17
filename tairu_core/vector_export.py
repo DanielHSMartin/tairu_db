@@ -127,9 +127,6 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             type_str = "Unknown"
             size = 10  # Default size for unknown geometry types
         type_str = tairudb_type_for_fields(type_str, layer.fields().names())
-        if type_str == "contourLine":
-            iconType = "line"
-            size = 3
 
         # Try to get layer name/desc from the first feature's attributes
         layer_name = layer.name()

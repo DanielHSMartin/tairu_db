@@ -13,6 +13,7 @@ try:
     from ..compat import _VECTOR_LAYER_FILTER, _exec_dialog
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from ..tairu_sync.push import build_push_plan, execute_push
+    from ..tairu_core.vector_types import has_elevation_attribute
     from .style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_info_banner, set_muted, set_plain_button, set_primary_button,
@@ -21,6 +22,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _VECTOR_LAYER_FILTER, _exec_dialog
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from tairu_sync.push import build_push_plan, execute_push
+    from tairu_core.vector_types import has_elevation_attribute
     from tairu_ui.style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_info_banner, set_muted, set_plain_button, set_primary_button,
@@ -183,11 +185,16 @@ class PushDialog(QDialog):
 
     def _mapping(self):
         tipo = 'local'
+        sub_tipo = None
+        layer = self.layer_combo.currentLayer()
+        if layer is not None and has_elevation_attribute(layer.fields().names()):
+            tipo = 'desenho'
+            sub_tipo = 'desenhoLinha'
         return {
             'nome_field': None,
             'descricao_field': None,
             'tipo': tipo,
-            'sub_tipo': _default_subtype(tipo),
+            'sub_tipo': sub_tipo if sub_tipo is not None else _default_subtype(tipo),
             'situation': _default_situation(tipo),
         }
 

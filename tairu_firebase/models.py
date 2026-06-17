@@ -28,30 +28,92 @@ RECORD_TYPES = {
     'equipamento': 'Equipamento',
     'veiculo': 'Veículo',
     'acao': 'Ação',
+    'ocorrencia': 'Ocorrência',
+    'trilha': 'Trilha',
+    'pontoDeInteresse': 'Ponto de Interesse',
+    'desenho': 'Desenho',
 }
 
 RECORD_SUBTYPES = {
+    # Pessoa
     'usuario': 'Usuário', 'pessoa': 'Pessoa', 'outraPessoa': 'Outro',
+    # Local
     'residencia': 'Residência', 'empresa': 'Empresa', 'comercio': 'Comércio',
     'industria': 'Indústria', 'rural': 'Rural', 'ponte': 'Ponte',
     'trajeto': 'Trajeto', 'rota': 'Rota', 'outroLocal': 'Outro',
+    # Local — natureza
+    'cachoeira': 'Cachoeira', 'mirante': 'Mirante', 'gruta': 'Gruta / Caverna',
+    'fonteDeAgua': "Fonte d'Água", 'porteira': 'Porteira / Acesso',
+    'bifurcacao': 'Bifurcação de Trilha', 'travessiaDeRio': 'Travessia de Rio',
+    'areaDeAcampamento': 'Área de Acampamento', 'abrigo': 'Abrigo / Rancho',
+    'pico': 'Pico / Cume',
+    # Local — operacional
+    'baseOperacional': 'Base Operacional', 'pontoDeControle': 'Ponto de Controle',
+    'areaEmbargada': 'Área Embargada', 'areaDePreservacao': 'Área de Preservação',
+    # Equipamento
     'draga': 'Draga', 'motor': 'Motor', 'escavadeira': 'Escavadeira',
     'trator': 'Trator', 'britador': 'Britador', 'gerador': 'Gerador',
     'motobomba': 'Motobomba', 'motosserra': 'Motosserra', 'outroEquipamento': 'Outro',
+    # Equipamento adicionais
+    'drone': 'Drone / VANT', 'armadilhaFotografica': 'Armadilha Fotográfica',
+    'barraca': 'Barraca de Camping', 'kitPrimeirosSocorros': 'Kit de Primeiros Socorros',
+    'compressor': 'Compressor',
+    # Veículo
     'motocicleta': 'Motocicleta', 'carro': 'Carro', 'caminhonete': 'Caminhonete',
     'barco': 'Barco', 'quadriciclo': 'Quadriciclo', 'outroVeiculo': 'Outro',
+    # Veículo adicionais
+    'bicicleta': 'Bicicleta / MTB', 'caiaqueCanoa': 'Caiaque / Canoa',
+    'aeronave': 'Aeronave / Avião', 'caminhao': 'Caminhão',
+    # Ação
     'busca': 'Busca', 'rastreamento': 'Rastreamento', 'encontro': 'Encontro',
     'pernoite': 'Pernoite', 'descanso': 'Descanso', 'outraAcao': 'Outra',
+    # Ação — operacional
+    'vistoria': 'Vistoria', 'patrulhamento': 'Patrulhamento', 'embargo': 'Embargo',
+    'coletaDeEvidencias': 'Coleta de Evidências',
+    # Ação — recreativo
+    'trilhagem': 'Trilhagem', 'campismo': 'Campismo', 'escalada': 'Escalada / Rapel',
+    'canoagem': 'Canoagem / Caiaque',
+    # Ocorrência
+    'desmatamento': 'Desmatamento', 'incendioFlorestal': 'Incêndio Florestal',
+    'garimpIlegal': 'Garimpo Ilegal', 'pescaIlegal': 'Pesca Ilegal',
+    'cacaIlegal': 'Caça Ilegal', 'extracaoIlegal': 'Extração Ilegal',
+    'descarte': 'Descarte Irregular', 'construcaoIrregular': 'Construção Irregular',
+    'outraOcorrencia': 'Outra Ocorrência',
+    # Trilha
+    'trilhaPedestre': 'Trilha Pedestre', 'trilhaMTB': 'Trilha MTB',
+    'trilhaCavalo': 'Trilha Equestre', 'rotaDeRio': 'Rota de Rio / Canoagem',
+    'trilhaMista': 'Trilha Mista',
+    # Ponto de Interesse
+    'paisagem': 'Paisagem', 'floraPoI': 'Flora', 'faunaPoI': 'Fauna',
+    'perigoPoI': 'Ponto de Perigo', 'artefato': 'Artefato / Sítio',
+    'referenciaPoI': 'Referência', 'outroPoI': 'Outro',
+    # Desenho
+    'desenhoPonto': 'Ponto', 'desenhoLinha': 'Linha',
+    'desenhoPoligono': 'Polígono', 'desenhoCirculo': 'Círculo',
 }
 
 SUBTYPES_BY_TYPE = {
     'pessoa': ['usuario', 'pessoa', 'outraPessoa'],
     'local': ['residencia', 'empresa', 'comercio', 'industria', 'rural',
-              'ponte', 'trajeto', 'rota', 'outroLocal'],
+              'ponte', 'trajeto', 'rota', 'outroLocal',
+              'cachoeira', 'mirante', 'gruta', 'fonteDeAgua', 'porteira',
+              'bifurcacao', 'travessiaDeRio', 'areaDeAcampamento', 'abrigo', 'pico',
+              'baseOperacional', 'pontoDeControle', 'areaEmbargada', 'areaDePreservacao'],
     'equipamento': ['draga', 'motor', 'escavadeira', 'trator', 'britador',
-                    'gerador', 'motobomba', 'motosserra', 'outroEquipamento'],
-    'veiculo': ['motocicleta', 'carro', 'caminhonete', 'barco', 'quadriciclo', 'outroVeiculo'],
-    'acao': ['busca', 'rastreamento', 'encontro', 'pernoite', 'descanso', 'outraAcao'],
+                    'gerador', 'motobomba', 'motosserra', 'outroEquipamento',
+                    'drone', 'armadilhaFotografica', 'barraca', 'kitPrimeirosSocorros', 'compressor'],
+    'veiculo': ['motocicleta', 'carro', 'caminhonete', 'barco', 'quadriciclo', 'outroVeiculo',
+                'bicicleta', 'caiaqueCanoa', 'aeronave', 'caminhao'],
+    'acao': ['busca', 'rastreamento', 'encontro', 'pernoite', 'descanso', 'outraAcao',
+             'vistoria', 'patrulhamento', 'embargo', 'coletaDeEvidencias',
+             'trilhagem', 'campismo', 'escalada', 'canoagem'],
+    'ocorrencia': ['desmatamento', 'incendioFlorestal', 'garimpIlegal', 'pescaIlegal',
+                   'cacaIlegal', 'extracaoIlegal', 'descarte', 'construcaoIrregular',
+                   'outraOcorrencia'],
+    'trilha': ['trilhaPedestre', 'trilhaMTB', 'trilhaCavalo', 'rotaDeRio', 'trilhaMista'],
+    'pontoDeInteresse': ['paisagem', 'floraPoI', 'faunaPoI', 'perigoPoI', 'artefato',
+                         'referenciaPoI', 'outroPoI'],
+    'desenho': ['desenhoPonto', 'desenhoLinha', 'desenhoPoligono', 'desenhoCirculo'],
 }
 
 SITUATIONS_BY_TYPE = {
@@ -60,6 +122,10 @@ SITUATIONS_BY_TYPE = {
     'equipamento': ['Localizado', 'Arrecadado', 'Apreendido', 'Inutilizado', 'Não Localizado'],
     'veiculo': ['Localizado', 'Arrecadado', 'Apreendido', 'Inutilizado', 'Não Localizado'],
     'acao': ['Concluída', 'Em Andamento', 'Pendente', 'Cancelada'],
+    'ocorrencia': ['Registrada', 'Em Apuração', 'Auto Lavrado', 'Encerrada', 'Arquivada'],
+    'trilha': ['Transitável', 'Com Restrições', 'Intransitável', 'Desconhecida'],
+    'pontoDeInteresse': ['A Visitar', 'Visitado', 'Recomendado', 'Evitar'],
+    'desenho': ['Ativo', 'Inativo'],
 }
 
 GEOMETRY_TYPES = ('none', 'point', 'line', 'polygon', 'circle')

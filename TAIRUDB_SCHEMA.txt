@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS vector_layers (
 Fields:
   - id          : Auto-incrementing primary key
   - uuid        : Unique identifier (UUID v4 format)
-  - type        : Layer geometry type ("point", "line", "polygon", "contourLine")
+  - type        : Layer geometry type ("point", "line", "polygon")
   - name        : Layer display name
   - description : Layer description (optional)
 
@@ -70,7 +70,7 @@ Fields:
   - id         : Auto-incrementing primary key
   - uuid       : Unique identifier (UUID v4 format)
   - layer_id   : References vector_layers.uuid (parent layer)
-  - type       : Feature geometry type ("point", "line", "polygon", "contourLine")
+  - type       : Feature geometry type ("point", "line", "polygon")
   - name       : Feature display name
   - attributes : JSON string of additional attributes
   - color      : Hex color code (e.g., "#FF0000" for red)

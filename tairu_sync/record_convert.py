@@ -730,6 +730,10 @@ TYPE_COLORS = {
     'equipamento': '#FFFF9800',   # Colors.orange
     'veiculo': '#FFF44336',       # Colors.red
     'acao': '#FF9C27B0',          # Colors.purple
+    'ocorrencia': '#FFFF5722',    # Colors.deepOrange
+    'trilha': '#FF009688',        # Colors.teal
+    'pontoDeInteresse': '#FFFFC107',  # Colors.amber
+    'desenho': '#FF607D8B',       # Colors.blueGrey
 }
 _COLOR_FALLBACK = '#FF9E9E9E'     # Colors.grey
 

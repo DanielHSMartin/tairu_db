@@ -11,8 +11,8 @@ class TestVectorTypes(unittest.TestCase):
     def test_detects_elevation_attribute_case_insensitively(self):
         self.assertTrue(has_elevation_attribute(["Name", "elev", "Color"]))
 
-    def test_uses_contour_line_type_when_elev_field_exists(self):
-        self.assertEqual(tairudb_type_for_fields("line", ["Name", "ELEV"]), "contourLine")
+    def test_uses_line_type_for_contour_layers(self):
+        self.assertEqual(tairudb_type_for_fields("line", ["Name", "ELEV"]), "line")
 
     def test_preserves_default_type_without_elev_field(self):
         self.assertEqual(tairudb_type_for_fields("polygon", ["Name", "Area"]), "polygon")
