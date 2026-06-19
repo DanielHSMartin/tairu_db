@@ -7,7 +7,7 @@ qgisMinimumVersion=3.20
 qgisMaximumVersion=4.99
 description=Connect QGIS to Tairu Maps for two-way cloud sync, editable field records, and offline .tairudb map generation.
 description[pt_br]=Conecte o QGIS ao Tairu Maps para sincronização em nuvem nos dois sentidos, registros editáveis e geração de mapas offline .tairudb.
-version=2.0.6
+version=2.0.7
 author=Daniel Hulshof Saint Martin
 email=daniel.hulshof@gmail.com
 
@@ -20,7 +20,8 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
-  2.0.6 - Raster wizard: added "Use visible map area" option to select the current map canvas extent as the generation area. Fix: canceling .tairudb generation no longer crashes with "wrapped C/C++ object has been deleted" (finished signal is now disconnected before jobs are canceled). QGIS copy/paste on pulled record layers now treats duplicated recordId features as new records, so edited copies are created separately instead of overwriting the original record during push.
+  2.0.7 - Raster wizard: added "Use visible map area" option to select the current map canvas extent as the generation area. Fix: canceling .tairudb generation no longer crashes with "wrapped C/C++ object has been deleted" (finished signal is now disconnected before jobs are canceled).
+  2.0.6 - QGIS copy/paste on pulled record layers now treats duplicated recordId features as new records, so edited copies are created separately instead of overwriting the original record during push.
   2.0.5 - New record types and subtypes (occurrence, trail, point of interest, drawing, and related subtypes). Contour lines are now classified as drawing/line: when pushing layers, the default type/subtype becomes Drawing/Line for layers with an ELEV field; in .tairudb export, the contourLine type is no longer written and these layers are saved as regular lines.
   2.0.4 - Vector export to .tairudb: color, transparency, and width are read from per-feature symbology (graduated, categorized, and rule-based renderers) instead of falling back to the default blue. Contour lines follow the same logic as record conversion: index contours are thicker and more opaque, intermediate contours are thinner and translucent.
   2.0.3 - .tairudb generation: Tairu record layers (sync GeoPackages) are automatically skipped during vector export, with a warning. This avoids duplicated "ghost" geometries on the map when a record layer is included in a .tairudb file.
