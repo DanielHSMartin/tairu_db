@@ -32,6 +32,7 @@ RECORD_TYPES = {
     'trilha': 'Trilha',
     'pontoDeInteresse': 'Ponto de Interesse',
     'desenho': 'Desenho',
+    'curvaNivel': 'Curva de Nível',
 }
 
 RECORD_SUBTYPES = {
@@ -90,6 +91,8 @@ RECORD_SUBTYPES = {
     # Desenho
     'desenhoPonto': 'Ponto', 'desenhoLinha': 'Linha',
     'desenhoPoligono': 'Polígono', 'desenhoCirculo': 'Círculo',
+    # Curva de Nível
+    'curvaMestra': 'Curva Mestra', 'curvaNormal': 'Curva Normal',
 }
 
 SUBTYPES_BY_TYPE = {
@@ -114,6 +117,7 @@ SUBTYPES_BY_TYPE = {
     'pontoDeInteresse': ['paisagem', 'floraPoI', 'faunaPoI', 'perigoPoI', 'artefato',
                          'referenciaPoI', 'outroPoI'],
     'desenho': ['desenhoPonto', 'desenhoLinha', 'desenhoPoligono', 'desenhoCirculo'],
+    'curvaNivel': ['curvaMestra', 'curvaNormal'],
 }
 
 SITUATIONS_BY_TYPE = {
@@ -126,6 +130,7 @@ SITUATIONS_BY_TYPE = {
     'trilha': ['Transitável', 'Com Restrições', 'Intransitável', 'Desconhecida'],
     'pontoDeInteresse': ['A Visitar', 'Visitado', 'Recomendado', 'Evitar'],
     'desenho': ['Ativo', 'Inativo'],
+    'curvaNivel': ['Ativa', 'Inativa'],
 }
 
 GEOMETRY_TYPES = ('none', 'point', 'line', 'polygon', 'circle')
@@ -269,7 +274,7 @@ class TairuMap:
         return self.role_for(uid) in ('owner', 'admin')
 
     def role_label(self, uid):
-        return {'owner': 'Proprietário', 'admin': 'Admin', 'user': 'Membro'}.get(self.role_for(uid), '—')
+        return {'owner': 'Proprietário', 'admin': 'Admin', 'user': 'Integrante'}.get(self.role_for(uid), '—')
 
 
 def _decode_role_map(value):

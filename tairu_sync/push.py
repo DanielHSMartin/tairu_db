@@ -715,12 +715,17 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     # master (index) contours — ELEV % (5*h) == 0, with h auto-detected — get a
     # wider, more opaque stroke than the intermediate ones. Applied on every push
     # so the style is deterministic and stable across round-trips.
+    # tipo/sub_tipo are also forced here so that round-trips from old 'desenho'
+    # pushes are silently migrated to the dedicated 'curvaNivel' type.
     contour_elev = _contour_elevation_value(feature)
     if contour_elev is not None and spec_key == 'line':
+        tipo = 'curvaNivel'
         if _is_master_contour(contour_elev, contour_master_modulo):
+            sub_tipo = 'curvaMestra'
             geometry_size = _CONTOUR_MASTER_SIZE
             color_argb = _apply_alpha(color_argb, _CONTOUR_MASTER_OPACITY)
         else:
+            sub_tipo = 'curvaNormal'
             geometry_size = _CONTOUR_NORMAL_SIZE
             color_argb = _apply_alpha(color_argb, _CONTOUR_NORMAL_OPACITY)
 

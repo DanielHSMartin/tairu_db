@@ -188,8 +188,8 @@ class PushDialog(QDialog):
         sub_tipo = None
         layer = self.layer_combo.currentLayer()
         if layer is not None and has_elevation_attribute(layer.fields().names()):
-            tipo = 'desenho'
-            sub_tipo = 'desenhoLinha'
+            tipo = 'curvaNivel'
+            sub_tipo = 'curvaNormal'
         return {
             'nome_field': None,
             'descricao_field': None,
