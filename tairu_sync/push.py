@@ -104,6 +104,13 @@ class PushPlan:
         return [i for i in self.items if i.action in ('new', 'update', 'delete')]
 
 
+@dataclass
+class _FeatureCandidate:
+    feature: object
+    record: TairuRecord
+    warning: str = ''
+
+
 # ------------------------------------------------------------- conversion
 
 def _color_to_argb(color, opacity=1.0):
@@ -852,6 +859,41 @@ def _baseline_last_modified(feature):
     return _attr_millis(feature, SYNC_LAST_MODIFIED_FIELD) or _attr_millis(feature, 'lastModified')
 
 
+def _append_warning(existing, warning):
+    if not warning:
+        return existing or ''
+    return f'{existing}; {warning}' if existing else warning
+
+
+def _duplicate_record_id_clones(entries_by_record_id):
+    """Return {feature_id: original_record_id} for copied local features.
+
+    QGIS copy/paste preserves hidden attributes such as recordId and
+    tairuSyncHash. If two features keep the same recordId, two Firestore writes
+    would target the same document and the last write would overwrite the other
+    feature. Keep one occurrence as the original record and make the rest new.
+    """
+    clones = {}
+    for record_id, entries in entries_by_record_id.items():
+        if len(entries) <= 1:
+            continue
+
+        canonical = None
+        for entry in entries:
+            base_hash = _baseline_hash(entry.feature)
+            if base_hash and sync_record_hash(entry.record) == base_hash:
+                canonical = entry
+                break
+        if canonical is None:
+            canonical = entries[0]
+
+        for entry in entries:
+            if entry is canonical:
+                continue
+            clones[entry.feature.id()] = record_id
+    return clones
+
+
 def _millis_from_snapshot(value):
     if value is None:
         return 0
@@ -912,9 +954,40 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
     # every feature can be classified master/normal without re-scanning.
     contour_master_modulo = _contour_master_modulo(layer)
 
+    feature_entries = []
+    entries_by_record_id = {}
     for index, feature in enumerate(layer.getFeatures(), start=1):
         candidate, warning = feature_to_record(
             feature, layer, mapping, uid, transform, index, contour_master_modulo)
+        entry = _FeatureCandidate(feature, candidate, warning)
+        feature_entries.append(entry)
+        if candidate.record_id:
+            entries_by_record_id.setdefault(candidate.record_id, []).append(entry)
+
+    duplicate_clones = _duplicate_record_id_clones(entries_by_record_id)
+
+    for entry in feature_entries:
+        feature = entry.feature
+        candidate = entry.record
+        warning = entry.warning
+
+        duplicate_source_id = duplicate_clones.get(feature.id())
+        if duplicate_source_id:
+            now = now_millis()
+            candidate.record_id = TairuRecord.new_id()
+            candidate.created_by = uid
+            candidate.created_at = now
+            candidate.last_modified = now
+            candidate.is_deleted = False
+            if not candidate.event_date_time:
+                candidate.event_date_time = now
+            if candidate.geometry_size is None:
+                candidate.geometry_size = _default_geometry_size(candidate.geometry_type)
+            warning = _append_warning(
+                warning,
+                f'cópia local de {duplicate_source_id}: enviada como novo registro')
+            plan.items.append(PushItem('new', candidate, feature.id(), [], warning))
+            continue
 
         if candidate.record_id:
             # Existing record from a previous pull.

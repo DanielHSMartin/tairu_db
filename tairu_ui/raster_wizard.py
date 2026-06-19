@@ -238,16 +238,22 @@ class ExtentPage(QWizardPage):
 
         self.drawn_label = set_muted(QLabel(''))
         layout.addWidget(self.drawn_label)
+
+        self.canvas_radio = QRadioButton('Usar área visível do mapa')
+        layout.addWidget(self.canvas_radio)
+
         layout.addStretch(1)
 
         self.layer_radio.toggled.connect(self._sync_controls)
         self.draw_radio.toggled.connect(self._sync_controls)
+        self.canvas_radio.toggled.connect(self._sync_controls)
         self.layer_combo.layerChanged.connect(lambda _: self.completeChanged.emit())
 
     def _sync_controls(self):
+        use_layer = self.layer_radio.isChecked()
         use_draw = self.draw_radio.isChecked()
+        self.layer_combo.setEnabled(use_layer)
         self.draw_btn.setEnabled(use_draw)
-        self.layer_combo.setEnabled(not use_draw)
         self.completeChanged.emit()
 
     def _start_picker(self):
@@ -274,6 +280,8 @@ class ExtentPage(QWizardPage):
     def isComplete(self):
         if self.draw_radio.isChecked():
             return self.drawn_rect is not None and not self.drawn_rect.isEmpty()
+        if self.canvas_radio.isChecked():
+            return True
         return self.layer_combo.currentLayer() is not None
 
     def polygons_wgs84(self):
@@ -284,6 +292,12 @@ class ExtentPage(QWizardPage):
         if self.draw_radio.isChecked():
             transform = QgsCoordinateTransform(QgsProject.instance().crs(), wgs84, ctx)
             geom = QgsGeometry.fromRect(self.drawn_rect)
+            geom.transform(transform)
+            polygons.append(geom)
+        elif self.canvas_radio.isChecked():
+            canvas = self._wizard.dock.iface.mapCanvas()
+            transform = QgsCoordinateTransform(canvas.mapSettings().destinationCrs(), wgs84, ctx)
+            geom = QgsGeometry.fromRect(canvas.extent())
             geom.transform(transform)
             polygons.append(geom)
         else:

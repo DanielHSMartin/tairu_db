@@ -399,7 +399,9 @@ class TileRenderEngine:
             self.debug_log(f"cleanup_resources: Cancelando {jobs_count} jobs")
             for job in list(self.renderer_jobs.keys()):
                 try:
-                    # CRITICAL: Cancel jobs without blocking
+                    # Disconnect finished signal BEFORE cancel/delete so that
+                    # process_metatile is never called on an already-deleted job.
+                    job.finished.disconnect()
                     job.cancelWithoutBlocking()
                     job.deleteLater()
                 except Exception:
@@ -575,7 +577,11 @@ class TileRenderEngine:
         try:
             meta_tile = self.renderer_jobs.get(job)
             if not meta_tile:
-                job.deleteLater()
+                # Job was already cleaned up by cleanup_resources (cancel path).
+                try:
+                    job.deleteLater()
+                except RuntimeError:
+                    pass
                 return
 
             metatile_image = job.renderedImage()
@@ -626,10 +632,14 @@ class TileRenderEngine:
                 })
                 self.failed_tiles += 1
         finally:
-            # Cleanup job
+            # Cleanup job. Guard against the case where cleanup_resources()
+            # already disconnected and deleted this job (cancel during render).
             if job in self.renderer_jobs:
                 del self.renderer_jobs[job]
-            job.deleteLater()
+            try:
+                job.deleteLater()
+            except RuntimeError:
+                pass  # C++ object already deleted by cleanup_resources
 
             self.check_completion()
 

@@ -2,16 +2,17 @@
 
 [general]
 name=TairuDB
+name[pt_br]=TairuDB
 qgisMinimumVersion=3.20
 qgisMaximumVersion=4.99
-description=Two-way sync with Tairu Maps (Tairu Maps dock) plus .tairudb generation from QGIS projects. / Sincronização bidirecional com o Tairu Maps (painel Tairu Maps) e geração de arquivos .tairudb a partir do QGIS.
-version=2.0.5
+description=Connect QGIS to Tairu Maps for two-way cloud sync, editable field records, and offline .tairudb map generation.
+description[pt_br]=Conecte o QGIS ao Tairu Maps para sincronização em nuvem nos dois sentidos, registros editáveis e geração de mapas offline .tairudb.
+version=2.0.6
 author=Daniel Hulshof Saint Martin
 email=daniel.hulshof@gmail.com
 
-about=TairuDB connects QGIS to the Tairu Maps app (iOS/Android). The Tairu Maps dock signs into your Tairu Maps account (e-mail, Google or Apple), lists your maps and exchanges data both ways: pull records as editable GeoPackage layers and tairudb files as raster layers; push vector layers as records (with diff preview) and generate+upload .tairudb rasters of a chosen area. The classic Processing algorithm (Tairu > TairuDB) and the GeoPDF converter remain available. Requires an Online or Real-time Tairu Maps plan for cloud features.
-  ---
-  Conecta o QGIS ao aplicativo Tairu Maps (iOS/Android). O painel Tairu Maps entra na sua conta Tairu Maps (e-mail, Google ou Apple), lista seus mapas e troca dados nos dois sentidos: baixa registros como camadas GeoPackage editáveis e arquivos tairudb como camadas raster; envia camadas vetoriais como registros (com prévia das alterações) e gera+envia rasters .tairudb da área escolhida. O algoritmo de Processamento (Tairu > TairuDB) e o conversor GeoPDF continuam disponíveis. Recursos de nuvem exigem plano Online ou Tempo Real do Tairu Maps.
+about=TairuDB adds a Tairu Maps dock to QGIS for field-mapping workflows. Sign in with your Tairu Maps account using e-mail, Google, or Apple, browse your maps, and exchange data in both directions: pull app records into editable GeoPackage layers, download TairuDB files as raster layers, push vector layers back as records with a diff preview, and generate and upload offline .tairudb rasters for a selected area. The classic Processing algorithm (Tairu > TairuDB) and the GeoPDF converter remain available for local exports. Cloud sync requires an Online or Real-time Tairu Maps plan.
+about[pt_br]=O TairuDB adiciona um painel Tairu Maps ao QGIS para fluxos de mapeamento em campo. Entre com sua conta do Tairu Maps usando e-mail, Google ou Apple, veja seus mapas e troque dados nos dois sentidos: baixe registros do app como camadas GeoPackage editáveis, baixe arquivos TairuDB como camadas raster, envie camadas vetoriais de volta como registros com prévia das alterações e gere e envie rasters offline .tairudb para uma área selecionada. O algoritmo de Processamento clássico (Tairu > TairuDB) e o conversor GeoPDF continuam disponíveis para exportações locais. A sincronização em nuvem exige plano Online ou Tempo Real do Tairu Maps.
 
 tracker=https://github.com/DanielHSMartin/tairu_db/issues
 repository=https://github.com/DanielHSMartin/tairu_db
@@ -19,18 +20,20 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
-  2.0.5 - Novos tipos e subtipos de registro (ocorrencia, trilha, pontoDeInteresse, desenho e respectivos subtipos). Curvas de nível reclassificadas como desenho/linha: no envio de camadas o tipo e subtipo padrão passam a ser Desenho/Linha quando a camada possui campo ELEV; na exportacao .tairudb o tipo contourLine deixa de existir e essas camadas sao salvas como linhas comuns.
-  2.0.4 - Exportação vetorial para .tairudb: a cor, a transparência e a largura de cada feição passam a ser lidas da simbologia por feição (renderizadores graduado/categorizado/por regras), em vez de cair na cor azul padrão. Curvas de nível seguem a mesma lógica da conversão para registro - linhas mestras mais grossas e opacas, intermediárias mais finas e translúcidas.
-  2.0.3 - Geração de .tairudb: camadas de registros do Tairu (GeoPackage de sincronização) são automaticamente ignoradas na exportação vetorial, com aviso. Evita geometrias duplicadas ("fantasmas") no mapa, que surgiam quando a camada de registros era incluída no arquivo .tairudb.
-  2.0.2 - Curvas de nível: correção da cor na importação (resolve o erro "_PROP_FILL_COLOR_ is not defined" em camadas com simbologia graduada/por regras); título por elevação ("Curva 140m"); estilo automático distinguindo curvas mestras (mais grossas e opacas - largura 3, opacidade 0,8) das normais (mais finas e translúcidas - largura 2, opacidade 0,5), com intervalo vertical detectado automaticamente. Correção: reenviar um registro que havia sido excluído no app agora o restaura, em vez de atualizar silenciosamente um registro oculto.
+  2.0.6 - Raster wizard: added "Use visible map area" option to select the current map canvas extent as the generation area. Fix: canceling .tairudb generation no longer crashes with "wrapped C/C++ object has been deleted" (finished signal is now disconnected before jobs are canceled). QGIS copy/paste on pulled record layers now treats duplicated recordId features as new records, so edited copies are created separately instead of overwriting the original record during push.
+  2.0.5 - New record types and subtypes (occurrence, trail, point of interest, drawing, and related subtypes). Contour lines are now classified as drawing/line: when pushing layers, the default type/subtype becomes Drawing/Line for layers with an ELEV field; in .tairudb export, the contourLine type is no longer written and these layers are saved as regular lines.
+  2.0.4 - Vector export to .tairudb: color, transparency, and width are read from per-feature symbology (graduated, categorized, and rule-based renderers) instead of falling back to the default blue. Contour lines follow the same logic as record conversion: index contours are thicker and more opaque, intermediate contours are thinner and translucent.
+  2.0.3 - .tairudb generation: Tairu record layers (sync GeoPackages) are automatically skipped during vector export, with a warning. This avoids duplicated "ghost" geometries on the map when a record layer is included in a .tairudb file.
+  2.0.2 - Contour lines: fixed import color handling (resolves the "_PROP_FILL_COLOR_ is not defined" error on layers with graduated/rule-based symbology); elevation-based titles ("Curve 140m"); automatic styling distinguishes index contours (thicker and more opaque - width 3, opacity 0.8) from regular contours (thinner and translucent - width 2, opacity 0.5), with automatic vertical-interval detection. Fix: pushing a record that had been deleted in the app now restores it instead of silently updating a hidden record.
   2.0.1 - Security hardening: HTTPS enforced on all outbound requests; SQL table names validated against strict regex; static analysis suppressions documented
-  2.0 - Tairu Maps: painel acoplado com login Firebase (e-mail, Google, Apple); pull de registros como camadas GeoPackage e de arquivos tairudb como raster (MBTiles); push de camadas vetoriais como registros com prévia de alterações; assistente para gerar e enviar rasters .tairudb direto para o mapa
+  2.0 - Tairu Maps: dock panel with Firebase login (e-mail, Google, Apple); pull records as GeoPackage layers and tairudb files as raster layers (MBTiles); push vector layers as records with change preview; wizard to generate and upload .tairudb rasters directly to a map
   1.2.1 - Support for QGIS 4
   1.2 - Multi-region support (one polygon feature per region); vector layer export with JSON attributes; automatic tile retry on failure; WebP support; dry run mode for estimating tile count, file size and processing time
   1.1 - GeoPDF converter added; rendering performance improvements
   1.0 - Initial release: raster tile generation for Tairu Maps
 
 tags=tairu maps, offline maps, tiles, tairudb, sqlite, raster, vector, mobile, export
+tags[pt_br]=tairu maps, mapas offline, sincronização qgis, tairudb, sqlite, raster, vetor, mapeamento de campo, exportação
 
 homepage=https://github.com/DanielHSMartin/tairu_db
 category=Database
