@@ -157,6 +157,38 @@ class FirestoreClient:
                 break
         return result
 
+    def list_records_since(self, map_id, since_millis, cancel_cb=None):
+        """Records with lastModified > since_millis. Returns [(record_id, dict)].
+
+        Includes isDeleted=True entries so incremental pull can remove soft-deleted
+        records from the local GeoPackage. Uses a single-field index on lastModified
+        (created automatically by Firestore — no manual index needed).
+        """
+        body = {
+            'structuredQuery': {
+                'from': [{'collectionId': 'records'}],
+                'where': {
+                    'fieldFilter': {
+                        'field': {'fieldPath': 'lastModified'},
+                        'op': 'GREATER_THAN',
+                        'value': {'integerValue': str(int(since_millis))},
+                    }
+                },
+                'orderBy': [{'field': {'fieldPath': 'lastModified'}, 'direction': 'ASCENDING'}],
+            }
+        }
+        rows = self._session.request_json(
+            'POST', f'{self._base}/maps/{map_id}:runQuery', json_body=body)
+        result = []
+        for row in rows:
+            if cancel_cb and cancel_cb():
+                break
+            doc = row.get('document')
+            if doc:
+                result.append((doc_id_from_name(doc['name']),
+                                fields_to_dict(doc.get('fields') or {})))
+        return result
+
     def count_records(self, map_id):
         """COUNT aggregation over the records subcollection (best effort).
 

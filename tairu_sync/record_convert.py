@@ -631,9 +631,20 @@ class PullResult:
 
 
 def apply_pull(gpkg_path, records, remove_missing=True):
-    """Merge TairuRecord list into the map GeoPackage by recordId."""
+    """Merge TairuRecord list into the map GeoPackage by recordId.
+
+    remove_missing=True  (full pull): records absent from the response are
+    deleted locally; unpushed features are cleared.
+    remove_missing=False (incremental): only records in the batch are touched —
+    soft-deleted ones are removed, geometry-type moves are re-homed.
+    """
     ensure_gpkg(gpkg_path)
     result = PullResult()
+
+    # Track every incoming ID regardless of deletion state: incremental mode
+    # uses this to remove soft-deleted records and handle geometry-type changes
+    # without scanning layers for records that weren't in the delta.
+    all_incoming_ids = {rec.record_id for rec in records if rec.record_id}
 
     by_spec = {key: [] for key in LAYER_SPECS}
     for rec in records:
@@ -695,17 +706,24 @@ def apply_pull(gpkg_path, records, remove_missing=True):
                 result.errors.append((rec.record_id, str(e)))
 
         removals = []
+        layer_ids = {rec.record_id for rec in recs}
         if remove_missing:
-            # Per-layer membership: also drops records that switched geometry
-            # type (they re-appear in their new layer on this same pull).
-            layer_ids = {rec.record_id for rec in recs}
+            # Full pull: remove every local record absent from the response
+            # (deleted, moved to another layer, or never existed remotely).
             for rid, fid in existing.items():
                 if rid not in layer_ids:
                     removals.append(fid)
-            # Features with no recordId were created locally and never pushed;
-            # a fresh pull replaces local state with the remote snapshot.
+            # Unpushed features have no recordId; a full pull resets local state.
             removals.extend(unpushed_fids)
-            result.removed += len(removals)
+        else:
+            # Incremental: only touch records that arrived in this batch.
+            # A record in all_incoming_ids but not in this layer's recs was either
+            # soft-deleted (isDeleted=True) or moved to a different geometry layer —
+            # remove it here; the other layer will add it if it moved.
+            for rid, fid in existing.items():
+                if rid in all_incoming_ids and rid not in layer_ids:
+                    removals.append(fid)
+        result.removed += len(removals)
 
         if attr_changes:
             provider.changeAttributeValues(attr_changes)

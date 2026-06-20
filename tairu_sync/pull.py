@@ -14,30 +14,49 @@ from qgis.core import QgsMessageLog
 try:
     from ..compat import _MSG_WARNING
     from ..tairu_core.mbtiles import tairudb_to_mbtiles
-    from ..tairu_core.workspace import map_workspace
+    from ..tairu_core.workspace import map_workspace, load_last_pull_ts, save_last_pull_ts
     from ..tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from ..tairu_firebase.models import TairuRecord
+    from ..tairu_firebase.models import TairuRecord, now_millis
     from .record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
     from tairu_core.mbtiles import tairudb_to_mbtiles
-    from tairu_core.workspace import map_workspace
+    from tairu_core.workspace import map_workspace, load_last_pull_ts, save_last_pull_ts
     from tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from tairu_firebase.models import TairuRecord
+    from tairu_firebase.models import TairuRecord, now_millis
     from tairu_sync.record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
     from tairu_sync.tasks import run_task
 
+# Safety margin subtracted from last-pull timestamp to absorb clock skew
+# between the client and Firestore server (typically < 1 s; 30 s is generous).
+_PULL_CLOCK_SKEW_MS = 30_000
+
 
 def start_pull(dock, tmap):
-    """Fetch the map's records and merge them into the project layers."""
+    """Fetch the map's records and merge them into the project layers.
+
+    On the first pull (or after a forced full-sync) fetches every record in the
+    map. On subsequent pulls only records whose lastModified is newer than the
+    previous pull timestamp are transferred — the delta is typically tiny.
+    """
     fs = dock.fs
     page = dock.detail_page
+    paths = map_workspace(dock.env.key, tmap.map_id)
+    pull_started_at = now_millis()
+    since_millis = load_last_pull_ts(paths)
+    is_incremental = since_millis > 0
+
     page.set_busy(True, 'Baixando registros…')
 
     def fetch(task):
-        rows = fs.list_records(tmap.map_id, cancel_cb=task.isCanceled)
-        task.report(1.0, f'{len(rows)} registros recebidos')
+        if is_incremental:
+            query_since = max(0, since_millis - _PULL_CLOCK_SKEW_MS)
+            rows = fs.list_records_since(tmap.map_id, query_since, cancel_cb=task.isCanceled)
+            task.report(1.0, f'{len(rows)} registros recebidos (delta)')
+        else:
+            rows = fs.list_records(tmap.map_id, cancel_cb=task.isCanceled)
+            task.report(1.0, f'{len(rows)} registros recebidos')
         return rows
 
     def on_success(rows):
@@ -49,17 +68,19 @@ def start_pull(dock, tmap):
             except Exception as e:
                 parse_errors.append((record_id, str(e)))
 
-        paths = map_workspace(dock.env.key, tmap.map_id)
         try:
-            result = apply_pull(paths['gpkg'], records, remove_missing=True)
+            result = apply_pull(paths['gpkg'], records, remove_missing=not is_incremental)
         except Exception as e:
             page.set_busy(False)
             page.set_status(f'Falha ao gravar GeoPackage: {e}', error=True)
             return
+
+        save_last_pull_ts(paths, pull_started_at)
         add_record_layers_to_project(paths['gpkg'], tmap.nome or tmap.map_id)
 
         page.set_busy(False)
-        summary = (f'Registros: {result.added} novos, {result.updated} atualizados, '
+        prefix = 'Delta' if is_incremental else 'Registros'
+        summary = (f'{prefix}: {result.added} novos, {result.updated} atualizados, '
                    f'{result.removed} removidos.')
         errors = result.errors + parse_errors
         if errors:

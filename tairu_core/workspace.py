@@ -7,8 +7,10 @@ Managed local workspace for cloud-synced data:
     downloads/     — .tairudb files fetched from Storage
     mbtiles/       — per-region MBTiles converted for display
     out/           — .tairudb files generated for upload
+    last_pull.json — epoch-ms of last successful incremental pull
 """
 
+import json
 import os
 
 from qgis.core import QgsApplication
@@ -31,6 +33,29 @@ def map_workspace(env_key, map_id):
     for key in ('base', 'downloads', 'mbtiles', 'out'):
         os.makedirs(paths[key], exist_ok=True)
     return paths
+
+
+_LAST_PULL_FILE = 'last_pull.json'
+
+
+def load_last_pull_ts(paths):
+    """Return epoch-ms of the last successful pull, or 0 if none recorded."""
+    p = os.path.join(paths['base'], _LAST_PULL_FILE)
+    try:
+        with open(p, encoding='utf-8') as f:
+            return int(json.load(f).get('ts', 0))
+    except (OSError, ValueError, KeyError, TypeError):
+        return 0
+
+
+def save_last_pull_ts(paths, ts):
+    """Persist ts (epoch-ms) as the timestamp of the last successful pull."""
+    p = os.path.join(paths['base'], _LAST_PULL_FILE)
+    try:
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump({'ts': ts}, f)
+    except OSError:
+        pass
 
 
 def slugify_filename(name, fallback='arquivo'):
