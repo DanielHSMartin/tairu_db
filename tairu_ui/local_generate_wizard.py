@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 
 """
-Local TairuDB generation wizard: extent → parameters → estimate → generate.
+TairuDB generation wizard: extent → parameters → estimate → generate.
 
-Generates a .tairudb file locally without requiring a Tairu Maps account.
-Supports both raster tiles and optional vector layer export.
+The same generation flow is used before login (save a local .tairudb file)
+and after login (generate into the map workspace, then upload/register the
+file on the selected Tairu Maps map). Supports both raster tiles and optional
+vector layer export.
 
 Generation runs on the GUI thread (same TileRenderEngine constraint as the
 Processing algorithm and the raster cloud wizard).
@@ -19,7 +21,6 @@ from qgis.PyQt.QtWidgets import (
     QRadioButton, QPushButton, QComboBox, QSpinBox, QLineEdit, QPlainTextEdit,
     QProgressBar, QFileDialog, QGroupBox, QScrollArea, QCheckBox, QWidget,
 )
-from qgis.PyQt.QtCore import Qt
 from qgis.core import (
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry, QgsProject,
     QgsVectorLayer,
@@ -27,11 +28,15 @@ from qgis.core import (
 from qgis.gui import QgsMapLayerComboBox
 
 try:
-    from ..compat import _POLYGON_LAYER_FILTER, _exec_dialog
+    from ..compat import (
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
+        _exec_dialog,
+    )
     from ..tairu_core.feedback import FeedbackAdapter
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles
     from ..tairu_core.vector_export import export_vector_layers
+    from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
     from .style import (
         apply_combo_popup_style, apply_tairu_style, set_action_button,
@@ -39,11 +44,15 @@ try:
         set_warning_banner, status_style, SCROLLBAR_STYLE,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
-    from compat import _POLYGON_LAYER_FILTER, _exec_dialog
+    from compat import (
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
+        _exec_dialog,
+    )
     from tairu_core.feedback import FeedbackAdapter
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles
     from tairu_core.vector_export import export_vector_layers
+    from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
     from tairu_ui.style import (
         apply_combo_popup_style, apply_tairu_style, set_action_button,
@@ -82,9 +91,17 @@ _FORMATS = ['PNG', 'JPG', 'WEBP']
 # above this size the .tairudb is heavy on mobile and can't be uploaded to a
 # cloud map (server hard-cap is 100 MB). Local generation is never blocked.
 _LARGE_FILE_WARN_MB = 100
+_UPLOAD_SOFT_LIMIT_MB = 90
+_UPLOAD_HARD_LIMIT_BYTES = 100 * 1024 * 1024
+
 
 def open_local_generate_wizard(iface):
     wizard = LocalGenerateWizard(iface)
+    _exec_dialog(wizard)
+
+
+def open_raster_wizard(dock, tmap):
+    wizard = TairuDBGenerateWizard(dock.iface, dock=dock, tmap=tmap)
     _exec_dialog(wizard)
 
 
@@ -119,12 +136,18 @@ class WizardFeedback(FeedbackAdapter):
         return self.canceled
 
 
-class LocalGenerateWizard(QWizard):
+class TairuDBGenerateWizard(QWizard):
 
-    def __init__(self, iface):
-        super().__init__(iface.mainWindow())
+    def __init__(self, iface, dock=None, tmap=None):
+        super().__init__(dock if dock is not None else iface.mainWindow())
         self.iface = iface
-        self.setWindowTitle('Gerar arquivo TairuDB')
+        self.dock = dock
+        self.tmap = tmap
+        self.is_upload_mode = dock is not None and tmap is not None
+        if self.is_upload_mode:
+            self.setWindowTitle(f'Gerar e enviar TairuDB · {tmap.nome}')
+        else:
+            self.setWindowTitle('Gerar arquivo TairuDB')
         self.resize(640, 580)
 
         # Cross-page state
@@ -134,9 +157,9 @@ class LocalGenerateWizard(QWizard):
         self.feedback = None
 
         self.extent_page = ExtentPage(self)
-        self.params_page = LocalParamsPage(self)
+        self.params_page = ParamsPage(self)
         self.estimate_page = EstimatePage(self)
-        self.run_page = LocalRunPage(self)
+        self.run_page = RunPage(self)
         self.addPage(self.extent_page)
         self.addPage(self.params_page)
         self.addPage(self.estimate_page)
@@ -156,8 +179,9 @@ class LocalGenerateWizard(QWizard):
             'NextButton': 'Avançar',
             'CancelButton': 'Cancelar',
             'FinishButton': 'Concluir',
+            'CommitButton': 'Enviar',
         }
-        primary = {'NextButton', 'FinishButton'}
+        primary = {'NextButton', 'FinishButton', 'CommitButton'}
         for name, label in labels.items():
             try:
                 button_id = self._wizard_button_id(name)
@@ -178,10 +202,6 @@ class LocalGenerateWizard(QWizard):
         layerOrder() preserves the project hierarchy so overlays composite on top
         of the basemap correctly.
         """
-        try:
-            from ..compat import _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE
-        except ImportError:
-            from compat import _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE
         project = QgsProject.instance()
         root = project.layerTreeRoot()
         layers = []
@@ -197,6 +217,12 @@ class LocalGenerateWizard(QWizard):
         if self.feedback is not None:
             self.feedback.canceled = True
         self.extent_page.stop_picker()
+
+
+class LocalGenerateWizard(TairuDBGenerateWizard):
+
+    def __init__(self, iface):
+        super().__init__(iface)
 
 
 # ------------------------------------------------------------------ page 1
@@ -231,16 +257,22 @@ class ExtentPage(QWizardPage):
 
         self.drawn_label = set_muted(QLabel(''))
         layout.addWidget(self.drawn_label)
+
+        self.canvas_radio = QRadioButton('Usar área visível do mapa')
+        layout.addWidget(self.canvas_radio)
+
         layout.addStretch(1)
 
         self.layer_radio.toggled.connect(self._sync_controls)
         self.draw_radio.toggled.connect(self._sync_controls)
+        self.canvas_radio.toggled.connect(self._sync_controls)
         self.layer_combo.layerChanged.connect(lambda _: self.completeChanged.emit())
 
     def _sync_controls(self):
+        use_layer = self.layer_radio.isChecked()
         use_draw = self.draw_radio.isChecked()
         self.draw_btn.setEnabled(use_draw)
-        self.layer_combo.setEnabled(not use_draw)
+        self.layer_combo.setEnabled(use_layer)
         self.completeChanged.emit()
 
     def _start_picker(self):
@@ -267,6 +299,8 @@ class ExtentPage(QWizardPage):
     def isComplete(self):
         if self.draw_radio.isChecked():
             return self.drawn_rect is not None and not self.drawn_rect.isEmpty()
+        if self.canvas_radio.isChecked():
+            return True
         return self.layer_combo.currentLayer() is not None
 
     def polygons_wgs84(self):
@@ -276,6 +310,12 @@ class ExtentPage(QWizardPage):
         if self.draw_radio.isChecked():
             transform = QgsCoordinateTransform(QgsProject.instance().crs(), wgs84, ctx)
             geom = QgsGeometry.fromRect(self.drawn_rect)
+            geom.transform(transform)
+            polygons.append(geom)
+        elif self.canvas_radio.isChecked():
+            canvas = self._wizard.iface.mapCanvas()
+            transform = QgsCoordinateTransform(canvas.mapSettings().destinationCrs(), wgs84, ctx)
+            geom = QgsGeometry.fromRect(canvas.extent())
             geom.transform(transform)
             polygons.append(geom)
         else:
@@ -293,7 +333,7 @@ class ExtentPage(QWizardPage):
 
 # ------------------------------------------------------------------ page 2
 
-class LocalParamsPage(QWizardPage):
+class ParamsPage(QWizardPage):
 
     def __init__(self, wizard):
         super().__init__()
@@ -328,6 +368,13 @@ class LocalParamsPage(QWizardPage):
         self.format_combo.currentTextChanged.connect(self._sync_quality_state)
         self._sync_quality_state()
 
+        self.name_edit = None
+        self.output_edit = None
+        if self._wizard.is_upload_mode:
+            self.name_edit = QLineEdit()
+            self.name_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+            form.addRow('Nome do arquivo:', self.name_edit)
+
         layout.addLayout(form)
 
         vector_group = QGroupBox('Camadas vetoriais (opcional)')
@@ -354,21 +401,27 @@ class LocalParamsPage(QWizardPage):
         vector_layout.addWidget(self._vector_scroll)
         layout.addWidget(vector_group)
 
-        output_group = QGroupBox('Arquivo de destino')
-        output_layout = QHBoxLayout(output_group)
-        self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText('Escolha onde salvar o arquivo .tairudb…')
-        self.output_edit.textChanged.connect(lambda _: self.completeChanged.emit())
-        output_layout.addWidget(self.output_edit, 1)
-        browse_btn = QPushButton('Procurar…')
-        browse_btn.clicked.connect(self._browse_output)
-        output_layout.addWidget(browse_btn)
-        layout.addWidget(output_group)
+        if not self._wizard.is_upload_mode:
+            output_group = QGroupBox('Arquivo de destino')
+            output_layout = QHBoxLayout(output_group)
+            self.output_edit = QLineEdit()
+            self.output_edit.setPlaceholderText('Escolha onde salvar o arquivo .tairudb…')
+            self.output_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+            output_layout.addWidget(self.output_edit, 1)
+            browse_btn = QPushButton('Procurar…')
+            browse_btn.clicked.connect(self._browse_output)
+            output_layout.addWidget(browse_btn)
+            layout.addWidget(output_group)
 
     def initializePage(self):
         self._populate_vector_layers()
-        if not self.output_edit.text().strip():
-            date_str = datetime.date.today().strftime('%Y%m%d')
+        if self._wizard.is_upload_mode:
+            if self.name_edit is not None and not self.name_edit.text().strip():
+                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                base = slugify_filename(self._wizard.tmap.nome or 'mapa')
+                self.name_edit.setText(f'{base}-{date_str}.tairudb')
+        elif self.output_edit is not None and not self.output_edit.text().strip():
+            date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
             docs = os.path.expanduser('~/Documents')
             self.output_edit.setText(os.path.join(docs, f'mapa-{date_str}.tairudb'))
 
@@ -399,15 +452,37 @@ class LocalParamsPage(QWizardPage):
             self.output_edit.setText(path)
 
     def isComplete(self):
-        return bool(self.output_path())
+        return bool(self.file_name() if self._wizard.is_upload_mode else self.output_path())
 
     def output_path(self):
+        if self._wizard.is_upload_mode:
+            file_name = self.file_name()
+            if not file_name:
+                return ''
+            paths = map_workspace(self._wizard.dock.env.key, self._wizard.tmap.map_id)
+            return os.path.join(paths['out'], file_name)
+        if self.output_edit is None:
+            return ''
         path = self.output_edit.text().strip()
         if not path:
             return ''
         if not path.lower().endswith('.tairudb'):
             path += '.tairudb'
         return path
+
+    def file_name(self):
+        if self._wizard.is_upload_mode:
+            if self.name_edit is None:
+                return ''
+            name = slugify_filename(self.name_edit.text().strip(), fallback='')
+        else:
+            output_path = self.output_path()
+            name = os.path.basename(output_path) if output_path else ''
+        if not name:
+            return ''
+        if not name.lower().endswith('.tairudb'):
+            name += '.tairudb'
+        return name
 
     def selected_vector_layers(self):
         project = QgsProject.instance()
@@ -511,15 +586,21 @@ class EstimatePage(QWizardPage):
             dry_run_footer=False)
         self.report.setPlainText('\n'.join(lines))
 
-        if wizard.estimate_result.avg_mb > _LARGE_FILE_WARN_MB:
+        if wizard.is_upload_mode and wizard.estimate_result.avg_mb > _UPLOAD_SOFT_LIMIT_MB:
+            self.gate_label.setText(
+                f'Estimativa de {wizard.estimate_result.avg_mb:.0f} MB excede o limite de '
+                f'{_UPLOAD_SOFT_LIMIT_MB} MB para envio (máximo do servidor: 100 MB). '
+                'Reduza a área, a resolução ou a qualidade.')
+        elif wizard.estimate_result.avg_mb > _LARGE_FILE_WARN_MB:
             self.warn_label.setText(
                 f'⚠ Estimativa de {wizard.estimate_result.avg_mb:.0f} MB. Arquivos grandes '
                 'demoram para gerar e consomem bastante memória ao abrir no Tairu Maps mobile, '
                 'e ultrapassam o limite de 100 MB para envio a um mapa na nuvem. '
                 'Você ainda pode gerar e usar o arquivo localmente.')
             self.warn_label.show()
-
-        self._ok = True
+            self._ok = True
+        else:
+            self._ok = True
         self.completeChanged.emit()
 
     def isComplete(self):
@@ -528,12 +609,12 @@ class EstimatePage(QWizardPage):
 
 # ------------------------------------------------------------------ page 4
 
-class LocalRunPage(QWizardPage):
+class RunPage(QWizardPage):
 
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Geração')
+        self.setTitle('Geração e envio' if wizard.is_upload_mode else 'Geração')
         self._running = False
         self._done = False
 
@@ -573,6 +654,7 @@ class LocalRunPage(QWizardPage):
 
         params = wizard.params_page
         output_file = params.output_path()
+        file_name = params.file_name()
         vector_layers = params.selected_vector_layers()
 
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
@@ -590,10 +672,10 @@ class LocalRunPage(QWizardPage):
             jpg_quality=params.quality_spin.value(),
             transform_context=QgsProject.instance().transformContext(),
             threads_number=min(os.cpu_count() or 4, 4),
-            name=os.path.splitext(os.path.basename(output_file))[0],
+            name=os.path.splitext(file_name)[0],
         )
 
-        self._append(f'Gerando {os.path.basename(output_file)} '
+        self._append(f'Gerando {file_name} '
                      f'({len(spec.filtered_tiles)} tiles, zoom {spec.max_zoom})…')
 
         engine = TileRenderEngine(spec, wizard.feedback)
@@ -621,8 +703,89 @@ class LocalRunPage(QWizardPage):
         engine.finalize()
 
         size_mb = os.path.getsize(output_file) / (1024 * 1024)
-        self._append(f'Concluído! Arquivo gerado: {size_mb:.1f} MB')
-        self.output_label.setText(f'Salvo em: {output_file}')
-        self._done = True
-        self._running = False
-        self.completeChanged.emit()
+        if wizard.is_upload_mode:
+            self._append(f'Arquivo gerado: {size_mb:.1f} MB')
+            if os.path.getsize(output_file) > _UPLOAD_HARD_LIMIT_BYTES:
+                self._append('ERRO: o arquivo excede o limite de 100 MB do servidor. '
+                             'Reduza a área, a resolução ou a qualidade.')
+                self._running = False
+                self._set_back_enabled(True)
+                return
+            self._upload(output_file, file_name)
+        else:
+            self._append(f'Concluído! Arquivo gerado: {size_mb:.1f} MB')
+            self.output_label.setText(f'Salvo em: {output_file}')
+            self._done = True
+            self._running = False
+            self.completeChanged.emit()
+
+    def _upload(self, output_file, file_name):
+        try:
+            from ..tairu_firebase.config import TAIRUDB_OBJECT_PATH
+            from ..tairu_firebase.http import FirebaseError
+            from ..tairu_firebase.models import now_millis
+            from ..tairu_sync.tasks import run_task
+        except ImportError:
+            from tairu_firebase.config import TAIRUDB_OBJECT_PATH
+            from tairu_firebase.http import FirebaseError
+            from tairu_firebase.models import now_millis
+            from tairu_sync.tasks import run_task
+
+        wizard = self._wizard
+        dock = wizard.dock
+        tmap = wizard.tmap
+        storage, fs = dock.storage, dock.fs
+        object_path = TAIRUDB_OBJECT_PATH.format(map_id=tmap.map_id, file_name=file_name)
+
+        self._append('Enviando para o Tairu Maps…')
+
+        def send(task):
+            # A new file uses the Storage 'create' rule; overwriting an existing
+            # object falls under 'update' and is rejected, surfacing as a generic
+            # 403. Detect the collision up front and report it clearly instead.
+            if storage.exists(object_path):
+                raise FirebaseError(
+                    'ALREADY_EXISTS',
+                    f'Já existe um arquivo chamado "{file_name}" neste mapa. '
+                    'Escolha outro nome.',
+                    http_status=409)
+
+            def up_progress(done, total):
+                if total:
+                    task.report(done / total,
+                                f'Enviando… {done // (1024*1024)} de {total // (1024*1024)} MB')
+
+            storage.upload_resumable(output_file, object_path,
+                                     progress_cb=up_progress, cancel_cb=task.isCanceled)
+            write = fs.build_array_append_write(
+                f'maps/{tmap.map_id}', 'tairuDBRemoteFiles', [file_name],
+                extra_py_fields={'lastModified': now_millis()})
+            fs.commit([write])
+            return file_name
+
+        def on_success(_name):
+            if file_name not in tmap.tairudb_remote_files:
+                tmap.tairudb_remote_files.append(file_name)
+            dock.detail_page.update_files(tmap)
+            self._append('Concluído! O arquivo já aparece no mapa do Tairu Maps.')
+            self.output_label.setText(f'Enviado para: {tmap.nome}')
+            self._done = True
+            self._running = False
+            self.completeChanged.emit()
+            dock.notify(f'{file_name} enviado para {tmap.nome}.')
+
+        def on_error(message):
+            self._append(f'Falha no envio: {message}')
+            self._running = False
+            self._set_back_enabled(True)
+
+        def on_progress(fraction, message):
+            try:
+                self.progress.setValue(int(fraction * 100))
+                if message:
+                    self._append(message)
+            except RuntimeError:
+                pass
+
+        run_task(f'Tairu Maps: upload {file_name}', send,
+                 on_success=on_success, on_error=on_error, on_progress=on_progress)
