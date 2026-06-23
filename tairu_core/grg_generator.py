@@ -3,15 +3,17 @@
 """
 GRG (Grid Reference Graphic) generator for .tairudb files.
 
-Three grid types:
+Two grid types:
   - 'alphanumeric': columns A/B/C…, rows 1/2/3…; spacing chosen in metres.
     Boundary lines are unlabeled; cell-centre label points (grg_label_col /
     grg_label_row) are stored separately so Flutter can place HUD labels at
     the centre of each visible column/row strip.
-  - 'utm': grid lines at UTM round-metre intervals (requires pyproj).
-    Label is the easting/northing value, shown on the line.
-  - 'dms': grid lines at degree/minute intervals in WGS84.
-    Label is a DMS string, shown on the line.
+  - 'geographic': grid lines at round degree/minute intervals in WGS84.
+    Label stores the raw decimal degree value (e.g. "-46.630000") so the
+    Flutter app can reformat it according to the map's coordinate-format setting.
+
+Legacy types ('utm', 'dms') are still handled for backward compatibility with
+existing .tairudb files already in the field.
 
 Grid config is stored in metadata['grg_config'] as JSON.
 """
@@ -69,7 +71,7 @@ class GrgGenerator:
         """
         writer   : open TairuDBWriter (after create(), before finalize())
         bounds   : QgsRectangle in EPSG:4326
-        grid_type: 'alphanumeric' | 'utm' | 'dms'
+        grid_type: 'alphanumeric' | 'geographic' (legacy: 'utm' | 'dms')
         options  : dict — see generate() docstring for keys
         """
         self.writer = writer
@@ -83,9 +85,7 @@ class GrgGenerator:
         options keys (all optional, with defaults):
           alphanumeric:
             spacing_m (float, default 500): cell size in metres
-          utm:
-            spacing_m (float, default 1000): grid line interval in metres
-          dms:
+          geographic:
             spacing_deg (float, default 0.01): interval in decimal degrees
           shared:
             line_color (str, default '#000000'): hex color #RRGGBB
@@ -128,7 +128,12 @@ class GrgGenerator:
                     layer_id=layer_uuid,
                 )
         else:
-            lines = self._utm_lines() if self.grid_type == 'utm' else self._dms_lines()
+            if self.grid_type == 'utm':
+                lines = self._utm_lines()
+            elif self.grid_type == 'dms':
+                lines = self._dms_lines()
+            else:
+                lines = self._geographic_lines()
             for direction, label, points_str in lines:
                 icon_type = _ICON_LINE_ROW if direction == 'row' else _ICON_LINE_COL
                 attr = dict(attr_base, direction=direction, label=label)
@@ -154,7 +159,7 @@ class GrgGenerator:
         }
         if self.grid_type == 'utm':
             config['spacing_m'] = self.options.get('spacing_m', 1000)
-        elif self.grid_type == 'dms':
+        elif self.grid_type in ('dms', 'geographic'):
             config['spacing_deg'] = self.options.get('spacing_deg', 0.01)
 
         self.writer.setMetadataValue('grg_config', json.dumps(config))
@@ -285,7 +290,7 @@ class GrgGenerator:
     # ------------------------------------------------------------------
 
     def _dms_lines(self):
-        """Grid lines at round degree/minute multiples in WGS84."""
+        """Grid lines at round degree/minute multiples in WGS84 (legacy format)."""
         b = self.bounds
         spacing = float(self.options.get('spacing_deg', 0.01))
         lines = []
@@ -301,6 +306,34 @@ class GrgGenerator:
         while lat <= b.yMaximum() + 1e-9:
             pts = f"{b.xMinimum():.6f} {lat:.6f}, {b.xMaximum():.6f} {lat:.6f}"
             label = _dms_label(lat, is_lat=True)
+            lines.append(('row', label, pts))
+            lat = round(lat + spacing, 10)
+
+        return lines
+
+    def _geographic_lines(self):
+        """Grid lines at round degree/minute multiples in WGS84.
+
+        Labels store the raw decimal degree value so the Flutter app can
+        reformat them according to the map's coordinate-format setting.
+        Col lines (constant longitude): label = longitude decimal string.
+        Row lines (constant latitude):  label = latitude decimal string.
+        """
+        b = self.bounds
+        spacing = float(self.options.get('spacing_deg', 0.01))
+        lines = []
+
+        lon = math.ceil(b.xMinimum() / spacing) * spacing
+        while lon <= b.xMaximum() + 1e-9:
+            pts = f"{lon:.6f} {b.yMinimum()}, {lon:.6f} {b.yMaximum()}"
+            label = f"{lon:.6f}"
+            lines.append(('col', label, pts))
+            lon = round(lon + spacing, 10)
+
+        lat = math.ceil(b.yMinimum() / spacing) * spacing
+        while lat <= b.yMaximum() + 1e-9:
+            pts = f"{b.xMinimum():.6f} {lat:.6f}, {b.xMaximum():.6f} {lat:.6f}"
+            label = f"{lat:.6f}"
             lines.append(('row', label, pts))
             lat = round(lat + spacing, 10)
 

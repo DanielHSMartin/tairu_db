@@ -489,15 +489,14 @@ class GrgPage(QWizardPage):
 
         self._grg_type_combo = QComboBox()
         self._grg_type_combo.addItem('Alfanumérica', 'alphanumeric')
-        self._grg_type_combo.addItem('UTM', 'utm')
-        self._grg_type_combo.addItem('GMS (Graus/Min/Seg)', 'dms')
+        self._grg_type_combo.addItem('Coordenada Geográfica', 'geographic')
         apply_combo_popup_style(self._grg_type_combo)
         form.addRow('Tipo:', self._grg_type_combo)
 
         # --- Stacked spacing controls ---
         self._grg_spacing_stack = _QStackedWidget()
 
-        # Alphanumeric: single spacing in metres
+        # Alphanumeric: single spacing in metres (index 0)
         alpha_w = QWidget()
         alpha_lay = QHBoxLayout(alpha_w)
         alpha_lay.setContentsMargins(0, 0, 0, 0)
@@ -512,25 +511,10 @@ class GrgPage(QWizardPage):
         alpha_lay.addStretch()
         self._grg_spacing_stack.addWidget(alpha_w)
 
-        # UTM: spacing in metres
-        utm_w = QWidget()
-        utm_lay = QHBoxLayout(utm_w)
-        utm_lay.setContentsMargins(0, 0, 0, 0)
-        self._grg_utm_spin = QDoubleSpinBox()
-        self._grg_utm_spin.setRange(100, 100000)
-        self._grg_utm_spin.setSingleStep(500)
-        self._grg_utm_spin.setValue(1000)
-        self._grg_utm_spin.setSuffix(' m')
-        self._grg_utm_spin.setDecimals(0)
-        utm_lay.addWidget(QLabel('Espaçamento:'))
-        utm_lay.addWidget(self._grg_utm_spin)
-        utm_lay.addStretch()
-        self._grg_spacing_stack.addWidget(utm_w)
-
-        # DMS: degrees + metres (synced)
-        dms_w = QWidget()
-        dms_lay = QHBoxLayout(dms_w)
-        dms_lay.setContentsMargins(0, 0, 0, 0)
+        # Geographic: degrees + metres (synced) (index 1)
+        geo_w = QWidget()
+        geo_lay = QHBoxLayout(geo_w)
+        geo_lay.setContentsMargins(0, 0, 0, 0)
         self._grg_dms_deg_spin = QDoubleSpinBox()
         self._grg_dms_deg_spin.setRange(0.0001, 10.0)
         self._grg_dms_deg_spin.setSingleStep(0.01)
@@ -543,13 +527,13 @@ class GrgPage(QWizardPage):
         self._grg_dms_m_spin.setValue(round(0.01 * 111320))
         self._grg_dms_m_spin.setDecimals(0)
         self._grg_dms_m_spin.setSuffix(' m')
-        dms_lay.addWidget(self._grg_dms_deg_spin)
-        dms_lay.addWidget(QLabel('≈'))
-        dms_lay.addWidget(self._grg_dms_m_spin)
-        dms_lay.addStretch()
+        geo_lay.addWidget(self._grg_dms_deg_spin)
+        geo_lay.addWidget(QLabel('≈'))
+        geo_lay.addWidget(self._grg_dms_m_spin)
+        geo_lay.addStretch()
         self._grg_dms_deg_spin.valueChanged.connect(self._on_dms_deg_changed)
         self._grg_dms_m_spin.valueChanged.connect(self._on_dms_m_changed)
-        self._grg_spacing_stack.addWidget(dms_w)
+        self._grg_spacing_stack.addWidget(geo_w)
 
         form.addRow('Espaçamento:', self._grg_spacing_stack)
 
@@ -658,9 +642,7 @@ class GrgPage(QWizardPage):
         }
         if grid_type == 'alphanumeric':
             opts['spacing_m'] = self._grg_alpha_spin.value()
-        elif grid_type == 'utm':
-            opts['spacing_m'] = self._grg_utm_spin.value()
-        elif grid_type == 'dms':
+        elif grid_type == 'geographic':
             opts['spacing_deg'] = self._grg_dms_deg_spin.value()
         return grid_type, opts
 
