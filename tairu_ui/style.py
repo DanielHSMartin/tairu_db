@@ -224,6 +224,8 @@ QGroupBox::title {{
 
 QLineEdit,
 QComboBox,
+QSpinBox,
+QDoubleSpinBox,
 QDateTimeEdit,
 QPlainTextEdit,
 QTextEdit {{
@@ -238,10 +240,41 @@ QTextEdit {{
 
 QLineEdit:focus,
 QComboBox:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
 QDateTimeEdit:focus,
 QPlainTextEdit:focus,
 QTextEdit:focus {{
     border-color: {PRIMARY};
+}}
+
+QSpinBox::up-button,
+QDoubleSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid {OUTLINE_VARIANT};
+    border-bottom: 1px solid {OUTLINE_VARIANT};
+    border-top-right-radius: 6px;
+    background-color: {SURFACE_CONTAINER_LOW};
+}}
+
+QSpinBox::down-button,
+QDoubleSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border-left: 1px solid {OUTLINE_VARIANT};
+    border-top: 1px solid {OUTLINE_VARIANT};
+    border-bottom-right-radius: 6px;
+    background-color: {SURFACE_CONTAINER_LOW};
+}}
+
+QSpinBox::up-button:hover,
+QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover,
+QDoubleSpinBox::down-button:hover {{
+    background-color: {SURFACE_CONTAINER_HIGH};
 }}
 
 QCheckBox,
