@@ -433,43 +433,6 @@ QScrollBar::sub-page:horizontal {{
 }}
 """
 
-SPINBOX_STYLE = f"""
-QDoubleSpinBox, QSpinBox {{
-    background-color: {SURFACE_CONTAINER_LOWEST};
-    color: {ON_SURFACE};
-    border: 1px solid {OUTLINE_VARIANT};
-    border-radius: 4px;
-    padding: 3px 22px 3px 6px;
-}}
-QDoubleSpinBox:focus, QSpinBox:focus {{
-    border-color: {PRIMARY};
-}}
-QDoubleSpinBox::up-button, QSpinBox::up-button {{
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    width: 18px;
-    border-left: 1px solid {OUTLINE_VARIANT};
-    border-bottom: 1px solid {OUTLINE_VARIANT};
-    border-top-right-radius: 4px;
-    background-color: {SURFACE_CONTAINER_LOW};
-}}
-QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover {{
-    background-color: {SURFACE_CONTAINER_HIGH};
-}}
-QDoubleSpinBox::down-button, QSpinBox::down-button {{
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    width: 18px;
-    border-left: 1px solid {OUTLINE_VARIANT};
-    border-top: 1px solid {OUTLINE_VARIANT};
-    border-bottom-right-radius: 4px;
-    background-color: {SURFACE_CONTAINER_LOW};
-}}
-QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {{
-    background-color: {SURFACE_CONTAINER_HIGH};
-}}
-"""
-
 COMBO_LOCAL_STYLE = f"""
 QComboBox {{
     background-color: {SURFACE_CONTAINER_LOWEST};
