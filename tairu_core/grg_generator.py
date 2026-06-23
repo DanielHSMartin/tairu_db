@@ -3,16 +3,17 @@
 """
 GRG (Grid Reference Graphic) generator for .tairudb files.
 
-Generates three types of grids:
-  - 'alphanumeric': columns labeled A, B, C... / rows labeled 1, 2, 3...
-  - 'utm': grid lines at UTM meter intervals (requires pyproj)
-  - 'dms': grid lines at degree/minute intervals in WGS84
+Three grid types:
+  - 'alphanumeric': columns A/B/C…, rows 1/2/3…; spacing chosen in metres.
+    Boundary lines are unlabeled; cell-centre label points (grg_label_col /
+    grg_label_row) are stored separately so Flutter can place HUD labels at
+    the centre of each visible column/row strip.
+  - 'utm': grid lines at UTM round-metre intervals (requires pyproj).
+    Label is the easting/northing value, shown on the line.
+  - 'dms': grid lines at degree/minute intervals in WGS84.
+    Label is a DMS string, shown on the line.
 
-Each grid is written as a '__grg__' vector layer in the .tairudb,
-with individual features tagged with grg_line_row / grg_line_col iconTypes.
-Grid configuration is stored in metadata under the 'grg_config' key.
-
-Flutter reads these and renders them as Polylines with a HUD overlay.
+Grid config is stored in metadata['grg_config'] as JSON.
 """
 
 import json
@@ -26,10 +27,12 @@ from qgis.core import QgsRectangle
 _GRG_LAYER_NAME = '__grg__'
 _ICON_LINE_ROW = 'grg_line_row'
 _ICON_LINE_COL = 'grg_line_col'
+_ICON_LABEL_ROW = 'grg_label_row'
+_ICON_LABEL_COL = 'grg_label_col'
 
 
 def _col_label(index: int) -> str:
-    """Map 0→A, 1→B, ..., 25→Z, 26→AA, 27→AB, ..."""
+    """Map 0→A, 1→B, …, 25→Z, 26→AA, 27→AB, …"""
     result = ''
     n = index
     while True:
@@ -41,7 +44,7 @@ def _col_label(index: int) -> str:
 
 
 def _dms_label(degrees: float, is_lat: bool) -> str:
-    """Format a decimal degree value as a DMS string."""
+    """Format a decimal degree value as a compact DMS string."""
     hemi = ('N' if degrees >= 0 else 'S') if is_lat else ('L' if degrees >= 0 else 'O')
     d = abs(degrees)
     deg = int(d)
@@ -79,14 +82,13 @@ class GrgGenerator:
 
         options keys (all optional, with defaults):
           alphanumeric:
-            col_count (int, default 5): number of columns
-            row_count (int, default 4): number of rows
+            spacing_m (float, default 500): cell size in metres
           utm:
-            spacing_m (float, default 1000): grid spacing in metres
+            spacing_m (float, default 1000): grid line interval in metres
           dms:
-            spacing_deg (float, default 0.01): spacing in decimal degrees
+            spacing_deg (float, default 0.01): interval in decimal degrees
           shared:
-            line_color (str, default '#FF0000'): hex color #RRGGBB
+            line_color (str, default '#000000'): hex color #RRGGBB
             line_opacity (float 0-1, default 0.8)
             line_width (int, default 2): pixels
             line_style (str, default 'solid'): 'solid'|'dashed'|'dotted'|'dotdash'
@@ -96,16 +98,7 @@ class GrgGenerator:
         layer_uuid = str(uuid.uuid4())
         self.writer.insertVectorLayer(layer_uuid, 'line', _GRG_LAYER_NAME, '')
 
-        if self.grid_type == 'alphanumeric':
-            lines = self._alphanumeric_lines()
-        elif self.grid_type == 'utm':
-            lines = self._utm_lines()
-        elif self.grid_type == 'dms':
-            lines = self._dms_lines()
-        else:
-            raise ValueError(f'Unknown grid_type: {self.grid_type}')
-
-        color = self.options.get('line_color', '#FF0000')
+        color = self.options.get('line_color', '#000000')
         size = int(self.options.get('line_width', 2))
         attr_base = {
             'grid_type': self.grid_type,
@@ -115,19 +108,40 @@ class GrgGenerator:
             'font_size': int(self.options.get('font_size', 14)),
         }
 
-        for direction, label, points_str in lines:
-            icon_type = _ICON_LINE_ROW if direction == 'row' else _ICON_LINE_COL
-            attr = dict(attr_base, direction=direction, label=label)
-            self.writer.insertFeature(
-                type_str='line',
-                name=f'grg_{direction}_{label}',
-                attr=json.dumps(attr),
-                color=color,
-                size=size,
-                iconType=icon_type,
-                points=points_str,
-                layer_id=layer_uuid,
-            )
+        if self.grid_type == 'alphanumeric':
+            for direction, label, points_str, is_label in self._alphanumeric_lines():
+                if is_label:
+                    icon_type = _ICON_LABEL_ROW if direction == 'row' else _ICON_LABEL_COL
+                    feat_type = 'point'
+                else:
+                    icon_type = _ICON_LINE_ROW if direction == 'row' else _ICON_LINE_COL
+                    feat_type = 'line'
+                attr = dict(attr_base, direction=direction, label=label)
+                self.writer.insertFeature(
+                    type_str=feat_type,
+                    name=f'grg_{direction}_{label or "boundary"}',
+                    attr=json.dumps(attr),
+                    color=color,
+                    size=size,
+                    iconType=icon_type,
+                    points=points_str,
+                    layer_id=layer_uuid,
+                )
+        else:
+            lines = self._utm_lines() if self.grid_type == 'utm' else self._dms_lines()
+            for direction, label, points_str in lines:
+                icon_type = _ICON_LINE_ROW if direction == 'row' else _ICON_LINE_COL
+                attr = dict(attr_base, direction=direction, label=label)
+                self.writer.insertFeature(
+                    type_str='line',
+                    name=f'grg_{direction}_{label}',
+                    attr=json.dumps(attr),
+                    color=color,
+                    size=size,
+                    iconType=icon_type,
+                    points=points_str,
+                    layer_id=layer_uuid,
+                )
 
         config = {
             'grid_type': self.grid_type,
@@ -138,10 +152,7 @@ class GrgGenerator:
             'font_color': self.options.get('font_color', '#FFFFFF'),
             'font_size': int(self.options.get('font_size', 14)),
         }
-        if self.grid_type == 'alphanumeric':
-            config['col_count'] = self.options.get('col_count', 5)
-            config['row_count'] = self.options.get('row_count', 4)
-        elif self.grid_type == 'utm':
+        if self.grid_type == 'utm':
             config['spacing_m'] = self.options.get('spacing_m', 1000)
         elif self.grid_type == 'dms':
             config['spacing_deg'] = self.options.get('spacing_deg', 0.01)
@@ -153,39 +164,62 @@ class GrgGenerator:
     # ------------------------------------------------------------------
 
     def _alphanumeric_lines(self):
-        """
-        Yields (direction, label, points_str) tuples.
+        """Yield (direction, label, points_str, is_label) tuples.
 
-        Columns: evenly spaced vertical lines across the bounds width.
-          - col_count dividers means col_count+1 cells but col_count-1 inner lines
-          - We generate the BOUNDING lines too so Flutter can always find the cell edges
-        Rows: evenly spaced horizontal lines.
+        is_label=False → Polyline boundary (label is empty string)
+        is_label=True  → Point feature at cell centre (label is 'A', '1', …)
         """
         b = self.bounds
-        col_count = int(self.options.get('col_count', 5))
-        row_count = int(self.options.get('row_count', 4))
+        spacing_m = float(self.options.get('spacing_m', 500))
 
-        col_width = (b.xMaximum() - b.xMinimum()) / col_count
-        row_height = (b.yMaximum() - b.yMinimum()) / row_count
+        centre_lat = (b.yMinimum() + b.yMaximum()) / 2
+        lat_rad = math.radians(abs(centre_lat))
+        lon_deg_per_m = 1.0 / (111320.0 * math.cos(lat_rad))
+        lat_deg_per_m = 1.0 / 111320.0
 
-        lines = []
+        col_width_deg = spacing_m * lon_deg_per_m
+        row_height_deg = spacing_m * lat_deg_per_m
 
-        # Vertical column boundary lines (col_count + 1 lines)
+        width_deg = b.xMaximum() - b.xMinimum()
+        height_deg = b.yMaximum() - b.yMinimum()
+
+        col_count = max(1, round(width_deg / col_width_deg))
+        row_count = max(1, round(height_deg / row_height_deg))
+
+        # Recompute actual step to evenly fill the bounds
+        col_step = width_deg / col_count
+        row_step = height_deg / row_count
+
+        results = []
+
+        # ---- Boundary lines (col_count+1 vertical, row_count+1 horizontal) ----
         for c in range(col_count + 1):
-            lon = b.xMinimum() + c * col_width
-            label = _col_label(c)  # A, B, C… for the cell to the RIGHT of this line
+            lon = b.xMinimum() + c * col_step
             pts = f"{lon} {b.yMinimum()}, {lon} {b.yMaximum()}"
-            lines.append(('col', label, pts))
+            results.append(('col', '', pts, False))
 
-        # Horizontal row boundary lines (row_count + 1 lines)
-        # Rows numbered from top (north) downward: row 1 = topmost cell
         for r in range(row_count + 1):
-            lat = b.yMaximum() - r * row_height
-            label = str(r + 1)  # "1" for the cell BELOW this line
+            lat = b.yMaximum() - r * row_step
             pts = f"{b.xMinimum()} {lat}, {b.xMaximum()} {lat}"
-            lines.append(('row', label, pts))
+            results.append(('row', '', pts, False))
 
-        return lines
+        # ---- Cell-centre label points ----
+        grid_centre_lat = (b.yMinimum() + b.yMaximum()) / 2
+        grid_centre_lon = (b.xMinimum() + b.xMaximum()) / 2
+
+        for c in range(col_count):
+            centre_lon = b.xMinimum() + (c + 0.5) * col_step
+            label = _col_label(c)
+            pts = f"{centre_lon} {grid_centre_lat}"
+            results.append(('col', label, pts, True))
+
+        for r in range(row_count):
+            centre_lat_val = b.yMaximum() - (r + 0.5) * row_step
+            label = str(r + 1)
+            pts = f"{grid_centre_lon} {centre_lat_val}"
+            results.append(('row', label, pts, True))
+
+        return results
 
     # ------------------------------------------------------------------
     # UTM
@@ -197,14 +231,13 @@ class GrgGenerator:
             from pyproj import Transformer
         except ImportError:
             raise ImportError(
-                'pyproj is required for UTM grids. '
-                'Install it with: pip install pyproj'
+                'pyproj é necessário para grades UTM. '
+                'Instale com: pip install pyproj'
             )
 
         b = self.bounds
         spacing = float(self.options.get('spacing_m', 1000))
 
-        # Find UTM zone from centre
         centre_lon = (b.xMinimum() + b.xMaximum()) / 2
         centre_lat = (b.yMinimum() + b.yMaximum()) / 2
         zone = int((centre_lon + 180) / 6) + 1
@@ -214,23 +247,15 @@ class GrgGenerator:
         to_utm = Transformer.from_crs('EPSG:4326', utm_crs, always_xy=True)
         to_wgs = Transformer.from_crs(utm_crs, 'EPSG:4326', always_xy=True)
 
-        # Corner coords in UTM
         sw_e, sw_n = to_utm.transform(b.xMinimum(), b.yMinimum())
         ne_e, ne_n = to_utm.transform(b.xMaximum(), b.yMaximum())
 
         lines = []
-        sample_lats = [b.yMinimum() + i * (b.yMaximum() - b.yMinimum()) / 10 for i in range(11)]
+        n_range = [sw_n + i * (ne_n - sw_n) / 20 for i in range(21)]
+        e_range = [sw_e + i * (ne_e - sw_e) / 20 for i in range(21)]
 
-        # Vertical easting lines
-        e_start = math.ceil(sw_e / spacing) * spacing
-        e = e_start
+        e = math.ceil(sw_e / spacing) * spacing
         while e <= ne_e:
-            pts_list = []
-            for lat in sample_lats:
-                _, n_utm = to_utm.transform(b.xMinimum(), lat)  # not used, just for uniform sampling
-                lon_wgs, lat_wgs = to_wgs.transform(e, to_utm.transform(b.xMinimum(), lat)[1])
-                # Actually sample along the easting line at uniform northing steps
-            n_range = [sw_n + i * (ne_n - sw_n) / 20 for i in range(21)]
             pts_list = []
             for n in n_range:
                 lon_wgs, lat_wgs = to_wgs.transform(e, n)
@@ -241,11 +266,8 @@ class GrgGenerator:
                 lines.append(('col', label, ', '.join(pts_list)))
             e += spacing
 
-        # Horizontal northing lines
-        n_start = math.ceil(sw_n / spacing) * spacing
-        n = n_start
+        n = math.ceil(sw_n / spacing) * spacing
         while n <= ne_n:
-            e_range = [sw_e + i * (ne_e - sw_e) / 20 for i in range(21)]
             pts_list = []
             for east in e_range:
                 lon_wgs, lat_wgs = to_wgs.transform(east, n)
@@ -268,18 +290,14 @@ class GrgGenerator:
         spacing = float(self.options.get('spacing_deg', 0.01))
         lines = []
 
-        # Vertical longitude lines
-        lon_start = math.ceil(b.xMinimum() / spacing) * spacing
-        lon = lon_start
+        lon = math.ceil(b.xMinimum() / spacing) * spacing
         while lon <= b.xMaximum() + 1e-9:
             pts = f"{lon:.6f} {b.yMinimum()}, {lon:.6f} {b.yMaximum()}"
             label = _dms_label(lon, is_lat=False)
             lines.append(('col', label, pts))
             lon = round(lon + spacing, 10)
 
-        # Horizontal latitude lines
-        lat_start = math.ceil(b.yMinimum() / spacing) * spacing
-        lat = lat_start
+        lat = math.ceil(b.yMinimum() / spacing) * spacing
         while lat <= b.yMaximum() + 1e-9:
             pts = f"{b.xMinimum():.6f} {lat:.6f}, {b.xMaximum():.6f} {lat:.6f}"
             label = _dms_label(lat, is_lat=True)

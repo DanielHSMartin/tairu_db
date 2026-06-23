@@ -151,7 +151,7 @@ class TairuDBGenerateWizard(QWizard):
             self.setWindowTitle(f'Gerar e enviar TairuDB · {tmap.nome}')
         else:
             self.setWindowTitle('Gerar arquivo TairuDB')
-        self.resize(640, 580)
+        self.resize(680, 560)
 
         # Cross-page state
         self.polygons_wgs84 = []
@@ -161,10 +161,16 @@ class TairuDBGenerateWizard(QWizard):
 
         self.extent_page = ExtentPage(self)
         self.params_page = ParamsPage(self)
+        self.vector_page = VectorLayersPage(self)
+        self.grg_page = GrgPage(self)
+        self.destination_page = DestinationPage(self)
         self.estimate_page = EstimatePage(self)
         self.run_page = RunPage(self)
         self.addPage(self.extent_page)
         self.addPage(self.params_page)
+        self.addPage(self.vector_page)
+        self.addPage(self.grg_page)
+        self.addPage(self.destination_page)
         self.addPage(self.estimate_page)
         self.addPage(self.run_page)
 
@@ -342,10 +348,11 @@ class ParamsPage(QWizardPage):
         super().__init__()
         self._wizard = wizard
         self.setTitle('Parâmetros')
+        self.setSubTitle('Configurações de resolução e formato do mapa base.')
 
         layout = QVBoxLayout(self)
-
         form = QFormLayout()
+
         self.resolution_combo = QComboBox()
         for label, zoom in _RESOLUTIONS:
             self.resolution_combo.addItem(label, zoom)
@@ -372,22 +379,49 @@ class ParamsPage(QWizardPage):
         self._sync_quality_state()
 
         self.name_edit = None
-        self.output_edit = None
         if self._wizard.is_upload_mode:
             self.name_edit = QLineEdit()
             self.name_edit.textChanged.connect(lambda _: self.completeChanged.emit())
             form.addRow('Nome do arquivo:', self.name_edit)
 
         layout.addLayout(form)
+        layout.addStretch(1)
 
-        vector_group = QGroupBox('Camadas vetoriais (opcional)')
-        vector_layout = QVBoxLayout(vector_group)
-        hint = set_muted(QLabel(
-            'Selecione as camadas a incluir. '
-            'Camadas vetoriais incluídas no .tairudb não são editáveis no Tairu Maps mobile.'))
-        hint.setWordWrap(True)
-        vector_layout.addWidget(hint)
+    def initializePage(self):
+        if self._wizard.is_upload_mode and self.name_edit is not None:
+            if not self.name_edit.text().strip():
+                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                base = slugify_filename(self._wizard.tmap.nome or 'mapa')
+                self.name_edit.setText(f'{base}-{date_str}.tairudb')
 
+    def isComplete(self):
+        if self._wizard.is_upload_mode:
+            return bool(self.name_edit and self.name_edit.text().strip())
+        return True
+
+    def max_zoom(self):
+        return self.resolution_combo.currentData()
+
+    def tile_format(self):
+        return self.format_combo.currentText()
+
+    def _sync_quality_state(self):
+        set_control_enabled(self.quality_spin, self.tile_format() in ('JPG', 'WEBP'))
+
+
+# ------------------------------------------------------------------ page 3 — camadas vetoriais
+
+class VectorLayersPage(QWizardPage):
+
+    def __init__(self, wizard):
+        super().__init__()
+        self._wizard = wizard
+        self.setTitle('Camadas Vetoriais')
+        self.setSubTitle(
+            'Selecione camadas QGIS a incluir no .tairudb (opcional).\n'
+            'Camadas incluídas não são editáveis no Tairu Maps mobile.')
+
+        layout = QVBoxLayout(self)
         self._vector_checkboxes = {}
         self._scroll_content = QWidget()
         self._scroll_content.setObjectName('VectorScrollContent')
@@ -398,39 +432,11 @@ class ParamsPage(QWizardPage):
         self._vector_scroll = QScrollArea()
         self._vector_scroll.setWidgetResizable(True)
         self._vector_scroll.setWidget(self._scroll_content)
-        self._vector_scroll.setMaximumHeight(140)
         self._vector_scroll.setStyleSheet(_VECTOR_LIST_STYLE)
         self._vector_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
-        vector_layout.addWidget(self._vector_scroll)
-        layout.addWidget(vector_group)
-
-        layout.addWidget(self._build_grg_group())
-
-        if not self._wizard.is_upload_mode:
-            output_group = QGroupBox('Arquivo de destino')
-            output_layout = QHBoxLayout(output_group)
-            self.output_edit = QLineEdit()
-            self.output_edit.setPlaceholderText('Escolha onde salvar o arquivo .tairudb…')
-            self.output_edit.textChanged.connect(lambda _: self.completeChanged.emit())
-            output_layout.addWidget(self.output_edit, 1)
-            browse_btn = QPushButton('Procurar…')
-            browse_btn.clicked.connect(self._browse_output)
-            output_layout.addWidget(browse_btn)
-            layout.addWidget(output_group)
+        layout.addWidget(self._vector_scroll, 1)
 
     def initializePage(self):
-        self._populate_vector_layers()
-        if self._wizard.is_upload_mode:
-            if self.name_edit is not None and not self.name_edit.text().strip():
-                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-                base = slugify_filename(self._wizard.tmap.nome or 'mapa')
-                self.name_edit.setText(f'{base}-{date_str}.tairudb')
-        elif self.output_edit is not None and not self.output_edit.text().strip():
-            date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-            docs = os.path.expanduser('~/Documents')
-            self.output_edit.setText(os.path.join(docs, f'mapa-{date_str}.tairudb'))
-
-    def _populate_vector_layers(self):
         while self._scroll_inner.count():
             item = self._scroll_inner.takeAt(0)
             if item.widget():
@@ -446,49 +452,6 @@ class ParamsPage(QWizardPage):
             self._scroll_inner.addWidget(cb)
         self._scroll_inner.addStretch(1)
 
-    def _browse_output(self):
-        current = self.output_edit.text().strip()
-        start_dir = os.path.dirname(current) if current else os.path.expanduser('~/Documents')
-        path, _ = QFileDialog.getSaveFileName(
-            self, 'Salvar arquivo TairuDB', start_dir, 'TairuDB (*.tairudb)')
-        if path:
-            if not path.lower().endswith('.tairudb'):
-                path += '.tairudb'
-            self.output_edit.setText(path)
-
-    def isComplete(self):
-        return bool(self.file_name() if self._wizard.is_upload_mode else self.output_path())
-
-    def output_path(self):
-        if self._wizard.is_upload_mode:
-            file_name = self.file_name()
-            if not file_name:
-                return ''
-            paths = map_workspace(self._wizard.dock.env.key, self._wizard.tmap.map_id)
-            return os.path.join(paths['out'], file_name)
-        if self.output_edit is None:
-            return ''
-        path = self.output_edit.text().strip()
-        if not path:
-            return ''
-        if not path.lower().endswith('.tairudb'):
-            path += '.tairudb'
-        return path
-
-    def file_name(self):
-        if self._wizard.is_upload_mode:
-            if self.name_edit is None:
-                return ''
-            name = slugify_filename(self.name_edit.text().strip(), fallback='')
-        else:
-            output_path = self.output_path()
-            name = os.path.basename(output_path) if output_path else ''
-        if not name:
-            return ''
-        if not name.lower().endswith('.tairudb'):
-            name += '.tairudb'
-        return name
-
     def selected_vector_layers(self):
         project = QgsProject.instance()
         layers = []
@@ -499,27 +462,24 @@ class ParamsPage(QWizardPage):
                     layers.append(layer)
         return layers
 
-    def max_zoom(self):
-        return self.resolution_combo.currentData()
 
-    def tile_format(self):
-        return self.format_combo.currentText()
+# ------------------------------------------------------------------ page 4 — Grade GRG
 
-    def _sync_quality_state(self):
-        set_control_enabled(self.quality_spin, self.tile_format() in ('JPG', 'WEBP'))
+class GrgPage(QWizardPage):
 
-    # ------------------------------------------------------------------ GRG
+    def __init__(self, wizard):
+        super().__init__()
+        self._wizard = wizard
+        self.setTitle('Grade GRG')
+        self.setSubTitle('Adicione uma grade de referência geográfica ao arquivo (opcional).')
 
-    def _build_grg_group(self):
-        grg_group = QGroupBox('Grade GRG (opcional)')
-        outer = QVBoxLayout(grg_group)
+        layout = QVBoxLayout(self)
 
-        self._grg_check = QCheckBox('Incluir grade GRG no arquivo')
-        outer.addWidget(self._grg_check)
+        self._grg_check = QCheckBox('Incluir grade GRG')
+        layout.addWidget(self._grg_check)
 
         self._grg_options_widget = QWidget()
         form = QFormLayout(self._grg_options_widget)
-        form.setContentsMargins(0, 4, 0, 0)
 
         self._grg_type_combo = QComboBox()
         self._grg_type_combo.addItem('Alfanumérica', 'alphanumeric')
@@ -528,88 +488,96 @@ class ParamsPage(QWizardPage):
         apply_combo_popup_style(self._grg_type_combo)
         form.addRow('Tipo:', self._grg_type_combo)
 
-        # Stacked spacing controls — one per grid type
+        # --- Stacked spacing controls ---
         self._grg_spacing_stack = _QStackedWidget()
 
-        # Alphanumeric: cols + rows
+        # Alphanumeric: single spacing in metres
         alpha_w = QWidget()
-        alpha_form = QHBoxLayout(alpha_w)
-        alpha_form.setContentsMargins(0, 0, 0, 0)
-        self._grg_col_spin = QSpinBox()
-        self._grg_col_spin.setRange(1, 26)
-        self._grg_col_spin.setValue(5)
-        self._grg_col_spin.setPrefix('Colunas: ')
-        self._grg_row_spin = QSpinBox()
-        self._grg_row_spin.setRange(1, 50)
-        self._grg_row_spin.setValue(4)
-        self._grg_row_spin.setPrefix('Linhas: ')
-        alpha_form.addWidget(self._grg_col_spin)
-        alpha_form.addWidget(self._grg_row_spin)
+        alpha_lay = QHBoxLayout(alpha_w)
+        alpha_lay.setContentsMargins(0, 0, 0, 0)
+        self._grg_alpha_spin = QDoubleSpinBox()
+        self._grg_alpha_spin.setRange(50, 100000)
+        self._grg_alpha_spin.setValue(500)
+        self._grg_alpha_spin.setSuffix(' m')
+        self._grg_alpha_spin.setDecimals(0)
+        self._grg_alpha_spin.setSingleStep(100)
+        alpha_lay.addWidget(QLabel('Tamanho da célula:'))
+        alpha_lay.addWidget(self._grg_alpha_spin)
+        alpha_lay.addStretch()
         self._grg_spacing_stack.addWidget(alpha_w)
 
         # UTM: spacing in metres
         utm_w = QWidget()
-        utm_form = QHBoxLayout(utm_w)
-        utm_form.setContentsMargins(0, 0, 0, 0)
+        utm_lay = QHBoxLayout(utm_w)
+        utm_lay.setContentsMargins(0, 0, 0, 0)
         self._grg_utm_spin = QDoubleSpinBox()
         self._grg_utm_spin.setRange(100, 100000)
         self._grg_utm_spin.setSingleStep(500)
         self._grg_utm_spin.setValue(1000)
         self._grg_utm_spin.setSuffix(' m')
         self._grg_utm_spin.setDecimals(0)
-        utm_form.addWidget(QLabel('Espaçamento:'))
-        utm_form.addWidget(self._grg_utm_spin)
-        utm_form.addStretch()
+        utm_lay.addWidget(QLabel('Espaçamento:'))
+        utm_lay.addWidget(self._grg_utm_spin)
+        utm_lay.addStretch()
         self._grg_spacing_stack.addWidget(utm_w)
 
-        # DMS: spacing in degrees
+        # DMS: degrees + metres (synced)
         dms_w = QWidget()
-        dms_form = QHBoxLayout(dms_w)
-        dms_form.setContentsMargins(0, 0, 0, 0)
-        self._grg_dms_spin = QDoubleSpinBox()
-        self._grg_dms_spin.setRange(0.001, 10.0)
-        self._grg_dms_spin.setSingleStep(0.01)
-        self._grg_dms_spin.setValue(0.01)
-        self._grg_dms_spin.setDecimals(3)
-        self._grg_dms_spin.setSuffix('°')
-        dms_form.addWidget(QLabel('Espaçamento:'))
-        dms_form.addWidget(self._grg_dms_spin)
-        dms_form.addStretch()
+        dms_lay = QHBoxLayout(dms_w)
+        dms_lay.setContentsMargins(0, 0, 0, 0)
+        self._grg_dms_deg_spin = QDoubleSpinBox()
+        self._grg_dms_deg_spin.setRange(0.0001, 10.0)
+        self._grg_dms_deg_spin.setSingleStep(0.01)
+        self._grg_dms_deg_spin.setValue(0.01)
+        self._grg_dms_deg_spin.setDecimals(4)
+        self._grg_dms_deg_spin.setSuffix('°')
+        self._grg_dms_m_spin = QDoubleSpinBox()
+        self._grg_dms_m_spin.setRange(10, 1200000)
+        self._grg_dms_m_spin.setSingleStep(500)
+        self._grg_dms_m_spin.setValue(round(0.01 * 111320))
+        self._grg_dms_m_spin.setDecimals(0)
+        self._grg_dms_m_spin.setSuffix(' m')
+        dms_lay.addWidget(self._grg_dms_deg_spin)
+        dms_lay.addWidget(QLabel('≈'))
+        dms_lay.addWidget(self._grg_dms_m_spin)
+        dms_lay.addStretch()
+        self._grg_dms_deg_spin.valueChanged.connect(self._on_dms_deg_changed)
+        self._grg_dms_m_spin.valueChanged.connect(self._on_dms_m_changed)
         self._grg_spacing_stack.addWidget(dms_w)
 
         form.addRow('Espaçamento:', self._grg_spacing_stack)
 
         # Line style
         self._grg_style_combo = QComboBox()
-        for label, val in [('Sólido', 'solid'), ('Tracejado', 'dashed'),
-                           ('Pontilhado', 'dotted'), ('Traço-ponto', 'dotdash')]:
-            self._grg_style_combo.addItem(label, val)
+        for lbl, val in [('Sólido', 'solid'), ('Tracejado', 'dashed'),
+                         ('Pontilhado', 'dotted'), ('Traço-ponto', 'dotdash')]:
+            self._grg_style_combo.addItem(lbl, val)
         apply_combo_popup_style(self._grg_style_combo)
         form.addRow('Estilo:', self._grg_style_combo)
 
-        # Line width + opacity on same row
+        # Thickness + opacity
         width_row = QWidget()
-        width_layout = QHBoxLayout(width_row)
-        width_layout.setContentsMargins(0, 0, 0, 0)
+        width_lay = QHBoxLayout(width_row)
+        width_lay.setContentsMargins(0, 0, 0, 0)
         self._grg_width_spin = QSpinBox()
         self._grg_width_spin.setRange(1, 10)
         self._grg_width_spin.setValue(2)
         self._grg_width_spin.setSuffix(' px')
         self._grg_width_spin.setMaximumWidth(80)
-        width_layout.addWidget(self._grg_width_spin)
-        width_layout.addWidget(QLabel('Opacidade:'))
+        width_lay.addWidget(self._grg_width_spin)
+        width_lay.addWidget(QLabel('Opacidade:'))
         self._grg_opacity_slider = QSlider(Qt.Horizontal)
         self._grg_opacity_slider.setRange(0, 100)
         self._grg_opacity_slider.setValue(80)
         self._grg_opacity_label = QLabel('80%%')
         self._grg_opacity_slider.valueChanged.connect(
             lambda v: self._grg_opacity_label.setText(f'{v}%%'))
-        width_layout.addWidget(self._grg_opacity_slider, 1)
-        width_layout.addWidget(self._grg_opacity_label)
+        width_lay.addWidget(self._grg_opacity_slider, 1)
+        width_lay.addWidget(self._grg_opacity_label)
         form.addRow('Espessura:', width_row)
 
-        # Line color picker
-        self._grg_line_color = QColor('#FF0000')
+        # Line color
+        self._grg_line_color = QColor('#000000')
         self._grg_color_btn = QPushButton('  ')
         self._grg_color_btn.setFixedWidth(48)
         self._grg_color_btn.setStyleSheet(
@@ -619,35 +587,41 @@ class ParamsPage(QWizardPage):
 
         # Font color + size
         font_row = QWidget()
-        font_layout = QHBoxLayout(font_row)
-        font_layout.setContentsMargins(0, 0, 0, 0)
+        font_lay = QHBoxLayout(font_row)
+        font_lay.setContentsMargins(0, 0, 0, 0)
         self._grg_font_color = QColor('#FFFFFF')
         self._grg_font_color_btn = QPushButton('  ')
         self._grg_font_color_btn.setFixedWidth(48)
         self._grg_font_color_btn.setStyleSheet(
             f'background-color: {self._grg_font_color.name()}; border: 1px solid #666;')
         self._grg_font_color_btn.clicked.connect(self._pick_font_color)
-        font_layout.addWidget(self._grg_font_color_btn)
-        font_layout.addWidget(QLabel('Tamanho:'))
+        font_lay.addWidget(self._grg_font_color_btn)
+        font_lay.addWidget(QLabel('Tamanho:'))
         self._grg_font_spin = QSpinBox()
         self._grg_font_spin.setRange(8, 48)
         self._grg_font_spin.setValue(14)
         self._grg_font_spin.setSuffix(' pt')
         self._grg_font_spin.setMaximumWidth(80)
-        font_layout.addWidget(self._grg_font_spin)
-        font_layout.addStretch()
+        font_lay.addWidget(self._grg_font_spin)
+        font_lay.addStretch()
         form.addRow('Cor do texto:', font_row)
 
-        outer.addWidget(self._grg_options_widget)
+        layout.addWidget(self._grg_options_widget)
+        layout.addStretch(1)
 
         self._grg_options_widget.setVisible(False)
         self._grg_check.toggled.connect(self._grg_options_widget.setVisible)
-        self._grg_type_combo.currentIndexChanged.connect(self._sync_grg_type)
+        self._grg_type_combo.currentIndexChanged.connect(self._grg_spacing_stack.setCurrentIndex)
 
-        return grg_group
+    def _on_dms_deg_changed(self, value):
+        self._grg_dms_m_spin.blockSignals(True)
+        self._grg_dms_m_spin.setValue(round(value * 111320))
+        self._grg_dms_m_spin.blockSignals(False)
 
-    def _sync_grg_type(self, index):
-        self._grg_spacing_stack.setCurrentIndex(index)
+    def _on_dms_m_changed(self, value):
+        self._grg_dms_deg_spin.blockSignals(True)
+        self._grg_dms_deg_spin.setValue(round(value / 111320, 4))
+        self._grg_dms_deg_spin.blockSignals(False)
 
     def _pick_line_color(self):
         color = QColorDialog.getColor(self._grg_line_color, self, 'Cor da linha GRG')
@@ -677,16 +651,101 @@ class ParamsPage(QWizardPage):
             'font_size': self._grg_font_spin.value(),
         }
         if grid_type == 'alphanumeric':
-            opts['col_count'] = self._grg_col_spin.value()
-            opts['row_count'] = self._grg_row_spin.value()
+            opts['spacing_m'] = self._grg_alpha_spin.value()
         elif grid_type == 'utm':
             opts['spacing_m'] = self._grg_utm_spin.value()
         elif grid_type == 'dms':
-            opts['spacing_deg'] = self._grg_dms_spin.value()
+            opts['spacing_deg'] = self._grg_dms_deg_spin.value()
         return grid_type, opts
 
 
-# ------------------------------------------------------------------ page 3
+# ------------------------------------------------------------------ page 5 — arquivo de destino
+
+class DestinationPage(QWizardPage):
+
+    def __init__(self, wizard):
+        super().__init__()
+        self._wizard = wizard
+        self.setTitle('Arquivo de Destino')
+        self.output_edit = None
+
+        layout = QVBoxLayout(self)
+
+        if wizard.is_upload_mode:
+            self.setSubTitle('O arquivo será enviado ao mapa selecionado no Tairu Maps.')
+            note = set_muted(QLabel(
+                'O nome do arquivo foi definido na etapa anterior. '
+                'Clique em Avançar para calcular a estimativa.'))
+            note.setWordWrap(True)
+            layout.addWidget(note)
+        else:
+            self.setSubTitle('Escolha onde salvar o arquivo .tairudb gerado.')
+            output_layout = QHBoxLayout()
+            self.output_edit = QLineEdit()
+            self.output_edit.setPlaceholderText('Escolha onde salvar o arquivo .tairudb…')
+            self.output_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+            output_layout.addWidget(self.output_edit, 1)
+            browse_btn = QPushButton('Procurar…')
+            browse_btn.clicked.connect(self._browse_output)
+            output_layout.addWidget(browse_btn)
+            layout.addLayout(output_layout)
+
+        layout.addStretch(1)
+
+    def initializePage(self):
+        if not self._wizard.is_upload_mode and self.output_edit is not None:
+            if not self.output_edit.text().strip():
+                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                docs = os.path.expanduser('~/Documents')
+                self.output_edit.setText(os.path.join(docs, f'mapa-{date_str}.tairudb'))
+
+    def _browse_output(self):
+        current = self.output_edit.text().strip()
+        start_dir = os.path.dirname(current) if current else os.path.expanduser('~/Documents')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Salvar arquivo TairuDB', start_dir, 'TairuDB (*.tairudb)')
+        if path:
+            if not path.lower().endswith('.tairudb'):
+                path += '.tairudb'
+            self.output_edit.setText(path)
+
+    def isComplete(self):
+        if self._wizard.is_upload_mode:
+            return True
+        path = self.output_edit.text().strip() if self.output_edit else ''
+        return bool(path)
+
+    def output_path(self):
+        if self._wizard.is_upload_mode:
+            file_name = self.file_name()
+            if not file_name:
+                return ''
+            paths = map_workspace(self._wizard.dock.env.key, self._wizard.tmap.map_id)
+            return os.path.join(paths['out'], file_name)
+        path = self.output_edit.text().strip() if self.output_edit else ''
+        if not path:
+            return ''
+        if not path.lower().endswith('.tairudb'):
+            path += '.tairudb'
+        return path
+
+    def file_name(self):
+        if self._wizard.is_upload_mode:
+            name_edit = self._wizard.params_page.name_edit
+            if name_edit is None:
+                return ''
+            name = slugify_filename(name_edit.text().strip(), fallback='')
+        else:
+            output_path = self.output_path()
+            name = os.path.basename(output_path) if output_path else ''
+        if not name:
+            return ''
+        if not name.lower().endswith('.tairudb'):
+            name += '.tairudb'
+        return name
+
+
+# ------------------------------------------------------------------ page 6
 
 class EstimatePage(QWizardPage):
 
@@ -743,7 +802,7 @@ class EstimatePage(QWizardPage):
             self.completeChanged.emit()
             return
 
-        vector_layers = wizard.params_page.selected_vector_layers()
+        vector_layers = wizard.vector_page.selected_vector_layers()
         vector_feature_count = sum(
             lyr.featureCount() for lyr in vector_layers if lyr.isValid())
 
@@ -789,7 +848,7 @@ class EstimatePage(QWizardPage):
         return self._ok
 
 
-# ------------------------------------------------------------------ page 4
+# ------------------------------------------------------------------ page 7
 
 class RunPage(QWizardPage):
 
@@ -834,10 +893,11 @@ class RunPage(QWizardPage):
         wizard = self._wizard
         self._set_back_enabled(False)
 
+        dest = wizard.destination_page
         params = wizard.params_page
-        output_file = params.output_path()
-        file_name = params.file_name()
-        vector_layers = params.selected_vector_layers()
+        output_file = dest.output_path()
+        file_name = dest.file_name()
+        vector_layers = wizard.vector_page.selected_vector_layers()
 
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
 
@@ -882,8 +942,8 @@ class RunPage(QWizardPage):
                 self._set_back_enabled(True)
                 return
 
-        if params.grg_enabled():
-            grid_type, grg_opts = params.grg_options()
+        if wizard.grg_page.grg_enabled():
+            grid_type, grg_opts = wizard.grg_page.grg_options()
             self._append(f'Gerando grade GRG ({grid_type})…')
             bounds = wizard.region_result.wgs84_extent
             ok = engine.writer.writeGrg(bounds, grid_type, grg_opts)
