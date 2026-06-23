@@ -200,20 +200,23 @@ class FirestoreCache:
     def load_records(self, map_id, include_deleted=False):
         collection_path = _collection_path(map_id, RECORDS_COLLECTION)
         params = [self.env_key, self.user_id, collection_path]
-        deleted_clause = '' if include_deleted else 'AND is_deleted = 0'
+        # Two static queries avoid f-string SQL construction (flagged by security scanners).
+        if include_deleted:
+            sql = (
+                "SELECT doc_id, payload_json"
+                " FROM firestore_entities"
+                " WHERE env_key = ? AND user_id = ? AND collection_path = ?"
+                " ORDER BY last_modified_ms ASC, doc_id ASC"
+            )
+        else:
+            sql = (
+                "SELECT doc_id, payload_json"
+                " FROM firestore_entities"
+                " WHERE env_key = ? AND user_id = ? AND collection_path = ? AND is_deleted = 0"
+                " ORDER BY last_modified_ms ASC, doc_id ASC"
+            )
         with closing(self._connect()) as conn:
-            rows = conn.execute(
-                f"""
-                SELECT doc_id, payload_json
-                FROM firestore_entities
-                WHERE env_key = ?
-                  AND user_id = ?
-                  AND collection_path = ?
-                  {deleted_clause}
-                ORDER BY last_modified_ms ASC, doc_id ASC
-                """,
-                params,
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [(doc_id, json.loads(payload_json)) for doc_id, payload_json in rows]
 
     def store_records(self, map_id, rows, fetched_at_ms, full_snapshot=False):
