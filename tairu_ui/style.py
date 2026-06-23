@@ -224,8 +224,6 @@ QGroupBox::title {{
 
 QLineEdit,
 QComboBox,
-QSpinBox,
-QDoubleSpinBox,
 QDateTimeEdit,
 QPlainTextEdit,
 QTextEdit {{
@@ -240,41 +238,10 @@ QTextEdit {{
 
 QLineEdit:focus,
 QComboBox:focus,
-QSpinBox:focus,
-QDoubleSpinBox:focus,
 QDateTimeEdit:focus,
 QPlainTextEdit:focus,
 QTextEdit:focus {{
     border-color: {PRIMARY};
-}}
-
-QSpinBox::up-button,
-QDoubleSpinBox::up-button {{
-    subcontrol-origin: border;
-    subcontrol-position: top right;
-    width: 18px;
-    border-left: 1px solid {OUTLINE_VARIANT};
-    border-bottom: 1px solid {OUTLINE_VARIANT};
-    border-top-right-radius: 6px;
-    background-color: {SURFACE_CONTAINER_LOW};
-}}
-
-QSpinBox::down-button,
-QDoubleSpinBox::down-button {{
-    subcontrol-origin: border;
-    subcontrol-position: bottom right;
-    width: 18px;
-    border-left: 1px solid {OUTLINE_VARIANT};
-    border-top: 1px solid {OUTLINE_VARIANT};
-    border-bottom-right-radius: 6px;
-    background-color: {SURFACE_CONTAINER_LOW};
-}}
-
-QSpinBox::up-button:hover,
-QDoubleSpinBox::up-button:hover,
-QSpinBox::down-button:hover,
-QDoubleSpinBox::down-button:hover {{
-    background-color: {SURFACE_CONTAINER_HIGH};
 }}
 
 QCheckBox,
@@ -463,6 +430,43 @@ QScrollBar::sub-page:horizontal {{
     background: transparent;
     border: 0px;
     width: 0px;
+}}
+"""
+
+SPINBOX_STYLE = f"""
+QDoubleSpinBox, QSpinBox {{
+    background-color: {SURFACE_CONTAINER_LOWEST};
+    color: {ON_SURFACE};
+    border: 1px solid {OUTLINE_VARIANT};
+    border-radius: 4px;
+    padding: 3px 22px 3px 6px;
+}}
+QDoubleSpinBox:focus, QSpinBox:focus {{
+    border-color: {PRIMARY};
+}}
+QDoubleSpinBox::up-button, QSpinBox::up-button {{
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 18px;
+    border-left: 1px solid {OUTLINE_VARIANT};
+    border-bottom: 1px solid {OUTLINE_VARIANT};
+    border-top-right-radius: 4px;
+    background-color: {SURFACE_CONTAINER_LOW};
+}}
+QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover {{
+    background-color: {SURFACE_CONTAINER_HIGH};
+}}
+QDoubleSpinBox::down-button, QSpinBox::down-button {{
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 18px;
+    border-left: 1px solid {OUTLINE_VARIANT};
+    border-top: 1px solid {OUTLINE_VARIANT};
+    border-bottom-right-radius: 4px;
+    background-color: {SURFACE_CONTAINER_LOW};
+}}
+QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {{
+    background-color: {SURFACE_CONTAINER_HIGH};
 }}
 """
 

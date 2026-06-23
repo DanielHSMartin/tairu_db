@@ -44,7 +44,7 @@ try:
     from .style import (
         apply_combo_popup_style, apply_tairu_style, set_action_button,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_warning_banner, status_style, SCROLLBAR_STYLE, SPINBOX_STYLE,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
@@ -60,7 +60,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_ui.style import (
         apply_combo_popup_style, apply_tairu_style, set_action_button,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_warning_banner, status_style, SCROLLBAR_STYLE, SPINBOX_STYLE,
     )
 
 _VECTOR_LIST_STYLE = f"""
@@ -506,6 +506,7 @@ class GrgPage(QWizardPage):
         self._grg_alpha_spin.setSuffix(' m')
         self._grg_alpha_spin.setDecimals(0)
         self._grg_alpha_spin.setSingleStep(100)
+        self._grg_alpha_spin.setStyleSheet(SPINBOX_STYLE)
         alpha_lay.addWidget(self._grg_alpha_spin)
         alpha_lay.addStretch()
         self._grg_spacing_stack.addWidget(alpha_w)
@@ -520,12 +521,14 @@ class GrgPage(QWizardPage):
         self._grg_dms_m_spin.setValue(round(0.01 * 111320))
         self._grg_dms_m_spin.setDecimals(0)
         self._grg_dms_m_spin.setSuffix(' m')
+        self._grg_dms_m_spin.setStyleSheet(SPINBOX_STYLE)
         self._grg_dms_deg_spin = QDoubleSpinBox()
         self._grg_dms_deg_spin.setRange(0.0001, 10.0)
         self._grg_dms_deg_spin.setSingleStep(0.01)
         self._grg_dms_deg_spin.setValue(0.01)
         self._grg_dms_deg_spin.setDecimals(4)
         self._grg_dms_deg_spin.setSuffix('°')
+        self._grg_dms_deg_spin.setStyleSheet(SPINBOX_STYLE)
         geo_lay.addWidget(self._grg_dms_m_spin)
         geo_lay.addWidget(QLabel('ou'))
         geo_lay.addWidget(self._grg_dms_deg_spin)
