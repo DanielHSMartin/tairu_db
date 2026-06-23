@@ -266,6 +266,30 @@ class TairuDBWriter:
         except sqlite3.Error as e:
             print(f"SQLite error finalizing: {e}")
 
+    def writeGrg(self, bounds, grid_type: str, options: dict) -> bool:
+        """Generate and write a GRG grid into this .tairudb.
+
+        bounds   : QgsRectangle in EPSG:4326
+        grid_type: 'alphanumeric' | 'utm' | 'dms'
+        options  : dict passed directly to GrgGenerator (see grg_generator.py)
+
+        Returns True on success, False if generation fails.
+        """
+        try:
+            from .grg_generator import GrgGenerator
+        except ImportError:
+            from tairu_core.grg_generator import GrgGenerator
+
+        try:
+            gen = GrgGenerator(self, bounds, grid_type, options)
+            gen.generate()
+            if self.conn:
+                self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"GRG generation error: {e}")
+            return False
+
     def periodicCommit(self):
         """Perform periodic commits to reduce memory usage and ensure data integrity"""
         if self.conn:

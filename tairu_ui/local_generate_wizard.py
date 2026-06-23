@@ -18,9 +18,12 @@ import os
 from qgis.PyQt.QtCore import QTimer
 from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
-    QRadioButton, QPushButton, QComboBox, QSpinBox, QLineEdit, QPlainTextEdit,
-    QProgressBar, QFileDialog, QGroupBox, QScrollArea, QCheckBox, QWidget,
+    QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
+    QPlainTextEdit, QProgressBar, QFileDialog, QGroupBox, QScrollArea,
+    QCheckBox, QWidget, QColorDialog, QSlider, QStackedWidget as _QStackedWidget,
 )
+from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry, QgsProject,
     QgsVectorLayer,
@@ -401,6 +404,8 @@ class ParamsPage(QWizardPage):
         vector_layout.addWidget(self._vector_scroll)
         layout.addWidget(vector_group)
 
+        layout.addWidget(self._build_grg_group())
+
         if not self._wizard.is_upload_mode:
             output_group = QGroupBox('Arquivo de destino')
             output_layout = QHBoxLayout(output_group)
@@ -502,6 +507,183 @@ class ParamsPage(QWizardPage):
 
     def _sync_quality_state(self):
         set_control_enabled(self.quality_spin, self.tile_format() in ('JPG', 'WEBP'))
+
+    # ------------------------------------------------------------------ GRG
+
+    def _build_grg_group(self):
+        grg_group = QGroupBox('Grade GRG (opcional)')
+        outer = QVBoxLayout(grg_group)
+
+        self._grg_check = QCheckBox('Incluir grade GRG no arquivo')
+        outer.addWidget(self._grg_check)
+
+        self._grg_options_widget = QWidget()
+        form = QFormLayout(self._grg_options_widget)
+        form.setContentsMargins(0, 4, 0, 0)
+
+        self._grg_type_combo = QComboBox()
+        self._grg_type_combo.addItem('Alfanumérica', 'alphanumeric')
+        self._grg_type_combo.addItem('UTM', 'utm')
+        self._grg_type_combo.addItem('GMS (Graus/Min/Seg)', 'dms')
+        apply_combo_popup_style(self._grg_type_combo)
+        form.addRow('Tipo:', self._grg_type_combo)
+
+        # Stacked spacing controls — one per grid type
+        self._grg_spacing_stack = _QStackedWidget()
+
+        # Alphanumeric: cols + rows
+        alpha_w = QWidget()
+        alpha_form = QHBoxLayout(alpha_w)
+        alpha_form.setContentsMargins(0, 0, 0, 0)
+        self._grg_col_spin = QSpinBox()
+        self._grg_col_spin.setRange(1, 26)
+        self._grg_col_spin.setValue(5)
+        self._grg_col_spin.setPrefix('Colunas: ')
+        self._grg_row_spin = QSpinBox()
+        self._grg_row_spin.setRange(1, 50)
+        self._grg_row_spin.setValue(4)
+        self._grg_row_spin.setPrefix('Linhas: ')
+        alpha_form.addWidget(self._grg_col_spin)
+        alpha_form.addWidget(self._grg_row_spin)
+        self._grg_spacing_stack.addWidget(alpha_w)
+
+        # UTM: spacing in metres
+        utm_w = QWidget()
+        utm_form = QHBoxLayout(utm_w)
+        utm_form.setContentsMargins(0, 0, 0, 0)
+        self._grg_utm_spin = QDoubleSpinBox()
+        self._grg_utm_spin.setRange(100, 100000)
+        self._grg_utm_spin.setSingleStep(500)
+        self._grg_utm_spin.setValue(1000)
+        self._grg_utm_spin.setSuffix(' m')
+        self._grg_utm_spin.setDecimals(0)
+        utm_form.addWidget(QLabel('Espaçamento:'))
+        utm_form.addWidget(self._grg_utm_spin)
+        utm_form.addStretch()
+        self._grg_spacing_stack.addWidget(utm_w)
+
+        # DMS: spacing in degrees
+        dms_w = QWidget()
+        dms_form = QHBoxLayout(dms_w)
+        dms_form.setContentsMargins(0, 0, 0, 0)
+        self._grg_dms_spin = QDoubleSpinBox()
+        self._grg_dms_spin.setRange(0.001, 10.0)
+        self._grg_dms_spin.setSingleStep(0.01)
+        self._grg_dms_spin.setValue(0.01)
+        self._grg_dms_spin.setDecimals(3)
+        self._grg_dms_spin.setSuffix('°')
+        dms_form.addWidget(QLabel('Espaçamento:'))
+        dms_form.addWidget(self._grg_dms_spin)
+        dms_form.addStretch()
+        self._grg_spacing_stack.addWidget(dms_w)
+
+        form.addRow('Espaçamento:', self._grg_spacing_stack)
+
+        # Line style
+        self._grg_style_combo = QComboBox()
+        for label, val in [('Sólido', 'solid'), ('Tracejado', 'dashed'),
+                           ('Pontilhado', 'dotted'), ('Traço-ponto', 'dotdash')]:
+            self._grg_style_combo.addItem(label, val)
+        apply_combo_popup_style(self._grg_style_combo)
+        form.addRow('Estilo:', self._grg_style_combo)
+
+        # Line width + opacity on same row
+        width_row = QWidget()
+        width_layout = QHBoxLayout(width_row)
+        width_layout.setContentsMargins(0, 0, 0, 0)
+        self._grg_width_spin = QSpinBox()
+        self._grg_width_spin.setRange(1, 10)
+        self._grg_width_spin.setValue(2)
+        self._grg_width_spin.setSuffix(' px')
+        self._grg_width_spin.setMaximumWidth(80)
+        width_layout.addWidget(self._grg_width_spin)
+        width_layout.addWidget(QLabel('Opacidade:'))
+        self._grg_opacity_slider = QSlider(Qt.Horizontal)
+        self._grg_opacity_slider.setRange(0, 100)
+        self._grg_opacity_slider.setValue(80)
+        self._grg_opacity_label = QLabel('80%%')
+        self._grg_opacity_slider.valueChanged.connect(
+            lambda v: self._grg_opacity_label.setText(f'{v}%%'))
+        width_layout.addWidget(self._grg_opacity_slider, 1)
+        width_layout.addWidget(self._grg_opacity_label)
+        form.addRow('Espessura:', width_row)
+
+        # Line color picker
+        self._grg_line_color = QColor('#FF0000')
+        self._grg_color_btn = QPushButton('  ')
+        self._grg_color_btn.setFixedWidth(48)
+        self._grg_color_btn.setStyleSheet(
+            f'background-color: {self._grg_line_color.name()}; border: 1px solid #666;')
+        self._grg_color_btn.clicked.connect(self._pick_line_color)
+        form.addRow('Cor da linha:', self._grg_color_btn)
+
+        # Font color + size
+        font_row = QWidget()
+        font_layout = QHBoxLayout(font_row)
+        font_layout.setContentsMargins(0, 0, 0, 0)
+        self._grg_font_color = QColor('#FFFFFF')
+        self._grg_font_color_btn = QPushButton('  ')
+        self._grg_font_color_btn.setFixedWidth(48)
+        self._grg_font_color_btn.setStyleSheet(
+            f'background-color: {self._grg_font_color.name()}; border: 1px solid #666;')
+        self._grg_font_color_btn.clicked.connect(self._pick_font_color)
+        font_layout.addWidget(self._grg_font_color_btn)
+        font_layout.addWidget(QLabel('Tamanho:'))
+        self._grg_font_spin = QSpinBox()
+        self._grg_font_spin.setRange(8, 48)
+        self._grg_font_spin.setValue(14)
+        self._grg_font_spin.setSuffix(' pt')
+        self._grg_font_spin.setMaximumWidth(80)
+        font_layout.addWidget(self._grg_font_spin)
+        font_layout.addStretch()
+        form.addRow('Cor do texto:', font_row)
+
+        outer.addWidget(self._grg_options_widget)
+
+        self._grg_options_widget.setVisible(False)
+        self._grg_check.toggled.connect(self._grg_options_widget.setVisible)
+        self._grg_type_combo.currentIndexChanged.connect(self._sync_grg_type)
+
+        return grg_group
+
+    def _sync_grg_type(self, index):
+        self._grg_spacing_stack.setCurrentIndex(index)
+
+    def _pick_line_color(self):
+        color = QColorDialog.getColor(self._grg_line_color, self, 'Cor da linha GRG')
+        if color.isValid():
+            self._grg_line_color = color
+            self._grg_color_btn.setStyleSheet(
+                f'background-color: {color.name()}; border: 1px solid #666;')
+
+    def _pick_font_color(self):
+        color = QColorDialog.getColor(self._grg_font_color, self, 'Cor do texto GRG')
+        if color.isValid():
+            self._grg_font_color = color
+            self._grg_font_color_btn.setStyleSheet(
+                f'background-color: {color.name()}; border: 1px solid #666;')
+
+    def grg_enabled(self):
+        return self._grg_check.isChecked()
+
+    def grg_options(self):
+        grid_type = self._grg_type_combo.currentData()
+        opts = {
+            'line_color': self._grg_line_color.name(),
+            'line_opacity': self._grg_opacity_slider.value() / 100.0,
+            'line_width': self._grg_width_spin.value(),
+            'line_style': self._grg_style_combo.currentData(),
+            'font_color': self._grg_font_color.name(),
+            'font_size': self._grg_font_spin.value(),
+        }
+        if grid_type == 'alphanumeric':
+            opts['col_count'] = self._grg_col_spin.value()
+            opts['row_count'] = self._grg_row_spin.value()
+        elif grid_type == 'utm':
+            opts['spacing_m'] = self._grg_utm_spin.value()
+        elif grid_type == 'dms':
+            opts['spacing_deg'] = self._grg_dms_spin.value()
+        return grid_type, opts
 
 
 # ------------------------------------------------------------------ page 3
@@ -699,6 +881,14 @@ class RunPage(QWizardPage):
                 self._running = False
                 self._set_back_enabled(True)
                 return
+
+        if params.grg_enabled():
+            grid_type, grg_opts = params.grg_options()
+            self._append(f'Gerando grade GRG ({grid_type})…')
+            bounds = wizard.region_result.wgs84_extent
+            ok = engine.writer.writeGrg(bounds, grid_type, grg_opts)
+            if not ok:
+                self._append('Aviso: falha ao gerar grade GRG (grade não incluída).')
 
         engine.finalize()
 
