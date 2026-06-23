@@ -665,13 +665,17 @@ def apply_pull(gpkg_path, records, remove_missing=True):
         provider = layer.dataProvider()
         fields = layer.fields()
         id_idx = fields.indexOf('recordId')
+        hash_idx = fields.indexOf(SYNC_HASH_FIELD)
 
         existing = {}
+        existing_hashes = {}
         unpushed_fids = []
         for feat in layer.getFeatures():
             rid = feat.attribute(id_idx)
             if rid:
                 existing[rid] = feat.id()
+                if hash_idx >= 0:
+                    existing_hashes[rid] = str(feat.attribute(hash_idx) or '')
             else:
                 unpushed_fids.append(feat.id())
 
@@ -685,6 +689,13 @@ def apply_pull(gpkg_path, records, remove_missing=True):
                 geom = record_geometry(rec, spec_key)
                 if rec.record_id in existing:
                     fid = existing[rec.record_id]
+                    incoming_hash = str(attr_map.get(SYNC_HASH_FIELD) or '')
+                    if (
+                        not remove_missing
+                        and incoming_hash
+                        and existing_hashes.get(rec.record_id) == incoming_hash
+                    ):
+                        continue
                     attr_changes[fid] = {
                         fields.indexOf(name): value for name, value in attr_map.items()
                         if fields.indexOf(name) >= 0

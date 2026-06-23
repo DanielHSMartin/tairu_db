@@ -13,38 +13,61 @@ from qgis.core import QgsMessageLog
 
 try:
     from ..compat import _MSG_WARNING
+    from ..tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
     from ..tairu_core.mbtiles import tairudb_to_mbtiles
-    from ..tairu_core.workspace import map_workspace, load_last_pull_ts, save_last_pull_ts
+    from ..tairu_core.workspace import map_workspace, save_last_pull_ts
     from ..tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from ..tairu_firebase.models import TairuRecord, now_millis
+    from ..tairu_firebase.models import TairuRecord, now_millis, parse_millis
     from .record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
+    from tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
     from tairu_core.mbtiles import tairudb_to_mbtiles
-    from tairu_core.workspace import map_workspace, load_last_pull_ts, save_last_pull_ts
+    from tairu_core.workspace import map_workspace, save_last_pull_ts
     from tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from tairu_firebase.models import TairuRecord, now_millis
+    from tairu_firebase.models import TairuRecord, now_millis, parse_millis
     from tairu_sync.record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
     from tairu_sync.tasks import run_task
 
-# Safety margin subtracted from last-pull timestamp to absorb clock skew
-# between the client and Firestore server (typically < 1 s; 30 s is generous).
+# Safety margin subtracted from the Firestore serverTimestamp cursor to absorb
+# precision loss and races around the last observed commit.
 _PULL_CLOCK_SKEW_MS = 30_000
+
+
+def _rows_server_watermark(rows, empty_fallback_ms=0):
+    """Highest serverTimestamp in fetched rows, or fallback for empty snapshots."""
+    saw_row = False
+    high = 0
+    for _record_id, fields in rows or []:
+        saw_row = True
+        high = max(high, parse_millis((fields or {}).get('serverTimestamp')))
+    if high > 0:
+        return high
+    return int(empty_fallback_ms or 0) if not saw_row else 0
 
 
 def start_pull(dock, tmap):
     """Fetch the map's records and merge them into the project layers.
 
     On the first pull (or after a forced full-sync) fetches every record in the
-    map. On subsequent pulls only records whose lastModified is newer than the
-    previous pull timestamp are transferred — the delta is typically tiny.
+    map. On subsequent pulls only records committed after the last observed
+    Firestore serverTimestamp are transferred — the delta is typically tiny.
     """
     fs = dock.fs
     page = dock.detail_page
     paths = map_workspace(dock.env.key, tmap.map_id)
+    cache = FirestoreCache(dock.env.key, dock.tokens.uid)
     pull_started_at = now_millis()
-    since_millis = load_last_pull_ts(paths)
+    try:
+        cache_state = cache.load_sync_state(tmap.map_id, RECORDS_COLLECTION)
+    except Exception:
+        cache_state = {}
+    cache_since_millis = int(cache_state.get('high_watermark_ms') or 0)
+    has_full_cache_snapshot = int(cache_state.get('last_full_sync_ms') or 0) > 0
+    # Migration safety: legacy last_pull.json and delta-only cache state are not
+    # enough to prove the SQLite cache contains the whole record collection.
+    since_millis = cache_since_millis if has_full_cache_snapshot else 0
     is_incremental = since_millis > 0
 
     page.set_busy(True, 'Baixando registros…')
@@ -59,7 +82,7 @@ def start_pull(dock, tmap):
             task.report(1.0, f'{len(rows)} registros recebidos')
         return rows
 
-    def on_success(rows):
+    def apply_rows(rows, from_cache=False):
         records = []
         parse_errors = []
         for record_id, fields in rows:
@@ -69,17 +92,23 @@ def start_pull(dock, tmap):
                 parse_errors.append((record_id, str(e)))
 
         try:
-            result = apply_pull(paths['gpkg'], records, remove_missing=not is_incremental)
+            result = apply_pull(
+                paths['gpkg'],
+                records,
+                remove_missing=from_cache or not is_incremental,
+            )
         except Exception as e:
             page.set_busy(False)
             page.set_status(f'Falha ao gravar GeoPackage: {e}', error=True)
-            return
+            return None
 
-        save_last_pull_ts(paths, pull_started_at)
         add_record_layers_to_project(paths['gpkg'], tmap.nome or tmap.map_id)
 
         page.set_busy(False)
-        prefix = 'Delta' if is_incremental else 'Registros'
+        if from_cache:
+            prefix = 'Cache local'
+        else:
+            prefix = 'Delta' if is_incremental else 'Registros'
         summary = (f'{prefix}: {result.added} novos, {result.updated} atualizados, '
                    f'{result.removed} removidos.')
         errors = result.errors + parse_errors
@@ -97,8 +126,57 @@ def start_pull(dock, tmap):
         else:
             page.set_status(summary)
         dock.notify(f'{tmap.nome}: {summary}')
+        return result
+
+    def on_success(rows):
+        if is_incremental:
+            sync_watermark = _rows_server_watermark(rows) or since_millis
+        else:
+            sync_watermark = _rows_server_watermark(
+                rows,
+                empty_fallback_ms=pull_started_at,
+            )
+        try:
+            cache.store_records(
+                tmap.map_id,
+                rows,
+                pull_started_at,
+                full_snapshot=not is_incremental,
+            )
+        except Exception:
+            pass
+        result = apply_rows(rows)
+        if result is None:
+            return
+        try:
+            cache.save_sync_state(
+                tmap.map_id,
+                RECORDS_COLLECTION,
+                sync_watermark,
+                full_snapshot=not is_incremental,
+            )
+        except Exception:
+            pass
+        save_last_pull_ts(paths, sync_watermark)
 
     def on_error(message):
+        cached_rows = []
+        cache_loaded = False
+        if has_full_cache_snapshot:
+            try:
+                cached_rows = cache.load_records(tmap.map_id, include_deleted=True)
+                cache_loaded = True
+            except Exception:
+                cached_rows = []
+        if cache_loaded:
+            result = apply_rows(cached_rows, from_cache=True)
+            if result is not None:
+                page.set_status(
+                    f'Falha ao atualizar online. Usando cache local.\n{message}',
+                    error=False,
+                )
+                dock.notify(f'{tmap.nome}: registros carregados do cache local.')
+                return
         page.set_busy(False)
         page.set_status(message, error=True)
 

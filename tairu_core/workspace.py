@@ -2,6 +2,8 @@
 
 """
 Managed local workspace for cloud-synced data:
+{QGIS settings dir}/tairu_workspace/{env}/
+    firestore_cache.sqlite - Firestore-shaped canonical cache
 {QGIS settings dir}/tairu_workspace/{env}/{mapId}/
     records.gpkg   — pulled records as editable layers
     downloads/     — .tairudb files fetched from Storage
@@ -17,7 +19,14 @@ from qgis.core import QgsApplication
 
 
 def workspace_root(env_key):
-    return os.path.join(QgsApplication.qgisSettingsDirPath(), 'tairu_workspace', env_key)
+    root = os.path.join(QgsApplication.qgisSettingsDirPath(), 'tairu_workspace', env_key)
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def firestore_cache_path(env_key):
+    """Path to the per-environment Firestore-shaped SQLite cache."""
+    return os.path.join(workspace_root(env_key), 'firestore_cache.sqlite')
 
 
 def map_workspace(env_key, map_id):

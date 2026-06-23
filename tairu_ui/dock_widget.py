@@ -25,6 +25,8 @@ try:
     from ..tairu_firebase.models import TairuMap
     from ..tairu_firebase.oauth_loopback import LoopbackServer
     from ..tairu_firebase.storage import StorageClient
+    from ..tairu_core.firestore_cache import FirestoreCache
+    from ..tairu_firebase.models import now_millis
     from ..tairu_sync.tasks import run_task, cancel_all_tasks
     from .login_page import LoginPage
     from .maps_page import MapsPage
@@ -39,6 +41,8 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_firebase.models import TairuMap
     from tairu_firebase.oauth_loopback import LoopbackServer
     from tairu_firebase.storage import StorageClient
+    from tairu_core.firestore_cache import FirestoreCache
+    from tairu_firebase.models import now_millis
     from tairu_sync.tasks import run_task, cancel_all_tasks
     from tairu_ui.login_page import LoginPage
     from tairu_ui.maps_page import MapsPage
@@ -258,10 +262,43 @@ class TairuDockWidget(QgsDockWidget):
     def show_maps_page(self):
         self.stack.setCurrentWidget(self.maps_page)
 
+    def _cache(self):
+        if not self.env or not self.tokens or not self.tokens.uid:
+            return None
+        return FirestoreCache(self.env.key, self.tokens.uid)
+
+    def _apply_map_rows(self, rows, status=None, allow_remote_counts=True):
+        self.maps = {}
+        for map_id, fields in rows:
+            self.maps[map_id] = TairuMap.from_fields(map_id, fields)
+        self.maps_page.set_maps(list(self.maps.values()), self.tokens.uid)
+        if status is not None:
+            self.maps_page.set_status(status)
+        self._load_record_counts(allow_remote=allow_remote_counts)
+
+    def _load_cached_maps(self):
+        cache = self._cache()
+        if cache is None:
+            return False
+        try:
+            rows = cache.load_maps()
+        except Exception:
+            return False
+        if not rows:
+            return False
+        self._apply_map_rows(
+            rows,
+            status='Mostrando mapas salvos localmente.',
+            allow_remote_counts=False,
+        )
+        return True
+
     def refresh_maps(self):
         fs, uid = self.fs, self.tokens.uid
+        had_cached_maps = self._load_cached_maps()
         self.maps_page.set_busy(True)
-        self.maps_page.set_status('Carregando mapas…')
+        if not had_cached_maps:
+            self.maps_page.set_status('Carregando mapas…')
         run_task(
             'Tairu Maps: carregando mapas',
             lambda task: fs.list_user_maps(uid),
@@ -270,42 +307,70 @@ class TairuDockWidget(QgsDockWidget):
         )
 
     def _on_maps_loaded(self, rows):
-        self.maps = {}
-        for map_id, fields in rows:
-            self.maps[map_id] = TairuMap.from_fields(map_id, fields)
+        cache = self._cache()
+        if cache is not None:
+            try:
+                cache.store_maps(rows, now_millis())
+            except Exception:
+                pass
         self.maps_page.set_busy(False)
-        self.maps_page.set_maps(list(self.maps.values()), self.tokens.uid)
-        self._load_record_counts()
+        self._apply_map_rows(rows, status='')
 
     def _on_maps_failed(self, message):
         self.maps_page.set_busy(False)
-        self.maps_page.set_status(message, error=True)
+        if self.maps:
+            self.maps_page.set_status(
+                f'Sem conexão com o Tairu Maps. Usando mapas salvos localmente. {message}',
+                error=False)
+        else:
+            self.maps_page.set_status(message, error=True)
 
-    def _load_record_counts(self):
-        """Best-effort COUNT per map, all in one background task."""
+    def _load_record_counts(self, allow_remote=True):
+        """Best-effort record counts, local first and remote only when needed."""
+        if not self.maps:
+            return
+        local_counts = {}
+        cache = self._cache()
+        if cache is not None:
+            try:
+                local_counts = cache.record_counts()
+            except Exception:
+                local_counts = {}
+        for map_id, count in local_counts.items():
+            if map_id in self.maps:
+                self.maps_page.set_record_count(map_id, count)
+
+        missing_ids = [map_id for map_id in self.maps.keys() if map_id not in local_counts]
         fs = self.fs
-        map_ids = list(self.maps.keys())
+        if not allow_remote or not missing_ids or fs is None:
+            return
 
         def fetch(task):
             counts = {}
-            for i, map_id in enumerate(map_ids):
+            total = len(missing_ids)
+            for index, map_id in enumerate(missing_ids):
                 if task.isCanceled():
                     break
                 try:
-                    counts[map_id] = fs.count_records(map_id)
+                    count = fs.count_records(map_id)
                 except Exception:
-                    counts[map_id] = None
-                task.report((i + 1) / max(1, len(map_ids)))
+                    count = None
+                if count is not None:
+                    counts[map_id] = count
+                task.report((index + 1) / max(1, total), 'Contando registros…')
             return counts
 
-        def apply(counts):
+        def apply_counts(counts):
             for map_id, count in counts.items():
-                if count is not None:
+                if map_id in self.maps:
                     self.maps_page.set_record_count(map_id, count)
 
-        if map_ids:
-            run_task('Tairu Maps: contando registros', fetch,
-                     on_success=apply, on_error=lambda _msg: None)
+        run_task(
+            'Tairu Maps: contando registros',
+            fetch,
+            on_success=apply_counts,
+            on_error=lambda _message: None,
+        )
 
     def open_map(self, map_id):
         tmap = self.maps.get(map_id)

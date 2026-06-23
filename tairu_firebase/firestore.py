@@ -91,6 +91,14 @@ def doc_id_from_name(name):
     return name.rsplit('/', 1)[-1]
 
 
+def timestamp_value_from_millis(millis):
+    """Firestore timestampValue for an epoch-ms cursor."""
+    millis = max(0, int(millis or 0))
+    seconds, ms = divmod(millis, 1000)
+    dt = datetime.datetime.fromtimestamp(seconds, tz=datetime.timezone.utc)
+    return {'timestampValue': dt.strftime('%Y-%m-%dT%H:%M:%S') + f'.{ms:03d}Z'}
+
+
 # ------------------------------------------------------------------ client
 
 class FirestoreClient:
@@ -158,23 +166,25 @@ class FirestoreClient:
         return result
 
     def list_records_since(self, map_id, since_millis, cancel_cb=None):
-        """Records with lastModified > since_millis. Returns [(record_id, dict)].
+        """Records committed after since_millis. Returns [(record_id, dict)].
 
         Includes isDeleted=True entries so incremental pull can remove soft-deleted
-        records from the local GeoPackage. Uses a single-field index on lastModified
-        (created automatically by Firestore — no manual index needed).
+        records from the local GeoPackage. Uses serverTimestamp because app-side
+        writes store lastModified as Firestore Timestamp values while older/plugin
+        writes may store integer millis; serverTimestamp is a consistent server-side
+        commit cursor across both writers.
         """
         body = {
             'structuredQuery': {
                 'from': [{'collectionId': 'records'}],
                 'where': {
                     'fieldFilter': {
-                        'field': {'fieldPath': 'lastModified'},
+                        'field': {'fieldPath': 'serverTimestamp'},
                         'op': 'GREATER_THAN',
-                        'value': {'integerValue': str(int(since_millis))},
+                        'value': timestamp_value_from_millis(since_millis),
                     }
                 },
-                'orderBy': [{'field': {'fieldPath': 'lastModified'}, 'direction': 'ASCENDING'}],
+                'orderBy': [{'field': {'fieldPath': 'serverTimestamp'}, 'direction': 'ASCENDING'}],
             }
         }
         rows = self._session.request_json(

@@ -478,6 +478,12 @@ class GrgPage(QWizardPage):
         self._grg_check = QCheckBox('Incluir grade GRG')
         layout.addWidget(self._grg_check)
 
+        _compat_label = QLabel(
+            'ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.'
+        )
+        _compat_label.setStyleSheet('color: #666; font-style: italic; margin-bottom: 4px;')
+        layout.addWidget(_compat_label)
+
         self._grg_options_widget = QWidget()
         form = QFormLayout(self._grg_options_widget)
 

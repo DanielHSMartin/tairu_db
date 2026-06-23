@@ -20,6 +20,7 @@ from qgis.core import (
 )
 
 try:
+    from ..tairu_core.firestore_cache import FirestoreCache
     from ..tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -33,6 +34,7 @@ try:
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.firestore_cache import FirestoreCache
     from tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -1097,9 +1099,30 @@ def execute_push(dock, tmap, plan, source_layer):
 
     def on_success(total):
         _write_back_records_to_source_layer(plan, source_layer)
+        try:
+            cache = FirestoreCache(dock.env.key, dock.tokens.uid)
+            cache.store_record_models(
+                plan.map_id,
+                [item.record for item in plan.writable_items()],
+                now_millis(),
+            )
+        except Exception:
+            pass
         page.set_busy(False)
-        page.set_status(f'{total} alterações enviadas com sucesso.')
+        page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
         dock.notify(f'{tmap.nome}: {plan.summary()} — enviado.')
+        try:
+            try:
+                from .pull import start_pull
+            except ImportError:
+                from tairu_sync.pull import start_pull
+            start_pull(dock, tmap)
+        except Exception as e:
+            page.set_status(
+                f'{total} alterações enviadas com sucesso, mas não foi possível '
+                f'atualizar os registros automaticamente: {e}',
+                error=True,
+            )
 
     def on_error(message):
         page.set_busy(False)
