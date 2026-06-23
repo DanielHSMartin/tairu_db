@@ -20,7 +20,7 @@ from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QPlainTextEdit, QProgressBar, QFileDialog, QGroupBox, QScrollArea,
-    QCheckBox, QWidget, QColorDialog, QSlider, QStackedWidget as _QStackedWidget,
+    QCheckBox, QWidget, QColorDialog, QSlider,
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
@@ -493,49 +493,13 @@ class GrgPage(QWizardPage):
         apply_combo_popup_style(self._grg_type_combo)
         form.addRow('Tipo:', self._grg_type_combo)
 
-        # --- Stacked spacing controls ---
-        self._grg_spacing_stack = _QStackedWidget()
-
-        # Alphanumeric: single spacing in metres (index 0)
-        alpha_w = QWidget()
-        alpha_lay = QHBoxLayout(alpha_w)
-        alpha_lay.setContentsMargins(0, 0, 0, 0)
-        self._grg_alpha_spin = QDoubleSpinBox()
-        self._grg_alpha_spin.setRange(50, 100000)
-        self._grg_alpha_spin.setValue(500)
-        self._grg_alpha_spin.setSuffix(' m')
-        self._grg_alpha_spin.setDecimals(0)
-        self._grg_alpha_spin.setSingleStep(100)
-        alpha_lay.addWidget(self._grg_alpha_spin)
-        alpha_lay.addWidget(QLabel('por célula'))
-        alpha_lay.addStretch()
-        self._grg_spacing_stack.addWidget(alpha_w)
-
-        # Geographic: metres + degrees (synced) (index 1)
-        geo_w = QWidget()
-        geo_lay = QHBoxLayout(geo_w)
-        geo_lay.setContentsMargins(0, 0, 0, 0)
-        self._grg_dms_m_spin = QDoubleSpinBox()
-        self._grg_dms_m_spin.setRange(10, 1200000)
-        self._grg_dms_m_spin.setSingleStep(500)
-        self._grg_dms_m_spin.setValue(round(0.01 * 111320))
-        self._grg_dms_m_spin.setDecimals(0)
-        self._grg_dms_m_spin.setSuffix(' m')
-        self._grg_dms_deg_spin = QDoubleSpinBox()
-        self._grg_dms_deg_spin.setRange(0.0001, 10.0)
-        self._grg_dms_deg_spin.setSingleStep(0.01)
-        self._grg_dms_deg_spin.setValue(0.01)
-        self._grg_dms_deg_spin.setDecimals(4)
-        self._grg_dms_deg_spin.setSuffix('°')
-        geo_lay.addWidget(self._grg_dms_m_spin)
-        geo_lay.addWidget(QLabel('ou'))
-        geo_lay.addWidget(self._grg_dms_deg_spin)
-        geo_lay.addStretch()
-        self._grg_dms_deg_spin.valueChanged.connect(self._on_dms_deg_changed)
-        self._grg_dms_m_spin.valueChanged.connect(self._on_dms_m_changed)
-        self._grg_spacing_stack.addWidget(geo_w)
-
-        form.addRow('Espaçamento:', self._grg_spacing_stack)
+        self._grg_spacing_spin = QDoubleSpinBox()
+        self._grg_spacing_spin.setRange(50, 200000)
+        self._grg_spacing_spin.setValue(500)
+        self._grg_spacing_spin.setSuffix(' m')
+        self._grg_spacing_spin.setDecimals(0)
+        self._grg_spacing_spin.setSingleStep(100)
+        form.addRow('Espaçamento:', self._grg_spacing_spin)
 
         # Line style
         self._grg_style_combo = QComboBox()
@@ -601,17 +565,6 @@ class GrgPage(QWizardPage):
 
         self._grg_options_widget.setVisible(False)
         self._grg_check.toggled.connect(self._grg_options_widget.setVisible)
-        self._grg_type_combo.currentIndexChanged.connect(self._grg_spacing_stack.setCurrentIndex)
-
-    def _on_dms_deg_changed(self, value):
-        self._grg_dms_m_spin.blockSignals(True)
-        self._grg_dms_m_spin.setValue(round(value * 111320))
-        self._grg_dms_m_spin.blockSignals(False)
-
-    def _on_dms_m_changed(self, value):
-        self._grg_dms_deg_spin.blockSignals(True)
-        self._grg_dms_deg_spin.setValue(round(value / 111320, 4))
-        self._grg_dms_deg_spin.blockSignals(False)
 
     def _pick_line_color(self):
         color = QColorDialog.getColor(self._grg_line_color, self, 'Cor da linha GRG')
@@ -640,10 +593,11 @@ class GrgPage(QWizardPage):
             'font_color': self._grg_font_color.name(),
             'font_size': self._grg_font_spin.value(),
         }
+        spacing_m = self._grg_spacing_spin.value()
         if grid_type == 'alphanumeric':
-            opts['spacing_m'] = self._grg_alpha_spin.value()
+            opts['spacing_m'] = spacing_m
         elif grid_type == 'geographic':
-            opts['spacing_deg'] = self._grg_dms_deg_spin.value()
+            opts['spacing_deg'] = spacing_m / 111320.0
         return grid_type, opts
 
 
