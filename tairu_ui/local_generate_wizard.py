@@ -35,6 +35,10 @@ try:
         _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
         _exec_dialog,
     )
+    from ..tairu_core.contour_generator import (
+        ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
+        SMOOTHING_NONE, generate_contours,
+    )
     from ..tairu_core.feedback import FeedbackAdapter
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles
@@ -50,6 +54,10 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
         _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
         _exec_dialog,
+    )
+    from tairu_core.contour_generator import (
+        ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
+        SMOOTHING_NONE, generate_contours,
     )
     from tairu_core.feedback import FeedbackAdapter
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
@@ -115,10 +123,16 @@ class WizardFeedback(FeedbackAdapter):
         self._bar = progress_bar
         self._log = log_fn
         self.canceled = False
+        self._last_progress = 0
 
     def set_progress(self, value):
+        # Progress only moves forward — prevents backward jumps between pipeline phases.
+        v = int(value)
+        if v < self._last_progress:
+            return
+        self._last_progress = v
         try:
-            self._bar.setValue(int(value))
+            self._bar.setValue(v)
         except RuntimeError:
             pass
 
@@ -162,6 +176,7 @@ class TairuDBGenerateWizard(QWizard):
         self.extent_page = ExtentPage(self)
         self.params_page = ParamsPage(self)
         self.vector_page = VectorLayersPage(self)
+        self.contour_page = ContourPage(self)
         self.grg_page = GrgPage(self)
         self.destination_page = DestinationPage(self)
         self.estimate_page = EstimatePage(self)
@@ -169,6 +184,7 @@ class TairuDBGenerateWizard(QWizard):
         self.addPage(self.extent_page)
         self.addPage(self.params_page)
         self.addPage(self.vector_page)
+        self.addPage(self.contour_page)
         self.addPage(self.grg_page)
         self.addPage(self.destination_page)
         self.addPage(self.estimate_page)
@@ -463,7 +479,102 @@ class VectorLayersPage(QWizardPage):
         return layers
 
 
-# ------------------------------------------------------------------ page 4 — Grade GRG
+# ------------------------------------------------------------------ page 4 — Curvas de Nível
+
+class ContourPage(QWizardPage):
+
+    def __init__(self, wizard):
+        super().__init__()
+        self._wizard = wizard
+        self.setTitle('Curvas de Nível')
+        self.setSubTitle(
+            'Gere curvas de nível automaticamente a partir de dados de elevação (opcional).\n'
+            'Requer conexão com a internet na etapa de geração.')
+
+        layout = QVBoxLayout(self)
+
+        self._enable_check = QCheckBox('Gerar Curvas de Nível')
+        layout.addWidget(self._enable_check)
+
+        _compat_label = QLabel('ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.')
+        _compat_label.setStyleSheet('color: #666; font-style: italic; margin-bottom: 4px;')
+        layout.addWidget(_compat_label)
+
+        self._options_widget = QWidget()
+        form = QFormLayout(self._options_widget)
+
+        self._source_combo = QComboBox()
+        self._source_combo.addItem('Copernicus GLO-30 (Mundial)', SOURCE_COPERNICUS)
+        self._source_combo.addItem('INPE TOPODATA (Brasil)', SOURCE_INPE)
+        apply_combo_popup_style(self._source_combo)
+        form.addRow('Fonte de dados:', self._source_combo)
+
+        self._interval_spin = QSpinBox()
+        self._interval_spin.setRange(1, 1000)
+        self._interval_spin.setValue(10)
+        self._interval_spin.setSuffix(' m')
+        self._interval_spin.setSingleStep(5)
+        self._interval_spin.setAccelerated(True)
+        self._interval_spin.setMaximumWidth(110)
+        form.addRow('Intervalo:', self._interval_spin)
+
+        self._smoothing_combo = QComboBox()
+        for lvl in [SMOOTHING_NONE, 'Baixo', 'Médio', 'Alto']:
+            self._smoothing_combo.addItem(lvl)
+        self._smoothing_combo.setCurrentIndex(2)  # Médio
+        apply_combo_popup_style(self._smoothing_combo)
+        form.addRow('Suavização:', self._smoothing_combo)
+
+        self._color = QColor(204, 119, 0, 204)  # brownish, ~80% opacity
+        self._color_btn = QPushButton('  ')
+        self._color_btn.setFixedWidth(48)
+        self._update_color_btn()
+        self._color_btn.clicked.connect(self._pick_color)
+        form.addRow('Cor das curvas:', self._color_btn)
+
+        layout.addWidget(self._options_widget)
+        layout.addStretch(1)
+
+        self._options_widget.setVisible(False)
+        self._enable_check.toggled.connect(self._options_widget.setVisible)
+
+    def _update_color_btn(self):
+        r, g, b, a = (self._color.red(), self._color.green(),
+                      self._color.blue(), self._color.alpha())
+        self._color_btn.setStyleSheet(
+            f'background-color: rgba({r},{g},{b},{a}); border: 1px solid #666;')
+
+    def _pick_color(self):
+        try:
+            opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
+        except AttributeError:
+            opt = QColorDialog.ShowAlphaChannel
+        color = QColorDialog.getColor(
+            self._color, self, 'Cor das curvas de nível', options=opt)
+        if color.isValid():
+            self._color = color
+            self._update_color_btn()
+
+    def contour_enabled(self):
+        return self._enable_check.isChecked()
+
+    def dem_source(self):
+        return self._source_combo.currentData()
+
+    def source_label(self):
+        return self._source_combo.currentText()
+
+    def interval(self):
+        return self._interval_spin.value()
+
+    def smoothing(self):
+        return self._smoothing_combo.currentText()
+
+    def color(self):
+        return QColor(self._color)
+
+
+# ------------------------------------------------------------------ page 5 — Grade GRG
 
 class GrgPage(QWizardPage):
 
@@ -583,6 +694,9 @@ class GrgPage(QWizardPage):
     def grg_enabled(self):
         return self._grg_check.isChecked()
 
+    def grg_type_label(self):
+        return self._grg_type_combo.currentText()
+
     def grg_options(self):
         grid_type = self._grg_type_combo.currentData()
         opts = {
@@ -601,7 +715,7 @@ class GrgPage(QWizardPage):
         return grid_type, opts
 
 
-# ------------------------------------------------------------------ page 5 — arquivo de destino
+# ------------------------------------------------------------------ page 6 — arquivo de destino
 
 class DestinationPage(QWizardPage):
 
@@ -687,7 +801,7 @@ class DestinationPage(QWizardPage):
         return name
 
 
-# ------------------------------------------------------------------ page 6
+# ------------------------------------------------------------------ page 7
 
 class EstimatePage(QWizardPage):
 
@@ -762,11 +876,19 @@ class EstimatePage(QWizardPage):
             def report_error(self, text, fatal=False):
                 lines.append(text)
 
+        cp = wizard.contour_page
+        gp = wizard.grg_page
         format_estimate_report(
             wizard.estimate_result, _Collector(),
             num_vector_layers=len(vector_layers),
             vector_feature_count=vector_feature_count,
-            dry_run_footer=False)
+            dry_run_footer=False,
+            contour_enabled=cp.contour_enabled(),
+            contour_source_label=cp.source_label(),
+            contour_interval=cp.interval(),
+            contour_smoothing=cp.smoothing(),
+            grg_enabled=gp.grg_enabled(),
+            grg_type_label=gp.grg_type_label())
         self.report.setPlainText('\n'.join(lines))
 
         if wizard.is_upload_mode and wizard.estimate_result.avg_mb > _UPLOAD_SOFT_LIMIT_MB:
@@ -790,7 +912,7 @@ class EstimatePage(QWizardPage):
         return self._ok
 
 
-# ------------------------------------------------------------------ page 7
+# ------------------------------------------------------------------ page 8
 
 class RunPage(QWizardPage):
 
@@ -884,6 +1006,39 @@ class RunPage(QWizardPage):
                 self._set_back_enabled(True)
                 return
 
+        if wizard.contour_page.contour_enabled():
+            self._append('Gerando curvas de nível…')
+            try:
+                contour_layer = generate_contours(
+                    wizard.region_result.wgs84_extent,
+                    wizard.contour_page.dem_source(),
+                    wizard.contour_page.interval(),
+                    wizard.contour_page.smoothing(),
+                    wizard.contour_page.color(),
+                    wizard.feedback,
+                )
+                if wizard.feedback.canceled:
+                    engine.cleanup_resources()
+                    self._append('Geração cancelada.')
+                    self._running = False
+                    self._set_back_enabled(True)
+                    return
+                self._append('Exportando curvas de nível…')
+                export_vector_layers(
+                    engine.writer, [contour_layer],
+                    QgsProject.instance().transformContext(), wizard.feedback,
+                    progress_start=85, progress_span=5)
+                if wizard.feedback.canceled:
+                    engine.cleanup_resources()
+                    self._append('Geração cancelada.')
+                    self._running = False
+                    self._set_back_enabled(True)
+                    return
+            except ContourError as exc:
+                self._append(f'Aviso: curvas de nível não incluídas — {exc}')
+            except Exception as exc:
+                self._append(f'Aviso: erro ao gerar curvas de nível — {exc}')
+
         if wizard.grg_page.grg_enabled():
             grid_type, grg_opts = wizard.grg_page.grg_options()
             self._append(f'Gerando grade GRG ({grid_type})…')
@@ -905,6 +1060,7 @@ class RunPage(QWizardPage):
                 return
             self._upload(output_file, file_name)
         else:
+            self.progress.setValue(100)
             self._append(f'Concluído! Arquivo gerado: {size_mb:.1f} MB')
             self.output_label.setText(f'Salvo em: {output_file}')
             self._done = True

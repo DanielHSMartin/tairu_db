@@ -160,8 +160,11 @@ def _fmt_size(mb):
 
 
 def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_count=0,
-                           dry_run_footer=True):
-    """Push the dry-run report (same text as plugin 1.x) through a feedback adapter."""
+                           dry_run_footer=True, contour_enabled=False,
+                           contour_source_label='', contour_interval=10,
+                           contour_smoothing='Médio',
+                           grg_enabled=False, grg_type_label=''):
+    """Push the dry-run report through a feedback adapter."""
     num_regions = len(est.region_tile_counts)
     quality_str = f" (qualidade {est.quality})" if est.fmt in ('JPG', 'WEBP') else ""
     sep = "─" * 34
@@ -172,6 +175,19 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
     line()
     line("[ SIMULAÇÃO] Nenhum arquivo foi gerado")
     line("=" * 34)
+    line()
+    line("O ARQUIVO CONTERÁ")
+    line(sep)
+    line((f"  Tiles raster    : {est.total_tiles:,} tiles · zoom {est.max_zoom} · "
+          f"{est.fmt}{quality_str} · ~{_fmt_size(est.avg_mb)}").replace(',', '.'))
+    if num_vector_layers > 0:
+        feat_s = 'ões' if vector_feature_count != 1 else 'ão'
+        line((f"  Vetoriais       : {num_vector_layers} camada{'s' if num_vector_layers != 1 else ''} "
+              f"· {vector_feature_count:,} feição{feat_s}").replace(',', '.'))
+    if contour_enabled:
+        line(f"  Curvas de nível : {contour_source_label} · {contour_interval} m · {contour_smoothing}")
+    if grg_enabled:
+        line(f"  Grade GRG       : {grg_type_label}")
     line()
     line("CONFIGURAÇÃO")
     line(sep)
@@ -194,13 +210,27 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
     line("TEMPO ESTIMADO")
     line(sep)
     line(f"  {est.threads_number} thread{'s' if est.threads_number != 1 else ''} paralela{'s' if est.threads_number != 1 else ''} : {est.time_str}")
-    line(f"  (~0,15 s/tile em hardware típico)")
+    line("  (~0,15 s/tile em hardware típico)")
     if num_vector_layers > 0:
         line()
         line("CAMADAS VETORIAIS")
         line(sep)
         line(f"  Camadas  : {num_vector_layers}")
         line(f"  Feições  : {vector_feature_count:,}".replace(',', '.'))
+    if contour_enabled:
+        master_interval = contour_interval * 5
+        line()
+        line("CURVAS DE NÍVEL")
+        line(sep)
+        line(f"  Fonte       : {contour_source_label}")
+        if 'INPE' in contour_source_label:
+            line("  Cobertura   : Brasil (6°N–34°S, 75°W–34.5°W)")
+        else:
+            line("  Cobertura   : Global")
+        line(f"  Intervalo   : {contour_interval} m  ·  Curvas mestras: {master_interval} m")
+        line(f"  Suavização  : {contour_smoothing}")
+        line("  Requer internet. Tiles DEM são salvos em cache localmente.")
+        line("  Tempo de download não incluído nesta estimativa.")
     line()
 
     if est.warnings:
