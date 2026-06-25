@@ -31,7 +31,8 @@ class LoginPage(QWidget):
         layout.setSpacing(10)
 
         title = set_title(QLabel('Tairu Maps'))
-        subtitle = set_muted(QLabel('Entre com sua conta do Tairu Maps para acessar seus mapas.'))
+        subtitle = set_muted(QLabel(
+            'Entre com sua conta do Tairu Maps para acessar suas expedições.'))
         subtitle.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -63,7 +64,7 @@ class LoginPage(QWidget):
         local_desc.setWordWrap(True)
         layout.addWidget(local_desc)
 
-        self.generate_local_btn = set_primary_button(QPushButton('Gerar arquivo TairuDB…'))
+        self.generate_local_btn = set_primary_button(QPushButton('Gerar arquivo TairuDB'))
         self.generate_local_btn.clicked.connect(self.generateLocalRequested.emit)
         layout.addWidget(self.generate_local_btn)
 

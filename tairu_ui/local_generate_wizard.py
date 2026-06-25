@@ -394,25 +394,13 @@ class ParamsPage(QWizardPage):
         self.format_combo.currentTextChanged.connect(self._sync_quality_state)
         self._sync_quality_state()
 
-        self.name_edit = None
-        if self._wizard.is_upload_mode:
-            self.name_edit = QLineEdit()
-            self.name_edit.textChanged.connect(lambda _: self.completeChanged.emit())
-            form.addRow('Nome do arquivo:', self.name_edit)
-
         layout.addLayout(form)
         layout.addStretch(1)
 
     def initializePage(self):
-        if self._wizard.is_upload_mode and self.name_edit is not None:
-            if not self.name_edit.text().strip():
-                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-                base = slugify_filename(self._wizard.tmap.nome or 'mapa')
-                self.name_edit.setText(f'{base}-{date_str}.tairudb')
+        pass
 
     def isComplete(self):
-        if self._wizard.is_upload_mode:
-            return bool(self.name_edit and self.name_edit.text().strip())
         return True
 
     def max_zoom(self):
@@ -722,16 +710,24 @@ class DestinationPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Arquivo de Destino')
+        self.setTitle('Nome do Arquivo' if wizard.is_upload_mode else 'Arquivo de Destino')
         self.output_edit = None
+        self.name_edit = None
 
         layout = QVBoxLayout(self)
 
         if wizard.is_upload_mode:
-            self.setSubTitle('O arquivo será enviado ao mapa selecionado no Tairu Maps.')
+            self.setSubTitle(
+                'Escolha apenas o nome do arquivo que será enviado para a expedição.')
+            self.name_edit = QLineEdit()
+            self.name_edit.setPlaceholderText('Ex.: minha-expedicao.tairudb')
+            self.name_edit.textChanged.connect(lambda _: self.completeChanged.emit())
+            form = QFormLayout()
+            form.addRow('Nome do arquivo:', self.name_edit)
+            layout.addLayout(form)
             note = set_muted(QLabel(
-                'O nome do arquivo foi definido na etapa anterior. '
-                'Clique em Avançar para calcular a estimativa.'))
+                'O plugin salva o arquivo temporariamente no workspace local e envia para a '
+                'expedição usando apenas este nome.'))
             note.setWordWrap(True)
             layout.addWidget(note)
         else:
@@ -749,7 +745,12 @@ class DestinationPage(QWizardPage):
         layout.addStretch(1)
 
     def initializePage(self):
-        if not self._wizard.is_upload_mode and self.output_edit is not None:
+        if self._wizard.is_upload_mode and self.name_edit is not None:
+            if not self.name_edit.text().strip():
+                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                base = slugify_filename(self._wizard.tmap.nome or 'expedicao')
+                self.name_edit.setText(f'{base}-{date_str}.tairudb')
+        elif self.output_edit is not None:
             if not self.output_edit.text().strip():
                 date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
                 docs = os.path.expanduser('~/Documents')
@@ -767,7 +768,7 @@ class DestinationPage(QWizardPage):
 
     def isComplete(self):
         if self._wizard.is_upload_mode:
-            return True
+            return bool(self.file_name())
         path = self.output_edit.text().strip() if self.output_edit else ''
         return bool(path)
 
@@ -787,10 +788,9 @@ class DestinationPage(QWizardPage):
 
     def file_name(self):
         if self._wizard.is_upload_mode:
-            name_edit = self._wizard.params_page.name_edit
-            if name_edit is None:
+            if self.name_edit is None:
                 return ''
-            name = slugify_filename(name_edit.text().strip(), fallback='')
+            name = slugify_filename(self.name_edit.text().strip(), fallback='')
         else:
             output_path = self.output_path()
             name = os.path.basename(output_path) if output_path else ''
@@ -900,7 +900,7 @@ class EstimatePage(QWizardPage):
             self.warn_label.setText(
                 f'⚠ Estimativa de {wizard.estimate_result.avg_mb:.0f} MB. Arquivos grandes '
                 'demoram para gerar e consomem bastante memória ao abrir no Tairu Maps mobile, '
-                'e ultrapassam o limite de 100 MB para envio a um mapa na nuvem. '
+                'e ultrapassam o limite de 100 MB para envio a uma expedição na nuvem. '
                 'Você ainda pode gerar e usar o arquivo localmente.')
             self.warn_label.show()
             self._ok = True
@@ -1094,7 +1094,7 @@ class RunPage(QWizardPage):
             if storage.exists(object_path):
                 raise FirebaseError(
                     'ALREADY_EXISTS',
-                    f'Já existe um arquivo chamado "{file_name}" neste mapa. '
+                    f'Já existe um arquivo chamado "{file_name}" nesta expedição. '
                     'Escolha outro nome.',
                     http_status=409)
 
@@ -1115,7 +1115,7 @@ class RunPage(QWizardPage):
             if file_name not in tmap.tairudb_remote_files:
                 tmap.tairudb_remote_files.append(file_name)
             dock.detail_page.update_files(tmap)
-            self._append('Concluído! O arquivo já aparece no mapa do Tairu Maps.')
+            self._append('Concluído! O arquivo já aparece na expedição do Tairu Maps.')
             self.output_label.setText(f'Enviado para: {tmap.nome}')
             self._done = True
             self._running = False

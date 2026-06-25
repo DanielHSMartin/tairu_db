@@ -288,7 +288,7 @@ class TairuDockWidget(QgsDockWidget):
             return False
         self._apply_map_rows(
             rows,
-            status='Mostrando mapas salvos localmente.',
+            status='Mostrando expedições salvas localmente.',
             allow_remote_counts=False,
         )
         return True
@@ -298,9 +298,9 @@ class TairuDockWidget(QgsDockWidget):
         had_cached_maps = self._load_cached_maps()
         self.maps_page.set_busy(True)
         if not had_cached_maps:
-            self.maps_page.set_status('Carregando mapas…')
+            self.maps_page.set_status('Carregando expedições…')
         run_task(
-            'Tairu Maps: carregando mapas',
+            'Tairu Maps: carregando expedições',
             lambda task: fs.list_user_maps(uid),
             on_success=self._on_maps_loaded,
             on_error=self._on_maps_failed,
@@ -320,7 +320,7 @@ class TairuDockWidget(QgsDockWidget):
         self.maps_page.set_busy(False)
         if self.maps:
             self.maps_page.set_status(
-                f'Sem conexão com o Tairu Maps. Usando mapas salvos localmente. {message}',
+                f'Sem conexão com o Tairu Maps. Usando expedições salvas localmente. {message}',
                 error=False)
         else:
             self.maps_page.set_status(message, error=True)

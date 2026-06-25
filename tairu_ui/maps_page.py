@@ -72,7 +72,7 @@ class MapsPage(QWidget):
         layout = QVBoxLayout(self)
 
         header = QHBoxLayout()
-        title = set_title(QLabel('Meus mapas'))
+        title = set_title(QLabel('Minhas expedições'))
         header.addWidget(title)
         header.addStretch(1)
         self.refresh_btn = set_primary_button(QPushButton('Atualizar'))
@@ -80,7 +80,7 @@ class MapsPage(QWidget):
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
 
-        self.archived_check = QCheckBox('Mostrar mapas arquivados')
+        self.archived_check = QCheckBox('Mostrar expedições arquivadas')
         self.archived_check.toggled.connect(lambda _: self._rebuild())
         layout.addWidget(self.archived_check)
 
@@ -136,12 +136,13 @@ class MapsPage(QWidget):
             widget = MapListItemWidget(tmap, self._uid, files, count)
             item = QListWidgetItem()
             item.setData(_USER_ROLE, tmap.map_id)
-            item.setToolTip('Clique para abrir este mapa.')
+            item.setToolTip('Clique para abrir esta expedição.')
             item.setSizeHint(QSize(0, 128))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, widget)
         if visible == 0:
-            self.set_status('Nenhum mapa encontrado. Crie um mapa no aplicativo Tairu Maps.')
+            self.set_status(
+                'Nenhuma expedição encontrada. Crie uma expedição no aplicativo Tairu Maps.')
         else:
             self.set_status('')
 

@@ -34,14 +34,14 @@ class FirebaseError(Exception):
         """Readable Portuguese message for the most common failure modes."""
         if self.is_permission_denied:
             return ("Permissão negada pelo servidor. Verifique se sua conta possui plano "
-                    "Online ou Tempo Real e se você tem o papel necessário neste mapa.")
+                    "Online ou Tempo Real e se você tem o papel necessário nesta expedição.")
         if 'App Check' in (self.message or ''):
             return ("Verificação de segurança (App Check) falhou. "
                     "Tente entrar novamente pelo navegador.")
         if self.is_auth_error:
             return "Sessão expirada. Entre novamente."
         if self.code == 'ALREADY_EXISTS' or self.http_status == 409:
-            return self.message or 'Já existe um arquivo com esse nome neste mapa.'
+            return self.message or 'Já existe um arquivo com esse nome nesta expedição.'
         translations = {
             'EMAIL_NOT_FOUND': 'E-mail não cadastrado.',
             'INVALID_PASSWORD': 'Senha incorreta.',  # pragma: allowlist secret

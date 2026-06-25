@@ -47,7 +47,7 @@ class MapDetailPage(QWidget):
         layout.setSpacing(10)
 
         header = QHBoxLayout()
-        self.back_btn = QPushButton('← Mapas')
+        self.back_btn = QPushButton('← Expedições')
         self.back_btn.clicked.connect(self.backRequested.emit)
         header.addWidget(self.back_btn)
         self.title_label = set_title(QLabel(''))
@@ -69,7 +69,7 @@ class MapDetailPage(QWidget):
 
         self.pull_records_btn = set_action_button(QPushButton('Receber Registros'))
         self.pull_records_btn.setToolTip(
-            'Baixa os registros do mapa e os carrega como camadas (GeoPackage) no projeto.')
+            'Baixa os registros da expedição e os carrega como camadas (GeoPackage) no projeto.')
         self.pull_records_btn.clicked.connect(
             lambda: self._map and self.pullRecordsRequested.emit(self._map.map_id))
         pull_layout.addWidget(self.pull_records_btn)
@@ -92,12 +92,12 @@ class MapDetailPage(QWidget):
 
         self.push_records_btn = set_action_button(QPushButton('Enviar camada vetorial'))
         self.push_records_btn.setToolTip(
-            'Converte feições de uma camada vetorial em registros do mapa (com prévia).')
+            'Converte feições de uma camada vetorial em registros da expedição (com prévia).')
         self.push_records_btn.clicked.connect(
             lambda: self._map and self.pushRecordsRequested.emit(self._map.map_id))
         push_layout.addWidget(self.push_records_btn)
 
-        self.push_raster_btn = set_action_button(QPushButton('Enviar camada raster (.tairudb)'))
+        self.push_raster_btn = set_action_button(QPushButton('Enviar arquivo TairuDB'))
         self.push_raster_btn.clicked.connect(
             lambda: self._map and self.pushRasterRequested.emit(self._map.map_id))
         push_layout.addWidget(self.push_raster_btn)
@@ -127,8 +127,8 @@ class MapDetailPage(QWidget):
         can_edit_files = tmap.can_edit_files(uid)
         self.push_raster_btn.setEnabled(can_edit_files)
         self.push_raster_btn.setToolTip(
-            'Gera um .tairudb da área escolhida e envia para o mapa.' if can_edit_files
-            else 'Requer papel de proprietário ou administrador do mapa.')
+            'Gera um arquivo TairuDB da área escolhida e envia para a expedição.' if can_edit_files
+            else 'Requer papel de proprietário ou administrador da expedição.')
         self.set_busy(False)
         self.set_status('')
         self.update_files(tmap)
