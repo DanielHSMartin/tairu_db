@@ -59,25 +59,34 @@ def _load_record_style_helpers():
     .tairudb export renders colors/opacity/widths identically (same code path,
     not a parallel implementation).
 
-    Returns (feature_export_style, contour_master_modulo, argb_to_hex); all None
-    when unavailable (e.g. tairu_sync not importable), in which case the export
-    falls back to the layer's base symbol color and geometry-type default size.
+    Returns (feature_export_style, contour_master_modulo, argb_to_hex,
+    feature_export_style_json, layer_label_config); all None when unavailable
+    (e.g. tairu_sync not importable), in which case the export falls back to the
+    layer's base symbol color and geometry-type default size with no styleJson.
     Imported lazily to keep tairu_core import-time independent of tairu_sync.
     """
     try:
-        from ..tairu_sync.push import feature_export_style, contour_master_modulo
+        from ..tairu_sync.push import (
+            feature_export_style, contour_master_modulo,
+            feature_export_style_json, layer_label_config,
+        )
         from ..tairu_sync.record_convert import argb_to_hex
-        return feature_export_style, contour_master_modulo, argb_to_hex
+        return (feature_export_style, contour_master_modulo, argb_to_hex,
+                feature_export_style_json, layer_label_config)
     except ImportError:
         pass
     except Exception:
-        return None, None, None
+        return None, None, None, None, None
     try:
-        from tairu_sync.push import feature_export_style, contour_master_modulo
+        from tairu_sync.push import (
+            feature_export_style, contour_master_modulo,
+            feature_export_style_json, layer_label_config,
+        )
         from tairu_sync.record_convert import argb_to_hex
-        return feature_export_style, contour_master_modulo, argb_to_hex
+        return (feature_export_style, contour_master_modulo, argb_to_hex,
+                feature_export_style_json, layer_label_config)
     except Exception:
-        return None, None, None
+        return None, None, None, None, None
 
 
 def export_vector_layers(writer, layers, transform_context, feedback,
@@ -95,7 +104,8 @@ def export_vector_layers(writer, layers, transform_context, feedback,
     if transform_context is None:
         transform_context = QgsProject.instance().transformContext()
 
-    style_fn, modulo_fn, argb_to_hex = _load_record_style_helpers()
+    (style_fn, modulo_fn, argb_to_hex,
+     style_json_fn, label_cfg_fn) = _load_record_style_helpers()
 
     for layer_idx, layer in enumerate(layers):
         if feedback.is_canceled():
@@ -143,6 +153,8 @@ def export_vector_layers(writer, layers, transform_context, feedback,
 
         spec_key = {0: 'point', 1: 'line', 2: 'polygon'}.get(vector_type)
         master_modulo = modulo_fn(layer) if modulo_fn is not None else None
+        # Layer label settings resolved once and folded into each feature's styleJson.
+        label_cfg = label_cfg_fn(layer) if label_cfg_fn is not None else None
 
         # Prepare transformation to WGS84
         layer_crs = layer.crs()
@@ -238,6 +250,30 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                 except Exception:
                     pass
 
+            # Structured styleJson (polygon fill / dash / label) the app resolves
+            # through RecordStyle; None for a plain feature (color/size suffice).
+            feat_style = None
+            if style_json_fn is not None:
+                try:
+                    feat_style = style_json_fn(layer, feat, spec_key, master_modulo, label_cfg)
+                except Exception:
+                    feat_style = None
+
+            # OGC WKB (WGS84, 2D) for polygons so the app can render interior rings
+            # (holes) and multipart structure the flat `points` text can't express.
+            # Only polygons need it; lines/points round-trip losslessly via `points`.
+            feat_wkb = None
+            if vector_type == 2:
+                try:
+                    geom2d = QgsGeometry(geom_wgs)
+                    abstract = geom2d.get()
+                    if abstract is not None:
+                        abstract.dropZValue()
+                        abstract.dropMValue()
+                    feat_wkb = bytes(geom2d.asWkb())
+                except Exception:
+                    feat_wkb = None
+
             # Insert each feature as a row
             writer.insertFeature(
                 type_str,
@@ -247,7 +283,9 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                 feat_size,
                 iconType,
                 points_str,
-                layer_uuid
+                layer_uuid,
+                feat_style,
+                feat_wkb
             )
 
     if writer.conn:

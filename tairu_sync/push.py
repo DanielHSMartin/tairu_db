@@ -12,6 +12,8 @@ Geometry comparison ignores the per-point 'ts' values (they change on every
 serialization); only coordinates and radius/colors/styling matter.
 """
 
+import json
+import math
 from dataclasses import dataclass, field
 
 from qgis.core import (
@@ -625,6 +627,55 @@ def _geometry_points(feature, transform):
     return [], 'none', 'tipo de geometria não suportado'
 
 
+def _geometry_is_lossy(geom):
+    """True when geom carries holes (interior rings) or more than one part — the
+    structure the flat exterior/largest-part point list drops and only WKB keeps."""
+    if geom is None or geom.isEmpty():
+        return False
+    gtype = geom.type()
+    type_int = int(gtype) if not isinstance(gtype, int) else gtype
+    try:
+        if type_int == 2:  # polygon
+            if geom.isMultipart():
+                polys = geom.asMultiPolygon()
+                return len(polys) > 1 or any(len(part) > 1 for part in polys)
+            return len(geom.asPolygon()) > 1  # exterior + >= 1 interior ring (hole)
+        if type_int == 1 and geom.isMultipart():  # multiline
+            return len(geom.asMultiPolyline()) > 1
+        if type_int == 0 and geom.isMultipart():  # multipoint
+            return len(geom.asMultiPoint()) > 1
+    except Exception:
+        return False
+    return False
+
+
+def _feature_lossy_wkb(feature, transform):
+    """2D WGS84 OGC WKB bytes when the feature's geometry has holes / multiple
+    parts (lossy under the flat point list), else None. The app renders this via
+    Record.geometryWkb (holes punched, all parts) just like KML/GPX/GeoPackage
+    imports; simple geometry keeps the flat geometryPoints path with no WKB.
+    """
+    from qgis.core import QgsGeometry
+    geom = feature.geometry()
+    if geom is None or geom.isEmpty():
+        return None
+    g = QgsGeometry(geom)
+    try:
+        g.transform(transform)
+    except Exception:
+        return None
+    if not _geometry_is_lossy(g):
+        return None
+    try:
+        abstract = g.get()
+        if abstract is not None:
+            abstract.dropZValue()
+            abstract.dropMValue()
+        return bytes(g.asWkb())
+    except Exception:
+        return None
+
+
 def contour_master_modulo(layer):
     """Public alias of the contour master-interval detector (5 * vertical interval).
 
@@ -659,11 +710,269 @@ def feature_export_style(layer, feature, spec_key, master_modulo=None):
     return color_argb, size
 
 
-def feature_to_record(feature, layer, mapping, uid, transform, index, contour_master_modulo=None):
+# ---------------------------------------------------------- structured style
+# styleJson (SYMBOLOGY_PLAN.md): a per-feature structured style the app resolves
+# through the SAME RecordStyle codec. The plugin produces only the parts the
+# legacy color/size columns can't carry — polygon FILL, dash PATTERN, and LABEL
+# config — so a null styleJson renders byte-identically to today. Per-feature
+# marker/line SIZE is intentionally omitted: QGIS marker units (mm/points) don't
+# map to the app's px marker scale, and the size column/contour width already
+# carry width. // ponytail: size + icon + categorized `rules` deferred; add when
+# a real layer needs them (the resolver already supports them app-side).
+
+# Qt.PenStyle: 1=SolidLine, 2=DashLine, 3=DotLine, 4=DashDot, 5=DashDotDot, 6=Custom.
+_PEN_STYLE_DOTTED = 3
+_PEN_STYLE_DASHED = (2, 4, 5, 6)
+# Web-mercator 1:N scale at zoom 0 (96 dpi, equator). Scale->zoom is approximate
+# (ignores dpi/latitude); good enough for label visibility bounds.
+# ponytail: exact only at the equator/96dpi; refine if labels clip at high latitude.
+_WEBMERC_SCALE_Z0 = 559082264.028717
+
+
+def _symbols_for_feature(layer, feature):
+    """Best-effort list of QgsSymbol rendered for `feature` (renderer-aware)."""
+    try:
+        renderer = layer.renderer()
+    except Exception:
+        return []
+    if renderer is None:
+        return []
+    context = _render_context(layer, feature)
+    try:
+        renderer.startRender(context, layer.fields())
+    except Exception:
+        pass
+    symbols = []
+    try:
+        try:
+            symbols = list(renderer.symbolsForFeature(feature, context) or [])
+        except Exception:
+            symbols = []
+        if not symbols:
+            try:
+                symbol = renderer.symbolForFeature(feature, context)
+            except Exception:
+                symbol = None
+            if symbol is not None:
+                symbols = [symbol]
+        if not symbols:
+            symbols = _rule_symbols_for_feature(renderer, feature, context)
+    finally:
+        try:
+            renderer.stopRender(context)
+        except Exception:
+            pass
+    return symbols
+
+
+def _symbol_layer_pen_style(symbol_layer):
+    for accessor in ('penStyle', 'strokeStyle'):
+        try:
+            style = getattr(symbol_layer, accessor)()
+        except Exception:
+            continue
+        try:
+            return int(style)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _stroke_name_for_pen_style(style):
+    if style is None:
+        return None
+    if style == _PEN_STYLE_DOTTED:
+        return 'dotted'
+    if style in _PEN_STYLE_DASHED:
+        return 'dashed'
+    return 'solid'
+
+
+def _feature_stroke_pattern(layer, feature):
+    """'dashed'|'dotted'|'solid' from the feature's outline pen style, or None.
+
+    Returns the first explicit pen/stroke style on the rendered symbol's layers
+    (and one level of sub-symbol). None when nothing exposes one.
+    """
+    for symbol in _symbols_for_feature(layer, feature):
+        try:
+            symbol_layers = symbol.symbolLayers()
+        except Exception:
+            symbol_layers = []
+        for symbol_layer in symbol_layers:
+            try:
+                if hasattr(symbol_layer, 'enabled') and not symbol_layer.enabled():
+                    continue
+            except Exception:
+                pass
+            name = _stroke_name_for_pen_style(_symbol_layer_pen_style(symbol_layer))
+            if name is not None:
+                return name
+            try:
+                sub = symbol_layer.subSymbol()
+            except Exception:
+                sub = None
+            if sub is not None:
+                try:
+                    sub_layers = sub.symbolLayers() or []
+                except Exception:
+                    sub_layers = []
+                for sub_layer in sub_layers:
+                    sub_name = _stroke_name_for_pen_style(_symbol_layer_pen_style(sub_layer))
+                    if sub_name is not None:
+                        return sub_name
+    return None
+
+
+def _scale_to_zoom(scale):
+    """QGIS 1:N scale denominator -> approximate web-mercator zoom, or None."""
+    try:
+        s = float(scale)
+    except (TypeError, ValueError):
+        return None
+    if s <= 0:
+        return None
+    try:
+        return round(math.log2(_WEBMERC_SCALE_Z0 / s), 2)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def layer_label_config(layer):
+    """styleJson `label` dict from the layer's QGIS labeling, or None.
+
+    Best-effort: simple labeling on a plain field. Expression labels and
+    rule-based labeling are skipped (the app falls back to the feature name).
+    Computed once per layer and reused for every feature.
+    """
+    try:
+        if not layer.labelsEnabled():
+            return None
+        labeling = layer.labeling()
+        settings = labeling.settings() if labeling is not None else None
+    except Exception:
+        return None
+    if settings is None:
+        return None
+
+    field_name = None
+    try:
+        if not settings.isExpression:
+            field_name = (settings.fieldName or '').strip() or None
+    except Exception:
+        field_name = None
+
+    cfg = {'field': field_name or 'name', 'show': True}
+    try:
+        color = settings.format().color()
+        if _is_valid_color(color):
+            cfg['color'] = _color_to_argb(color, 1.0)
+    except Exception:
+        pass
+    try:
+        if settings.scaleVisibility:
+            # QGIS minimumScale = most zoomed-OUT (large denom) -> app minZoom;
+            # maximumScale = most zoomed-IN (small denom) -> app maxZoom.
+            min_zoom = _scale_to_zoom(settings.minimumScale)
+            max_zoom = _scale_to_zoom(settings.maximumScale)
+            if min_zoom is not None:
+                cfg['minZoom'] = min_zoom
+            if max_zoom is not None:
+                cfg['maxZoom'] = max_zoom
+    except Exception:
+        pass
+    return cfg
+
+
+def build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg):
+    """styleJson string for a feature, or None when it conveys nothing beyond the
+    legacy color/size columns (a plain solid feature with no fill/dash/label).
+
+    color/bgColor are alpha-first ARGB ints matching the app (Color.toARGB32);
+    `stroke` is a RecordStrokePattern name; `label_cfg` is layer_label_config().
+    """
+    base = {}
+    if color_argb is not None:
+        base['color'] = int(color_argb) & 0xFFFFFFFF
+    if spec_key in ('polygon', 'circle') and bg_argb is not None:
+        base['bgColor'] = int(bg_argb) & 0xFFFFFFFF
+    if stroke in ('dashed', 'dotted'):
+        base['stroke'] = stroke
+
+    # Omit entirely unless something the columns can't carry is present.
+    if 'bgColor' not in base and 'stroke' not in base and not label_cfg:
+        return None
+
+    style = {'v': 1, 'base': base}
+    if label_cfg:
+        style['label'] = label_cfg
+    return json.dumps(style, separators=(',', ':'))
+
+
+def feature_export_style_json(layer, feature, spec_key, master_modulo, label_cfg):
+    """styleJson string for the .tairudb vector export, or None.
+
+    Adds polygon fill / dash / label config the color & size columns can't carry.
+    Contour lines are skipped: the app keeps its built-in master/normal styling +
+    declutter for them (SYMBOLOGY_PLAN Phase 4b-1), which a base.color styleJson
+    would override.
+    """
+    if _contour_elevation_value(feature) is not None and spec_key == 'line':
+        return None
+    color_argb, bg_argb = _feature_symbol_argbs(layer, feature, spec_key)
+    stroke = _feature_stroke_pattern(layer, feature)
+    return build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg)
+
+
+# Tairu record/sync columns excluded from a pushed record's `attributes` (only
+# genuine user attributes feed label-by-attribute / data-driven styling).
+_NON_ATTRIBUTE_FIELDS = frozenset({
+    'recordId', 'tipoRegistro', 'subTipo', 'situation', 'endereco', 'owner',
+    'plateTag', 'brand', 'model', 'year', 'valueEstimate', 'eventDateTime',
+    'geometryColor', 'geometryBackgroundColor', 'geometrySize', 'circleRadius',
+    'geometryColorValue', 'geometryBackgroundColorValue', 'geometrySize',
+    'isDeleted', 'createdBy', 'createdAt', 'lastModified', 'style', 'attributes',
+    SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+})
+
+
+def _json_safe(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    try:
+        return str(value.toString())
+    except Exception:
+        pass
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
+def _feature_attributes_json(feature):
+    """JSON map of the feature's genuine user attributes, or None when empty."""
+    try:
+        fields = feature.fields()
+    except Exception:
+        return None
+    data = {}
+    for f in fields:
+        name = f.name()
+        if name in _NON_ATTRIBUTE_FIELDS:
+            continue
+        data[name] = _json_safe(_attr(feature, name))
+    return json.dumps(data, separators=(',', ':')) if data else None
+
+
+def feature_to_record(feature, layer, mapping, uid, transform, index, contour_master_modulo=None,
+                      label_cfg=None):
     """Build the candidate TairuRecord for one feature. Returns (rec, warning).
 
     contour_master_modulo (5 * vertical interval) styles contour lines: master
     contours get a wider, more opaque stroke than intermediate ones.
+
+    label_cfg (layer_label_config) is the layer's QGIS label settings, folded into
+    the record's styleJson once per layer.
     """
     points, spec_key, warning = _geometry_points(feature, transform)
     record_id = _attr(feature, 'recordId')
@@ -770,6 +1079,22 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
         created_at=now,
         last_modified=now,
     )
+    # Lossless geometry for holed / multipart features. The flat geometry_points
+    # above is the exterior/largest-part representative (old-client + diff path);
+    # geometry_wkb preserves the full structure the app renders with holes.
+    rec.geometry_wkb = _feature_lossy_wkb(feature, transform)
+
+    # styleJson carries what the flat columns can't: polygon fill, dash pattern,
+    # label config. None for a plain solid feature (renders identically to today).
+    # Contour lines keep their built-in app styling (as in the .tairudb export).
+    is_contour = contour_elev is not None and spec_key == 'line'
+    if not is_contour:
+        stroke = _feature_stroke_pattern(layer, feature)
+        rec.style = build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg)
+        # Attributes only when a label references a non-name field — the data the
+        # app needs to resolve label-by-attribute; avoids bloating every record.
+        if label_cfg and label_cfg.get('field') not in (None, '', 'name'):
+            rec.attributes = _feature_attributes_json(feature)
     return rec, warning
 
 
@@ -782,7 +1107,7 @@ _DIFF_SCALARS = [
     'eventDateTime', 'geometrySize', 'geometryColorValue', 'geometryBackgroundColorValue',
 ]
 _ALL_UPDATE_FIELDS = list(_DIFF_SCALARS) + [
-    'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius',
+    'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb',
 ]
 _CANDIDATE_ATTRS = {
     'nome': 'nome', 'descricao': 'descricao', 'situation': 'situation',
@@ -849,6 +1174,9 @@ def _diff_fields(candidate, remote):
         changed += ['geometryType', 'geometryPoints', 'geometryBounds']
         if candidate.circle_radius is not None or remote.circle_radius is not None:
             changed.append('circleRadius')
+        # Keep the lossless WKB in step with the simplified points (set it when the
+        # feature is holed/multipart, clear it — via None in the mask — otherwise).
+        changed.append('geometryWkb')
     return changed
 
 
@@ -955,12 +1283,14 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
     # One scan of the layer's ELEV values infers the contour interval up front so
     # every feature can be classified master/normal without re-scanning.
     contour_master_modulo = _contour_master_modulo(layer)
+    # Layer label settings resolved once and folded into every record's styleJson.
+    label_cfg = layer_label_config(layer)
 
     feature_entries = []
     entries_by_record_id = {}
     for index, feature in enumerate(layer.getFeatures(), start=1):
         candidate, warning = feature_to_record(
-            feature, layer, mapping, uid, transform, index, contour_master_modulo)
+            feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg)
         entry = _FeatureCandidate(feature, candidate, warning)
         feature_entries.append(entry)
         if candidate.record_id:

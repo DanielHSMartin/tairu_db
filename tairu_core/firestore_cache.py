@@ -265,7 +265,10 @@ class FirestoreCache:
         for rec in records:
             if not rec or not getattr(rec, 'record_id', ''):
                 continue
-            rows.append((rec.record_id, rec.to_fields()))
+            # geometryWkb is raw bytes — not JSON-serializable for the cache, and
+            # not needed here (the cache is points-based for offline display/diff).
+            fields = {k: v for k, v in rec.to_fields().items() if k != 'geometryWkb'}
+            rows.append((rec.record_id, fields))
         self.store_records(map_id, rows, fetched_at_ms, full_snapshot=False)
 
     def record_counts(self):

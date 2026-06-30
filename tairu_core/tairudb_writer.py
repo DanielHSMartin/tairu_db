@@ -86,6 +86,8 @@ class TairuDBWriter:
                     size INTEGER,
                     iconType TEXT,
                     points TEXT,
+                    style TEXT,
+                    wkb BLOB,
                     FOREIGN KEY(layer_id) REFERENCES layers(uuid)
                 );
             """)
@@ -206,15 +208,22 @@ class TairuDBWriter:
             print(f"SQLite error inserting layer: {e}")
             return False
 
-    def insertFeature(self, type_str, name, attr, color, size, iconType, points, layer_id):
-        """Insert a feature into the features table"""
+    def insertFeature(self, type_str, name, attr, color, size, iconType, points, layer_id, style=None, wkb=None):
+        """Insert a feature into the features table.
+
+        style: optional styleJson string (polygon fill / dash / label config the
+        app resolves through RecordStyle); None for a plain feature.
+        wkb: optional OGC WKB bytes of the (WGS84) geometry — lets the app render
+        polygon holes / multipart structure the flat `points` text can't carry;
+        None for features whose `points` already round-trip losslessly.
+        """
         if not self.cursor:
             return False
         try:
             feature_uuid = str(uuid.uuid4())
             self.cursor.execute(
-                "INSERT INTO features (uuid, layer_id, type, name, attributes, color, size, iconType, points) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (feature_uuid, layer_id, type_str, name, attr, color, size, iconType, points)
+                "INSERT INTO features (uuid, layer_id, type, name, attributes, color, size, iconType, points, style, wkb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (feature_uuid, layer_id, type_str, name, attr, color, size, iconType, points, style, wkb)
             )
             return True
         except sqlite3.Error as e:

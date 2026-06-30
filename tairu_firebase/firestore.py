@@ -10,6 +10,7 @@ Every call is shaped to satisfy firestore.rules:
 - map-doc patches only touch tairuDBRemoteFiles/lastModified/serverTimestamp.
 """
 
+import base64
 import datetime
 import urllib.parse
 
@@ -40,6 +41,10 @@ def to_value(py):
         return {'doubleValue': py}
     if isinstance(py, str):
         return {'stringValue': py}
+    if isinstance(py, (bytes, bytearray)):
+        # Firestore REST expects bytesValue base64-encoded; the app reads it back
+        # as a Blob (e.g. Record.geometryWkb). Tested before list/dict below.
+        return {'bytesValue': base64.b64encode(bytes(py)).decode('ascii')}
     if isinstance(py, datetime.datetime):
         return {'timestampValue': py.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')}
     if isinstance(py, (list, tuple)):

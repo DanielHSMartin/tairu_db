@@ -320,10 +320,13 @@ class TairuRecord:
     geometry_size: float = None
     geometry_color_value: int = None    # ARGB
     geometry_background_color_value: int = None
+    geometry_wkb: bytes = None          # OGC WKB (WGS84) for holed/multipart geometry
     is_deleted: bool = False
     created_by: str = ''
     created_at: int = 0                 # epoch millis
     last_modified: int = 0              # epoch millis
+    style: str = None                   # styleJson (opaque; app-authored or QGIS-produced)
+    attributes: str = None              # per-feature attributes JSON (for label-by-attribute)
 
     @classmethod
     def from_fields(cls, record_id, d):
@@ -373,6 +376,8 @@ class TairuRecord:
             created_by=_f('createdBy', ''),
             created_at=parse_millis(_f('createdAt', 0)),
             last_modified=parse_millis(_f('lastModified', 0)),
+            style=_f('style'),
+            attributes=_f('attributes'),
         )
         # Legacy records: geometry only in deprecated la/lo fields
         if not rec.geometry_points_json and (d.get('la') or d.get('lo')):
@@ -428,6 +433,11 @@ class TairuRecord:
             fields['geometryPoints'] = self.geometry_points_json
         if self.geometry_bounds_json:
             fields['geometryBounds'] = self.geometry_bounds_json
+        # Lossless geometry for holed / multipart features (the app renders this
+        # via Record.geometryWkb, exactly like KML/GPX/GeoPackage imports). The
+        # flat geometryPoints above stays as the old-client / simple representative.
+        if self.geometry_wkb:
+            fields['geometryWkb'] = self.geometry_wkb
         if self.circle_radius is not None:
             fields['circleRadius'] = float(self.circle_radius)
         if self.geometry_size is not None:
@@ -436,6 +446,12 @@ class TairuRecord:
             fields['geometryColorValue'] = int(self.geometry_color_value)
         if self.geometry_background_color_value is not None:
             fields['geometryBackgroundColorValue'] = int(self.geometry_background_color_value)
+        # styleJson-first contract: an opaque structured style + the attributes it
+        # references. Absent on plain features (the flat fields above suffice).
+        if self.style:
+            fields['style'] = self.style
+        if self.attributes:
+            fields['attributes'] = self.attributes
         return fields
 
     @staticmethod
