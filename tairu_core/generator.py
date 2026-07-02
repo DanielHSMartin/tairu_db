@@ -5,19 +5,20 @@ Tile rendering engine for .tairudb generation, extracted from
 tairu_db_algorithm during the 2.0 refactor so it can be driven both by the
 Processing algorithm and by the dock widget's raster wizard.
 
-IMPORTANT: TileRenderEngine uses QgsMapRendererSequentialJob plus a
-QCoreApplication.processEvents() polling loop, so run() MUST be called from
-the main (GUI) thread — the same constraint expressed by FlagNoThreading in
-the Processing algorithm. Never call run() from a QgsTask worker thread.
+IMPORTANT: TileRenderEngine drives QgsMapRendererSequentialJob through a nested
+QEventLoop (not a busy processEvents() spin), so run() MUST be called from the
+main (GUI) thread — the same constraint expressed by FlagNoThreading in the
+Processing algorithm. Never call run() from a QgsTask worker thread.
 """
 
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from qgis.PyQt.QtCore import QSize, QBuffer, QByteArray, QCoreApplication
+from qgis.PyQt.QtCore import QSize, QBuffer, QByteArray, QCoreApplication, QEventLoop, QTimer
 from qgis.PyQt.QtGui import QImage
 from qgis.core import (
     Qgis,
@@ -273,6 +274,10 @@ class TileRenderEngine:
         self.retry_queue = []
         self.failed_tiles_info = []
         self._completion_reported = False
+        self._event_loop = None
+        self._render_t0 = None
+        self._job_started = {}   # job -> perf timestamp, for per-tile render timing
+        self._tick_count = 0     # event-loop heartbeats during render (responsiveness probe)
 
     def debug_log(self, message):
         """Log debug messages only if DEBUG_MODE is enabled"""
@@ -313,6 +318,7 @@ class TileRenderEngine:
         z = spec.max_zoom
         n = 2.0 ** spec.max_zoom
 
+        prep_t0 = time.time()
         for i, (tx, ty) in enumerate(spec.filtered_tiles):
             if self.feedback.is_canceled():
                 self.cleanup_resources()
@@ -325,25 +331,31 @@ class TileRenderEngine:
 
             self.meta_tiles.append(self.create_individual_metatile(z, tx, ty, n))
 
+        self.feedback.push_info(
+            f"[tempo] {len(self.meta_tiles)} metatiles preparados em {time.time() - prep_t0:.1f}s")
         self.feedback.set_progress_text(f"Renderizando {len(self.meta_tiles)} tiles...")
+        self.feedback.reset_progress()  # new phase: the render bar grows from 0
+        self._render_t0 = time.time()
 
-        # Start rendering jobs
+        # Start rendering jobs, then run a REAL nested event loop until every tile
+        # completes. The render machinery is signal-driven (job.finished ->
+        # process_metatile -> check_completion -> start_jobs), so the old
+        # `while: processEvents()` busy-spin was pure waste: it pegged the main
+        # thread at 100% CPU (the macOS spinner) and starved the render worker
+        # threads. A QEventLoop dispatches the same finished signals but sleeps when
+        # idle, keeping the window responsive and giving the CPU to rendering.
         self.start_jobs()
-
-        # Fast polling loop - process events until all tiles complete
-        if self.meta_tiles or self.renderer_jobs:
-            while self.renderer_jobs or self.meta_tiles or self.retry_queue:
-                # Process Qt events to handle finished signals
-                QCoreApplication.processEvents()
-                if self.feedback.is_canceled():
-                    self.debug_log("Cancelamento detectado durante o polling")
-                    self.cleanup_resources()
-                    self.canceled = True
-                    self.feedback.push_info("Operação cancelada pelo usuário")
-                    return False
-
-        # Final event processing to ensure all signals handled
-        QCoreApplication.processEvents()
+        if self.renderer_jobs or self.meta_tiles or self.retry_queue:
+            self._event_loop = QEventLoop()
+            tick = QTimer()
+            tick.setInterval(100)
+            tick.timeout.connect(self._on_render_tick)
+            tick.start()
+            try:
+                self._event_loop.exec_()
+            finally:
+                tick.stop()
+                self._event_loop = None
 
         if self.feedback.is_canceled():
             self.cleanup_resources()
@@ -354,10 +366,36 @@ class TileRenderEngine:
         self._report_summary()
         return True
 
+    def _quit_render_loop(self):
+        loop = self._event_loop
+        if loop is not None:
+            loop.quit()
+
+    def _on_render_tick(self):
+        """Fires every 100ms WHILE the nested event loop is actually being serviced.
+        It (1) proves responsiveness — if these stop, the main thread is hard-blocked;
+        (2) shows the user a live heartbeat instead of a dead window; (3) honors cancel;
+        (4) re-kicks scheduling if the loop ever goes idle with work still pending."""
+        self._tick_count += 1
+        if self.feedback.is_canceled():
+            self._quit_render_loop()
+            return
+        elapsed = time.time() - (self._render_t0 or time.time())
+        self.feedback.heartbeat(
+            f"Renderizando… {self.processed_tiles}/{self.total_tiles} tiles  ·  {elapsed:.0f}s "
+            f"(aguardando o mapa base; na 1ª vez baixa os tiles da internet)")
+        if not self.renderer_jobs:
+            if self.meta_tiles or self.retry_queue:
+                self.start_jobs()
+            else:
+                self._quit_render_loop()
+
     def finalize(self):
-        """Commit, VACUUM and close the output database."""
+        """Commit, close and atomically publish the output file. Returns True on
+        success (the writer no longer VACUUMs — see TairuDBWriter.finalize)."""
         if self.writer:
-            self.writer.finalize()
+            return self.writer.finalize()
+        return False
 
     # ----------------------------------------------------------- internals
 
@@ -465,6 +503,14 @@ class TileRenderEngine:
                     self.writer.conn = None
                 except Exception as e:
                     self.feedback.push_info(f"Aviso ao fechar banco de dados: {str(e)}")
+
+            # Delete the partial work file so a canceled/failed run never leaves a
+            # corrupt .part behind for the next attempt to merge into.
+            if self.writer:
+                try:
+                    self.writer.discard()
+                except Exception:
+                    pass
 
             # Process more events to ensure cleanup is complete
             self.debug_log("cleanup_resources: Processando eventos finais")
@@ -585,6 +631,7 @@ class TileRenderEngine:
                 self.renderer_jobs[job] = meta_tile
                 job.finished.connect(lambda job=job: self.process_metatile(job))  # type: ignore
                 job.start()
+                self._job_started[job] = time.time()
 
             except Exception as e:
                 self.feedback.push_info(f"Erro ao iniciar trabalho para tile {meta_tile.tx},{meta_tile.ty}: {str(e)}")
@@ -614,6 +661,15 @@ class TileRenderEngine:
                     pass
                 return
 
+            # Per-tile render timing: this isolates whether the wall time is the map
+            # render itself (e.g. slow online XYZ tile downloads like Google Hybrid)
+            # rather than the plugin. Only slow ones are logged, to avoid spam.
+            render_dt = time.time() - self._job_started.pop(job, time.time())
+            if render_dt >= 1.0:
+                self.feedback.push_info(
+                    f"[tempo] render do tile {meta_tile.tx},{meta_tile.ty}: {render_dt:.1f}s")
+
+            save_t0 = time.time()
             metatile_image = job.renderedImage()
 
             # Check for rendering failures and implement retry logic
@@ -647,6 +703,10 @@ class TileRenderEngine:
 
             # Successfully rendered, process the tile
             self.save_metatile_data(meta_tile, metatile_image)
+            save_dt = time.time() - save_t0
+            if save_dt >= 1.0:
+                self.feedback.push_info(
+                    f"[tempo] gravação do tile {meta_tile.tx},{meta_tile.ty}: {save_dt:.1f}s")
 
         except Exception as e:
             # Handle any unexpected errors during tile processing
@@ -847,8 +907,21 @@ class TileRenderEngine:
             # All processing complete - only report once
             if not self._completion_reported:
                 self._completion_reported = True
+                total_dt = time.time() - (self._render_t0 or time.time())
+                self.feedback.push_info(
+                    f"[tempo] render de {self.total_tiles} tiles em {total_dt:.1f}s "
+                    f"(~{total_dt / max(1, self.total_tiles):.2f}s/tile)")
+                # Decisive responsiveness probe: with a 100ms tick, a responsive event
+                # loop yields ~total_dt/0.1 ticks. Far fewer ⇒ the main thread was
+                # hard-blocked (the render/download does not yield), which no event
+                # loop can fix — the lever then is metatiling / an offline base layer.
+                self.feedback.push_info(
+                    f"[tempo] heartbeats do loop: {self._tick_count} "
+                    f"(esperado ~{int(total_dt / 0.1)} se a UI estivesse responsiva)")
                 self.feedback.push_info("Todos os tiles processados, finalizando renderização...")
                 if self.failed_tiles > 0:
                     self.feedback.push_info(
                         f"Processamento completo. {self.failed_tiles} tiles falharam, {self.retried_tiles} tiles tentados novamente"
                     )
+            # Rendering is done — release run()'s nested event loop.
+            self._quit_render_loop()

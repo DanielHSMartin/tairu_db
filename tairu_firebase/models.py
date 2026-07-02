@@ -11,6 +11,7 @@ lib/common/firestore_entity.dart toFirestoreBase()):
 - colors are ARGB ints.
 """
 
+import base64
 import calendar
 import json
 import re
@@ -347,6 +348,22 @@ class TairuRecord:
             except (TypeError, ValueError):
                 return None
 
+        def _wkb_bytes(key):
+            # Firestore REST decodes a Blob (bytesValue) to a base64 STRING; older
+            # in-process callers may already pass bytes. Both become raw WKB bytes so
+            # record_convert can rebuild holed/multipart geometry (and echo it on push).
+            value = d.get(key)
+            if value is None:
+                return None
+            if isinstance(value, (bytes, bytearray)):
+                return bytes(value)
+            if isinstance(value, str):
+                try:
+                    return base64.b64decode(value)
+                except (ValueError, TypeError):
+                    return None
+            return None
+
         rec = cls(
             record_id=record_id or _f('recordId', ''),
             nome=_f('nome', ''),
@@ -372,6 +389,7 @@ class TairuRecord:
             geometry_size=_opt_num('geometrySize', float),
             geometry_color_value=_opt_num('geometryColorValue', int),
             geometry_background_color_value=_opt_num('geometryBackgroundColorValue', int),
+            geometry_wkb=_wkb_bytes('geometryWkb'),
             is_deleted=bool(_f('isDeleted', False)),
             created_by=_f('createdBy', ''),
             created_at=parse_millis(_f('createdAt', 0)),

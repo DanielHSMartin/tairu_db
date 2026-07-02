@@ -1389,6 +1389,19 @@ def build_writes(fs, plan, uid):
             mask = list(dict.fromkeys(item.changed_fields + ['lastModified', 'isDeleted']))
             rec.last_modified = now_millis()
             rec.is_deleted = False
+            # The plugin cannot read cloud geometryWkb on pull, so `geometry_wkb is
+            # None` means "not seen", NOT "should be cleared". Never null it — only
+            # ever write a WKB we actually derived from the QGIS feature. This
+            # preserves holed/multipart geometry the app authored (and cloud WKB that
+            # got coerced away in a single-part layer) across an attribute-only edit.
+            if rec.geometry_wkb is None:
+                mask = [k for k in mask if k != 'geometryWkb']
+            # A candidate with no geometry at all may be a WKB-only cloud record that
+            # pulled without geometry (pre-fix data, or geometry the plugin can't
+            # represent). Don't let its empty 'none' overwrite real cloud geometry.
+            if not rec.geometry_points_json and not rec.geometry_wkb:
+                mask = [k for k in mask if k not in
+                        ('geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius')]
             all_fields = rec.to_fields()
             fields = {k: all_fields[k] for k in mask if k in all_fields}
             # circleRadius may be in the mask but absent (circle -> other type)

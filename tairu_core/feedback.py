@@ -12,7 +12,19 @@ class FeedbackAdapter:
     def set_progress(self, value):
         pass
 
+    def reset_progress(self):
+        """Start a new progress phase at 0%. set_progress is forward-only within a
+        phase (avoids backward jitter); call this between phases (prefetch, render,
+        DEM download, …) so each one's bar can grow from 0 again."""
+        pass
+
     def set_progress_text(self, text):
+        pass
+
+    def heartbeat(self, text):
+        """Frequent, throwaway status update (e.g. a live 'X/N tiles' counter driven
+        by a timer). Unlike push_info it must NOT accumulate — implementations should
+        overwrite in place (a status label / progress-bar text), never append."""
         pass
 
     def push_info(self, text):

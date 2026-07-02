@@ -5,6 +5,7 @@ SQLite persistence layer for .tairudb files (TairuDBWriter) and the MetaTile
 render unit. Moved verbatim from tairu_db_algorithm.py during the 2.0 refactor.
 """
 
+import os
 import sqlite3
 import uuid
 from typing import Optional
@@ -38,6 +39,10 @@ class TairuDBWriter:
 
     def __init__(self, filename):
         self.filename = filename
+        # Write to a sibling ".part" and atomically publish on finalize(), so the
+        # file only ever appears complete at `filename` — a crash/kill/cancel never
+        # leaves a half-written .tairudb that the next run would merge into.
+        self._work_path = None
         self.conn: Optional[sqlite3.Connection] = None
         self.cursor: Optional[sqlite3.Cursor] = None
         self.region_tables = {}  # Track which tables have been created for each region
@@ -57,7 +62,15 @@ class TairuDBWriter:
         self.region_tables = {}
 
         try:
-            self.conn = sqlite3.connect(self.filename)
+            self._work_path = self.filename + '.part'
+            # Drop any stale partial from a previously killed run so INSERT OR REPLACE
+            # never merges new tiles into a corrupt leftover.
+            if os.path.exists(self._work_path):
+                try:
+                    os.remove(self._work_path)
+                except OSError:
+                    pass
+            self.conn = sqlite3.connect(self._work_path)
             self.cursor = self.conn.cursor()
 
             # Create tables according to TairuDB specification
@@ -263,17 +276,52 @@ class TairuDBWriter:
             return False
 
     def finalize(self):
-        """Finalize the TairuDB file"""
+        """Commit, close, and atomically publish the work file to its final path.
+
+        VACUUM was removed deliberately: the .tairudb is written insert-only (the only
+        DELETE targets the tiny metadata table), so VACUUM reclaimed almost nothing
+        while being the single longest blocking call on the GUI thread — the main cause
+        of the "Não Responde" freeze / OS force-close on large files. See
+        QGIS_PLUGIN_AUDIT.md. Returns True when the final file is published.
+        """
         if not self.conn:
-            return
+            return False
 
         try:
-            self.conn.commit()
-            self.conn.execute("VACUUM;")
             self.conn.commit()
             self.conn.close()
         except sqlite3.Error as e:
             print(f"SQLite error finalizing: {e}")
+        finally:
+            self.conn = None
+            self.cursor = None
+
+        # Atomic publish: os.replace is atomic on a single filesystem and overwrites
+        # any existing final file, so readers only ever see a complete .tairudb.
+        if self._work_path and os.path.exists(self._work_path):
+            try:
+                os.replace(self._work_path, self.filename)
+                return True
+            except OSError as e:
+                print(f"Error publishing {self.filename}: {e}")
+                return False
+        return False
+
+    def discard(self):
+        """Close and delete the partial work file (cancel/error path) so no corrupt
+        .part is left behind to merge into on the next attempt."""
+        if self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = None
+            self.cursor = None
+        if self._work_path and os.path.exists(self._work_path):
+            try:
+                os.remove(self._work_path)
+            except OSError:
+                pass
 
     def writeGrg(self, bounds, grid_type: str, options: dict) -> bool:
         """Generate and write a GRG grid into this .tairudb.

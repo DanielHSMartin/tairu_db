@@ -15,12 +15,12 @@ Processing algorithm and the raster cloud wizard).
 import datetime
 import os
 
-from qgis.PyQt.QtCore import QTimer
+from qgis.PyQt.QtCore import QTimer, QCoreApplication
 from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QPlainTextEdit, QProgressBar, QFileDialog, QGroupBox, QScrollArea,
-    QCheckBox, QWidget, QColorDialog, QSlider,
+    QCheckBox, QWidget, QColorDialog, QSlider, QMessageBox,
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
@@ -33,7 +33,6 @@ from qgis.gui import QgsMapLayerComboBox
 try:
     from ..compat import (
         _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
-        _exec_dialog,
     )
     from ..tairu_core.contour_generator import (
         ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
@@ -42,6 +41,7 @@ try:
     from ..tairu_core.feedback import FeedbackAdapter
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles
+    from ..tairu_core.tile_prefetch import prefetch_basemap_tiles
     from ..tairu_core.vector_export import export_vector_layers
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
@@ -53,7 +53,6 @@ try:
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
         _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
-        _exec_dialog,
     )
     from tairu_core.contour_generator import (
         ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
@@ -62,6 +61,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.feedback import FeedbackAdapter
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles
+    from tairu_core.tile_prefetch import prefetch_basemap_tiles
     from tairu_core.vector_export import export_vector_layers
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
@@ -106,14 +106,31 @@ _UPLOAD_SOFT_LIMIT_MB = 90
 _UPLOAD_HARD_LIMIT_BYTES = 100 * 1024 * 1024
 
 
+# Wizards are shown non-modally: an application-modal exec() floats the window above
+# every other window (on macOS even above other apps) and blocks the map canvas that
+# extent picking needs. Kept alive here until the wizard closes.
+_open_wizards = []
+
+
+def _show_wizard(wizard):
+    wizard.setModal(False)
+    _open_wizards.append(wizard)
+
+    def _forget(_result=0, w=wizard):
+        if w in _open_wizards:
+            _open_wizards.remove(w)
+    wizard.finished.connect(_forget)
+    wizard.show()
+    wizard.raise_()
+    wizard.activateWindow()
+
+
 def open_local_generate_wizard(iface):
-    wizard = LocalGenerateWizard(iface)
-    _exec_dialog(wizard)
+    _show_wizard(LocalGenerateWizard(iface))
 
 
 def open_raster_wizard(dock, tmap):
-    wizard = TairuDBGenerateWizard(dock.iface, dock=dock, tmap=tmap)
-    _exec_dialog(wizard)
+    _show_wizard(TairuDBGenerateWizard(dock.iface, dock=dock, tmap=tmap))
 
 
 class WizardFeedback(FeedbackAdapter):
@@ -126,7 +143,8 @@ class WizardFeedback(FeedbackAdapter):
         self._last_progress = 0
 
     def set_progress(self, value):
-        # Progress only moves forward — prevents backward jumps between pipeline phases.
+        # Progress only moves forward WITHIN a phase — prevents backward jitter.
+        # reset_progress() starts a fresh phase so the next one grows from 0.
         v = int(value)
         if v < self._last_progress:
             return
@@ -136,8 +154,23 @@ class WizardFeedback(FeedbackAdapter):
         except RuntimeError:
             pass
 
+    def reset_progress(self):
+        self._last_progress = 0
+        try:
+            self._bar.setValue(0)
+        except RuntimeError:
+            pass
+
     def set_progress_text(self, text):
         self.push_info(text)
+
+    def heartbeat(self, text):
+        # Live, in-place status on the progress bar itself (no log spam). If this
+        # keeps updating during a long render, the UI is alive — and the user sees it.
+        try:
+            self._bar.setFormat(text)
+        except RuntimeError:
+            pass
 
     def push_info(self, text):
         try:
@@ -924,6 +957,15 @@ class RunPage(QWizardPage):
         self._done = False
 
         layout = QVBoxLayout(self)
+        self.notice = QLabel(
+            '⏳ Em áreas grandes a geração pode levar vários minutos. Mantenha o QGIS '
+            'aberto — a janela pode parecer congelada durante a finalização; é normal.')
+        self.notice.setWordWrap(True)
+        try:
+            set_warning_banner(self.notice)
+        except Exception:
+            set_muted(self.notice)
+        layout.addWidget(self.notice)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         layout.addWidget(self.progress)
@@ -984,6 +1026,39 @@ class RunPage(QWizardPage):
         self._append(f'Gerando {file_name} '
                      f'({len(spec.filtered_tiles)} tiles, zoom {spec.max_zoom})…')
 
+        # Off-ramp for genuinely large jobs: they hold the GUI thread for minutes and
+        # the window can look frozen, so let the user opt in knowingly.
+        n_tiles = len(spec.filtered_tiles)
+        est_mb = getattr(getattr(wizard, 'estimate_result', None), 'avg_mb', 0) or 0
+        if n_tiles > 10000 or est_mb > 300:
+            proceed = QMessageBox.question(
+                self, 'Geração de arquivo grande',
+                f'Este arquivo é grande (~{est_mb:.0f} MB, {n_tiles} tiles). A geração pode '
+                'levar vários minutos e a janela do QGIS pode parecer travada durante o '
+                'processo — isso é normal. Não feche o QGIS.\n\nDeseja continuar?',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if proceed != QMessageBox.Yes:
+                self._append('Geração cancelada pelo usuário.')
+                self._running = False
+                self._set_back_enabled(True)
+                return
+
+        # Warm the HTTP cache for online (XYZ) basemaps FIRST, responsively. The render
+        # itself downloads tiles synchronously on the GUI thread and would otherwise
+        # freeze the window with no feedback; pre-fetching makes the download a live,
+        # cancellable step and leaves the render instant (cache hit). Best-effort no-op
+        # for offline/local basemaps.
+        self._append('Preparando o mapa base…')
+        prefetched = prefetch_basemap_tiles(
+            spec.layers, spec.filtered_tiles, spec.max_zoom, wizard.feedback)
+        if prefetched:
+            self._append(f'Mapa base pré-carregado ({prefetched} tiles).')
+        if wizard.feedback.canceled:
+            self._append('Geração cancelada.')
+            self._running = False
+            self._set_back_enabled(True)
+            return
+
         engine = TileRenderEngine(spec, wizard.feedback)
         ok = engine.run()
         if not ok:
@@ -1008,6 +1083,10 @@ class RunPage(QWizardPage):
 
         if wizard.contour_page.contour_enabled():
             self._append('Gerando curvas de nível…')
+            # Update the bar off the stale "Renderizando…" text and repaint before the
+            # (blocking) DEM download starts, so the user sees the stage change.
+            wizard.feedback.heartbeat('Gerando curvas de nível — baixando elevação…')
+            QCoreApplication.processEvents()
             try:
                 contour_layer = generate_contours(
                     wizard.region_result.wgs84_extent,
@@ -1048,7 +1127,16 @@ class RunPage(QWizardPage):
             if not ok:
                 self._append('Aviso: falha ao gerar grade GRG (grade não incluída).')
 
-        engine.finalize()
+        # Repaint before the (main-thread) commit so the window shows the stage and
+        # doesn't read as frozen while the file is written out.
+        self._append('Finalizando o arquivo…')
+        wizard.feedback.heartbeat('Finalizando o arquivo…')
+        QCoreApplication.processEvents()
+        if not engine.finalize() or not os.path.exists(output_file):
+            self._append('ERRO: não foi possível finalizar/publicar o arquivo gerado.')
+            self._running = False
+            self._set_back_enabled(True)
+            return
 
         size_mb = os.path.getsize(output_file) / (1024 * 1024)
         if wizard.is_upload_mode:

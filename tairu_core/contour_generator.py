@@ -23,6 +23,7 @@ except ImportError:
     osr = None
 
 from qgis.core import QgsGeometry, QgsVectorLayer
+from qgis.PyQt.QtCore import QCoreApplication
 
 SOURCE_INPE = 0
 SOURCE_COPERNICUS = 1
@@ -94,6 +95,8 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
             raise ContourError('Cancelado pelo usuário.')
 
         feedback.push_info(f'Recortando {len(tile_paths)} tile(s) para a área de interesse…')
+        feedback.heartbeat(f'Curvas: recortando {len(tile_paths)} tile(s) de elevação…')
+        QCoreApplication.processEvents()
         cutline_path = _write_cutline(clip_polygons, temp_dir) if clip_polygons else None
         if cutline_path:
             feedback.push_info('  Máscara de polígono aplicada — curvas recortadas à área.')
@@ -103,6 +106,8 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
                 'Nenhum tile de elevação intersecta a área selecionada após recorte.')
 
         feedback.push_info('Mesclando tiles…')
+        feedback.heartbeat('Curvas: mesclando tiles de elevação…')
+        QCoreApplication.processEvents()
         merged_path = os.path.join(temp_dir, 'merged.tif')
         _merge_tiles(clipped, merged_path)
 
@@ -120,6 +125,8 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
             raise ContourError('Cancelado pelo usuário.')
 
         feedback.push_info(f'Gerando curvas de nível (intervalo: {interval} m)…')
+        feedback.heartbeat(f'Curvas: traçando linhas (intervalo {interval} m)…')
+        QCoreApplication.processEvents()
         contour_path = os.path.join(temp_dir, 'contours.gpkg')
         _run_contour_generate(merged_path, interval, contour_path, feedback)
 
@@ -221,12 +228,15 @@ def _download_inpe_tiles(bbox_wgs84, temp_dir, feedback):
 
     tile_paths = []
     n_cached = n_downloaded = n_failed = 0
-    for lat_norte, lon_oeste in tiles_to_fetch:
+    feedback.reset_progress()  # DEM download phase: bar grows 0 -> 100 across tiles
+    for idx, (lat_norte, lon_oeste) in enumerate(tiles_to_fetch):
         if feedback.is_canceled():
             break
         nome = _inpe_tile_name(lat_norte, lon_oeste)
         was_cached = os.path.exists(os.path.join(cache_dir, nome + '.tif'))
-        path = _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback)
+        path = _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback,
+                                progress_base=idx / n_total * 100.0,
+                                progress_span=100.0 / n_total)
         if path:
             tile_paths.append(path)
             if was_cached:
@@ -247,7 +257,53 @@ def _download_inpe_tiles(bbox_wgs84, temp_dir, feedback):
     return tile_paths
 
 
-def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback):
+def _download_dem_file(url, dest, feedback, label, progress_base=0.0, progress_span=100.0):
+    """Download a DEM GeoTIFF responsively.
+
+    DEM tiles are large files and the old blocking urllib.urlretrieve froze the whole
+    QGIS window with no feedback while they downloaded (the contour analogue of the
+    basemap-tile freeze). This reads in chunks, pumps the event loop between chunks so
+    the UI stays alive, and reports MB progress on the heartbeat. Downloads to a
+    sibling .part and os.replace()s on success, so a canceled/failed download never
+    leaves a truncated .tif in the cache (which would poison every later run).
+    Raises on cancel or network error.
+    """
+    tmp = dest + '.part'
+    request = urllib.request.Request(
+        url, headers={'User-Agent': 'Mozilla/5.0 (compatible; QGIS TairuDB)'})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as resp, open(tmp, 'wb') as out:  # nosec B310
+            try:
+                total = int(resp.headers.get('Content-Length') or 0)
+            except (TypeError, ValueError):
+                total = 0
+            got = 0
+            while True:
+                if feedback.is_canceled():
+                    raise RuntimeError('cancelado')
+                chunk = resp.read(262144)  # 256 KB
+                if not chunk:
+                    break
+                out.write(chunk)
+                got += len(chunk)
+                mb = got / (1024 * 1024)
+                if total:
+                    feedback.set_progress(int(progress_base + (got / total) * progress_span))
+                    feedback.heartbeat(f'{label}… {mb:.0f}/{total / (1024 * 1024):.0f} MB')
+                else:
+                    feedback.heartbeat(f'{label}… {mb:.0f} MB')
+                QCoreApplication.processEvents()
+        os.replace(tmp, dest)
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise
+
+
+def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback, progress_base=0.0, progress_span=100.0):
     """
     Download one TOPODATA tile from INPE's Brazil Data Cube STAC/COG endpoint
     (data.inpe.br/bdc), served as a direct GeoTIFF (no zip). The old
@@ -266,7 +322,8 @@ def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback):
     url = _INPE_BASE_URL + tile6[:3] + '/' + tile6[3:6] + '/' + fn
     feedback.push_info(f'  Baixando {fn}…')
     try:
-        urllib.request.urlretrieve(url, tif_path)  # nosec B310
+        _download_dem_file(url, tif_path, feedback, f'Baixando elevação {fn}',
+                           progress_base, progress_span)
         if os.path.getsize(tif_path) == 0:
             raise ValueError('Resposta vazia do servidor')
     except Exception as exc:
@@ -303,14 +360,17 @@ def _download_copernicus_tiles(bbox_wgs84, temp_dir, feedback):
 
     tile_paths = []
     n_cached = n_downloaded = n_failed = 0
-    for lat, lon in tiles_to_fetch:
+    feedback.reset_progress()  # DEM download phase: bar grows 0 -> 100 across tiles
+    for idx, (lat, lon) in enumerate(tiles_to_fetch):
         if feedback.is_canceled():
             break
         lat_str = f'N{lat:02d}' if lat >= 0 else f'S{abs(lat):02d}'
         lon_str = f'E{lon:03d}' if lon >= 0 else f'W{abs(lon):03d}'
         fn = f'Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM.tif'
         was_cached = os.path.exists(os.path.join(cache_dir, fn))
-        path = _fetch_copernicus_tile(lat, lon, cache_dir, feedback)
+        path = _fetch_copernicus_tile(lat, lon, cache_dir, feedback,
+                                      progress_base=idx / n_total * 100.0,
+                                      progress_span=100.0 / n_total)
         if path:
             tile_paths.append(path)
             if was_cached:
@@ -331,7 +391,7 @@ def _download_copernicus_tiles(bbox_wgs84, temp_dir, feedback):
     return tile_paths
 
 
-def _fetch_copernicus_tile(lat, lon, cache_dir, feedback):
+def _fetch_copernicus_tile(lat, lon, cache_dir, feedback, progress_base=0.0, progress_span=100.0):
     lat_str = f'N{lat:02d}' if lat >= 0 else f'S{abs(lat):02d}'
     lon_str = f'E{lon:03d}' if lon >= 0 else f'W{abs(lon):03d}'
     name = f'Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM'
@@ -344,7 +404,8 @@ def _fetch_copernicus_tile(lat, lon, cache_dir, feedback):
     url = _COPERNICUS_BASE_URL + name + '/' + fn
     feedback.push_info(f'  Baixando {fn}…')
     try:
-        urllib.request.urlretrieve(url, tif_path)  # nosec B310
+        _download_dem_file(url, tif_path, feedback, f'Baixando elevação {fn}',
+                           progress_base, progress_span)
     except Exception as exc:
         feedback.push_info(f'  Falha: {fn}: {exc}')
         return None

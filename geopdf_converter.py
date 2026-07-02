@@ -1011,7 +1011,7 @@ class GeoPDFConverter:
         # Center point
         if not self.pdf_bounds_wgs84:
             print("Error: PDF bounds not initialized")
-            tairudb_writer.finalize()
+            tairudb_writer.discard()  # error path: don't publish a bogus empty file
             return False
         center_x = (self.pdf_bounds_wgs84.xMinimum() + self.pdf_bounds_wgs84.xMaximum()) / 2
         center_y = (self.pdf_bounds_wgs84.yMinimum() + self.pdf_bounds_wgs84.yMaximum()) / 2

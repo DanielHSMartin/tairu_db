@@ -16,6 +16,22 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
 
 
+def _layer_abstract(layer):
+    """Layer abstract/description across QGIS versions. QgsMapLayer.abstract() is
+    deprecated in favour of serverProperties().abstract(); prefer the new API and
+    fall back so it stays quiet on both old and new QGIS."""
+    try:
+        server_props = layer.serverProperties()
+        if server_props is not None:
+            return server_props.abstract() or ""
+    except (AttributeError, RuntimeError):
+        pass
+    try:
+        return layer.abstract() or ""
+    except (AttributeError, RuntimeError):
+        return ""
+
+
 def qvariant_to_python(value):
     """
     Convert QVariant values to native Python types for JSON serialization.
@@ -163,7 +179,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
 
         # Try to get layer name/desc from the first feature's attributes
         layer_name = layer.name()
-        layer_desc = layer.abstract() if hasattr(layer, "abstract") else ""
+        layer_desc = _layer_abstract(layer)
 
         # Per-feature styling mirrors the records push: the renderer color for
         # each feature (graduated/categorized/rule-based aware, with opacity), and

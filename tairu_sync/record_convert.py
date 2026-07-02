@@ -162,7 +162,96 @@ def spec_key_for_record(rec):
     return gtype
 
 
+_COORD_PRECISION = 9  # matches push._COORD_PRECISION so pull/push hashes agree
+
+
+def geometry_from_wkb(wkb):
+    """QgsGeometry from OGC WKB, or None. Accepts raw bytes or the base64 string the
+    Firestore REST codec produces (from_fields normally decodes it first)."""
+    if not wkb:
+        return None
+    if isinstance(wkb, str):
+        import base64
+        try:
+            wkb = base64.b64decode(wkb)
+        except (ValueError, TypeError):
+            return None
+    try:
+        geom = QgsGeometry()
+        geom.fromWkb(bytes(wkb))
+    except Exception:
+        return None
+    return geom if not geom.isEmpty() else None
+
+
+def flat_points_and_type(geom):
+    """(flat [(lat, lon)], geometry_type) for a QgsGeometry, mirroring
+    push._geometry_points: largest part's exterior ring, polygon closing point
+    stripped, rounded to _COORD_PRECISION. Keeping this identical to the push side is
+    what makes a WKB-only record's pull-time sync hash match its push-time candidate.
+    """
+    if geom is None or geom.isEmpty():
+        return [], 'none'
+    gtype = geom.type()
+    type_int = int(gtype) if not isinstance(gtype, int) else gtype
+    p = _COORD_PRECISION
+    if type_int == 0:  # point
+        if geom.isMultipart():
+            mp = geom.asMultiPoint()
+            if not mp:
+                return [], 'none'
+            pt = mp[0]
+        else:
+            pt = geom.asPoint()
+        return [(round(pt.y(), p), round(pt.x(), p))], 'point'
+    if type_int == 1:  # line
+        if geom.isMultipart():
+            lines = geom.asMultiPolyline()
+            line = max(lines, key=len) if lines else []
+        else:
+            line = geom.asPolyline()
+        return [(round(pt.y(), p), round(pt.x(), p)) for pt in line], 'line'
+    if type_int == 2:  # polygon
+        if geom.isMultipart():
+            polys = geom.asMultiPolygon()
+            rings = [part[0] for part in polys if part]
+            ring = max(rings, key=len) if rings else []
+        else:
+            poly = geom.asPolygon()
+            ring = poly[0] if poly else []
+        if len(ring) > 1 and ring[-1].x() == ring[0].x() and ring[-1].y() == ring[0].y():
+            ring = ring[:-1]
+        return [(round(pt.y(), p), round(pt.x(), p)) for pt in ring], 'polygon'
+    return [], 'none'
+
+
+def ensure_points_from_wkb(rec):
+    """WKB-only records (holed/multipart imports, over-budget writes) arrive with
+    geometry_wkb but no flat geometryPoints. Reconstruct the flat points from the WKB
+    so spec_key_for_record files the record into its real layer and the sync hash
+    matches what the push side derives from the stored geometry. record_geometry still
+    builds the QGIS geometry from the full WKB, so holes/parts are preserved on screen.
+    """
+    if not rec.geometry_wkb or rec.points():
+        return
+    geom = geometry_from_wkb(rec.geometry_wkb)
+    if geom is None:
+        return
+    pts, gtype = flat_points_and_type(geom)
+    if not pts:
+        return
+    rec.geometry_points_json = points_to_json(pts, ts=rec.last_modified or now_millis())
+    if (rec.geometry_type or 'none') not in _GEOMETRY_BEARING_TYPES:
+        rec.geometry_type = gtype
+
+
 def record_geometry(rec, spec_key):
+    # Prefer the lossless WKB for lines/polygons so holes and multipart survive in
+    # QGIS; the flat point list only carries the exterior/largest part.
+    if spec_key in ('line', 'polygon') and rec.geometry_wkb:
+        geom = geometry_from_wkb(rec.geometry_wkb)
+        if geom is not None:
+            return geom
     pts = rec.points()
     if spec_key == 'point' or spec_key == 'circle':
         lat, lon = pts[0]
@@ -651,6 +740,7 @@ def apply_pull(gpkg_path, records, remove_missing=True):
         if rec.is_deleted:
             continue
         try:
+            ensure_points_from_wkb(rec)
             key = spec_key_for_record(rec)
             by_spec[key].append(rec)
         except Exception as e:
@@ -767,13 +857,40 @@ TYPE_COLORS = {
 _COLOR_FALLBACK = '#FF9E9E9E'     # Colors.grey
 
 
+def _style_base(rec):
+    """The styleJson representative symbol (its `base` dict), or {}.
+
+    The app is styleJson-first: Record.geometryColor / geometryBackgroundColor read
+    style.representative BEFORE the flat geometryColorValue shadow (record_model.dart).
+    The flat shadow can diverge from styleJson (e.g. an older write), so we must mirror
+    the app's precedence here — otherwise QGIS renders a stale/wrong colour and fill.
+    """
+    raw = getattr(rec, 'style', None)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    base = data.get('base')
+    return base if isinstance(base, dict) else {}
+
+
 def _resolved_fg(rec):
-    """Resolved geometry color: explicit value or type-based fallback."""
+    """Resolved geometry color, matching the app's precedence: styleJson base color
+    first, then the flat geometryColorValue shadow, then the record-type default."""
+    base_color = _style_base(rec).get('color')
+    if isinstance(base_color, int) and not isinstance(base_color, bool):
+        return argb_to_hex(base_color)
     return argb_to_hex(rec.geometry_color_value) or TYPE_COLORS.get(rec.tipo_registro or 'local', _COLOR_FALLBACK)
 
 
 def _resolved_bg(rec):
-    """Resolved background color: explicit, or 30% alpha of fg for poly/circle, else None."""
+    """Resolved background color, matching the app: styleJson base bgColor first, then
+    the flat shadow, then 30% alpha of fg for poly/circle, else None."""
+    base_bg = _style_base(rec).get('bgColor')
+    if isinstance(base_bg, int) and not isinstance(base_bg, bool):
+        return argb_to_hex(base_bg)
     if rec.geometry_background_color_value is not None:
         return argb_to_hex(rec.geometry_background_color_value)
     # Only geometries that actually have points get the poly/circle default; a
