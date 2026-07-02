@@ -55,38 +55,43 @@ def qvariant_to_python(value):
 
 
 def _load_record_style_helpers():
-    """Lazily import the per-feature styling used by the records push so the
-    .tairudb export renders colors/opacity/widths identically (same code path,
-    not a parallel implementation).
+    """Lazily import the per-feature styling + helpers the records push owns so the
+    .tairudb export stays consistent with it (same code path, not a parallel impl):
+    feature color/opacity/width, structured styleJson, layer label config, the lossy
+    OGC WKB encoder (holes/multipart), and the records-sync-layer detector used to
+    keep the Tairu records GeoPackage out of the export.
 
     Returns (feature_export_style, contour_master_modulo, argb_to_hex,
-    feature_export_style_json, layer_label_config); all None when unavailable
-    (e.g. tairu_sync not importable), in which case the export falls back to the
-    layer's base symbol color and geometry-type default size with no styleJson.
+    feature_export_style_json, layer_label_config, lossy_wkb, is_record_sync_layer);
+    all None when tairu_sync is unavailable (no pulled record layers exist in that
+    context), in which case the export falls back to the layer's base symbol color
+    and geometry-type default size with no styleJson/WKB and no layer exclusion.
     Imported lazily to keep tairu_core import-time independent of tairu_sync.
     """
     try:
         from ..tairu_sync.push import (
             feature_export_style, contour_master_modulo,
-            feature_export_style_json, layer_label_config,
+            feature_export_style_json, layer_label_config, _feature_lossy_wkb,
         )
-        from ..tairu_sync.record_convert import argb_to_hex
+        from ..tairu_sync.record_convert import argb_to_hex, is_record_sync_layer
         return (feature_export_style, contour_master_modulo, argb_to_hex,
-                feature_export_style_json, layer_label_config)
+                feature_export_style_json, layer_label_config,
+                _feature_lossy_wkb, is_record_sync_layer)
     except ImportError:
         pass
     except Exception:
-        return None, None, None, None, None
+        return (None,) * 7
     try:
         from tairu_sync.push import (
             feature_export_style, contour_master_modulo,
-            feature_export_style_json, layer_label_config,
+            feature_export_style_json, layer_label_config, _feature_lossy_wkb,
         )
-        from tairu_sync.record_convert import argb_to_hex
+        from tairu_sync.record_convert import argb_to_hex, is_record_sync_layer
         return (feature_export_style, contour_master_modulo, argb_to_hex,
-                feature_export_style_json, layer_label_config)
+                feature_export_style_json, layer_label_config,
+                _feature_lossy_wkb, is_record_sync_layer)
     except Exception:
-        return None, None, None, None, None
+        return (None,) * 7
 
 
 def export_vector_layers(writer, layers, transform_context, feedback,
@@ -105,7 +110,25 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         transform_context = QgsProject.instance().transformContext()
 
     (style_fn, modulo_fn, argb_to_hex,
-     style_json_fn, label_cfg_fn) = _load_record_style_helpers()
+     style_json_fn, label_cfg_fn, lossy_wkb_fn,
+     is_record_sync_layer) = _load_record_style_helpers()
+
+    # Never bake the Tairu records-sync GeoPackage into the .tairudb: those features
+    # duplicate the live records (they would render as unstyled "ghost" geometry over
+    # every record in the app) AND carry record PII (owner/plate/...). The Processing
+    # algorithm already filters these; do it here too — both entry points (algorithm
+    # AND the generate wizard) route through this function, and the wizard didn't.
+    if is_record_sync_layer is not None:
+        record_layers = [lyr for lyr in layers if is_record_sync_layer(lyr)]
+        if record_layers:
+            layers = [lyr for lyr in layers if lyr not in record_layers]
+            feedback.push_info(
+                "Camada(s) de registros do Tairu ignorada(s) na exportação vetorial "
+                "({}): os registros já são sincronizados pelo app; incluí-los criaria "
+                "geometrias duplicadas no mapa e exporia dados dos registros.".format(
+                    ", ".join(lyr.name() for lyr in record_layers)))
+            if not layers:
+                return
 
     for layer_idx, layer in enumerate(layers):
         if feedback.is_canceled():
@@ -202,8 +225,11 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             else:
                 feat_name = f"{layer_name} {feature_count}"
 
-            # Serialize all attributes as a key-value map
-            # Convert QVariant values to native Python types for JSON serialization
+            # Serialize all user attributes as a key-value map. Record PII can't
+            # reach here: the records-sync layer is excluded above, so only genuine
+            # user layers are exported (a blanket field-name blocklist would instead
+            # silently drop common columns like `year`/`owner` from ordinary layers).
+            # Convert QVariant values to native Python types for JSON serialization.
             feat_attr = json.dumps({k: qvariant_to_python(feat[k]) for k in attrs})
 
             # Transform geometry to WGS84
@@ -259,20 +285,14 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                 except Exception:
                     feat_style = None
 
-            # OGC WKB (WGS84, 2D) for polygons so the app can render interior rings
-            # (holes) and multipart structure the flat `points` text can't express.
-            # Only polygons need it; lines/points round-trip losslessly via `points`.
+            # OGC WKB (WGS84, 2D) ONLY for polygons whose holes / multipart structure
+            # the flat `points` text can't express — the same lossy gate (and encoder)
+            # the records push uses, so the two producers stay byte-for-byte in sync.
+            # Simple single-ring polygons (and all lines/points) round-trip losslessly
+            # via `points`, so they carry no redundant WKB blob.
             feat_wkb = None
-            if vector_type == 2:
-                try:
-                    geom2d = QgsGeometry(geom_wgs)
-                    abstract = geom2d.get()
-                    if abstract is not None:
-                        abstract.dropZValue()
-                        abstract.dropMValue()
-                    feat_wkb = bytes(geom2d.asWkb())
-                except Exception:
-                    feat_wkb = None
+            if vector_type == 2 and lossy_wkb_fn is not None:
+                feat_wkb = lossy_wkb_fn(feat, transform)
 
             # Insert each feature as a row
             writer.insertFeature(

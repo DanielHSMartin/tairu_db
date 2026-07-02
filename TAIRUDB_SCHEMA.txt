@@ -1,7 +1,7 @@
 ================================================================================
 TairuDB SQLite Database Schema
 ================================================================================
-Version: 1.2
+Version: 1.3
 Format: SQLite3
 Description: Geographic database format for the Geop mobile application
 ================================================================================
@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS features (
     size INTEGER,
     iconType TEXT,
     points TEXT,
+    style TEXT,
+    wkb BLOB,
     FOREIGN KEY(layer_id) REFERENCES vector_layers(uuid)
 );
 
@@ -72,11 +74,19 @@ Fields:
   - layer_id   : References vector_layers.uuid (parent layer)
   - type       : Feature geometry type ("point", "line", "polygon")
   - name       : Feature display name
-  - attributes : JSON string of additional attributes
-  - color      : Hex color code (e.g., "#FF0000" for red)
+  - attributes : JSON object string of additional user attributes
+  - color      : Hex color code, alpha-first "#AARRGGBB" (e.g. "#FFFF0000" opaque
+                 red); "#RRGGBB" without alpha is also accepted (treated opaque)
   - size       : Size in pixels (icon size or line width)
   - iconType   : Icon type identifier (e.g., "locationOn", "line", "polygon")
-  - points     : Coordinate string in WKT-style format
+  - points     : Coordinate string in WKT-style format (exterior ring only)
+  - style      : Optional styleJson string (polygon fill / dash pattern / label
+                 config the color & size columns can't carry); NULL for a plain
+                 feature. See SYMBOLOGY_PLAN.md / RecordStyle for the shape.
+  - wkb        : Optional OGC WKB (WGS84, 2D) of the geometry, written ONLY for
+                 polygons with holes (interior rings) or multipart structure that
+                 the flat `points` text can't express; NULL otherwise. Holes/parts
+                 render from this; `points` carries the exterior for old clients.
 
 Points format examples:
   - Single point    : "lon lat"
@@ -173,9 +183,12 @@ Database Usage Notes
 
 3. Vector Features:
    - Features are organized into layers via layer_id
-   - Geometry stored as text coordinate strings (not WKB/WKT)
+   - Geometry is stored as text coordinate strings (`points`); polygons with holes
+     or multipart geometry ADDITIONALLY carry OGC WKB (`wkb` BLOB) for the structure
+     the flat text can't express
    - Attributes stored as JSON for flexibility
-   - Colors use hex format with # prefix
+   - Optional per-feature structured styling lives in the `style` column (styleJson)
+   - Colors use alpha-first hex format "#AARRGGBB" with # prefix
 
 4. Region Management:
    - Region ID 0 is typically the default/main region

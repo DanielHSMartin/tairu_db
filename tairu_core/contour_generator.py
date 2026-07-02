@@ -10,7 +10,6 @@ import re
 import shutil
 import tempfile
 import urllib.request
-import zipfile
 from datetime import datetime
 
 try:
@@ -23,7 +22,7 @@ except ImportError:
     ogr = None
     osr = None
 
-from qgis.core import QgsVectorLayer
+from qgis.core import QgsGeometry, QgsVectorLayer
 
 SOURCE_INPE = 0
 SOURCE_COPERNICUS = 1
@@ -33,7 +32,7 @@ SMOOTHING_LOW = 'Baixo'
 SMOOTHING_MEDIUM = 'Médio'
 SMOOTHING_HIGH = 'Alto'
 
-_INPE_BASE_URL = 'http://www.dsr.inpe.br/topodata/data/geotiff/'
+_INPE_BASE_URL = 'https://data.inpe.br/bdc/data/topodata/v001/'
 _COPERNICUS_BASE_URL = 'https://copernicus-dem-30m.s3.amazonaws.com/'
 
 
@@ -41,7 +40,8 @@ class ContourError(Exception):
     pass
 
 
-def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedback):
+def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedback,
+                      clip_polygons=None):
     """
     Generate contour lines from a DEM and return a temporary QgsVectorLayer.
 
@@ -55,6 +55,10 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
         smoothing:   SMOOTHING_* constant
         color:       QColor for the contour symbology
         feedback:    FeedbackAdapter
+        clip_polygons: optional list of AOI QgsGeometry in WGS84.  When the AOI
+                     is an irregular polygon (not just a rectangle), the DEM is
+                     masked to it so contours are clipped to that shape instead
+                     of filling the whole bounding box.
 
     Returns:
         QgsVectorLayer with contour lines and RuleBasedRenderer applied.
@@ -90,7 +94,10 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
             raise ContourError('Cancelado pelo usuário.')
 
         feedback.push_info(f'Recortando {len(tile_paths)} tile(s) para a área de interesse…')
-        clipped = _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback)
+        cutline_path = _write_cutline(clip_polygons, temp_dir) if clip_polygons else None
+        if cutline_path:
+            feedback.push_info('  Máscara de polígono aplicada — curvas recortadas à área.')
+        clipped = _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path)
         if not clipped:
             raise ContourError(
                 'Nenhum tile de elevação intersecta a área selecionada após recorte.')
@@ -241,33 +248,31 @@ def _download_inpe_tiles(bbox_wgs84, temp_dir, feedback):
 
 
 def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback):
+    """
+    Download one TOPODATA tile from INPE's Brazil Data Cube STAC/COG endpoint
+    (data.inpe.br/bdc), served as a direct GeoTIFF (no zip). The old
+    www.dsr.inpe.br server is stuck in a permanent HTTP<->HTTPS redirect
+    loop; this endpoint keys tiles by the same naming convention, split
+    into two path segments.
+    """
     nome = _inpe_tile_name(lat_norte, lon_oeste)
-    fn = nome + '.zip'
-    tif_path = os.path.join(cache_dir, nome + '.tif')
-    zip_path = os.path.join(cache_dir, fn)
+    fn = nome + '.tif'
+    tif_path = os.path.join(cache_dir, fn)
 
     if os.path.exists(tif_path):
         return tif_path
 
-    url = _INPE_BASE_URL + fn
+    tile6 = nome[:-2]
+    url = _INPE_BASE_URL + tile6[:3] + '/' + tile6[3:6] + '/' + fn
     feedback.push_info(f'  Baixando {fn}…')
     try:
-        urllib.request.urlretrieve(url, zip_path)  # nosec B310
+        urllib.request.urlretrieve(url, tif_path)  # nosec B310
+        if os.path.getsize(tif_path) == 0:
+            raise ValueError('Resposta vazia do servidor')
     except Exception as exc:
         feedback.push_info(f'  Falha: {fn}: {exc}')
-        return None
-
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as z:
-            for member in z.namelist():
-                if member.lower().endswith('.tif'):
-                    z.extract(member, cache_dir)
-                    extracted = os.path.join(cache_dir, member)
-                    if os.path.abspath(extracted) != os.path.abspath(tif_path):
-                        os.rename(extracted, tif_path)
-                    break
-    except Exception as exc:
-        feedback.push_info(f'  Falha ao extrair {fn}: {exc}')
+        if os.path.exists(tif_path):
+            os.remove(tif_path)
         return None
 
     return tif_path if os.path.exists(tif_path) else None
@@ -349,7 +354,43 @@ def _fetch_copernicus_tile(lat, lon, cache_dir, feedback):
 
 # ---------------------------------------------------------------------------- processing
 
-def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback):
+def _write_cutline(clip_polygons, temp_dir):
+    """Write the union of the AOI polygons to a GeoJSON cutline, or return None
+    when the AOI is effectively rectangular (draw/canvas extent) — a rectangle
+    already equals the bbox clip, so masking would be a no-op.
+    """
+    union = None
+    for g in clip_polygons:
+        if g is None or g.isEmpty():
+            continue
+        union = QgsGeometry(g) if union is None else union.combine(g)
+    if union is None or union.isEmpty():
+        return None
+
+    bbox = union.boundingBox()
+    if bbox.width() <= 0 or bbox.height() <= 0:
+        return None
+    # Rectangular AOI fills ~100% of its bbox → nothing to trim.
+    if union.area() >= 0.999 * bbox.width() * bbox.height():
+        return None
+
+    path = os.path.join(temp_dir, 'cutline.geojson')
+    drv = ogr.GetDriverByName('GeoJSON')
+    if os.path.exists(path):
+        drv.DeleteDataSource(path)
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    ds = drv.CreateDataSource(path)
+    lyr = ds.CreateLayer('cutline', srs, ogr.wkbUnknown)
+    feat = ogr.Feature(lyr.GetLayerDefn())
+    feat.SetGeometry(ogr.CreateGeometryFromWkt(union.asWkt()))
+    lyr.CreateFeature(feat)
+    feat = None
+    ds = None
+    return path if os.path.exists(path) else None
+
+
+def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path=None):
     clipped = []
     for i, tp in enumerate(tile_paths):
         out = os.path.join(temp_dir, f'clip_{i}.tif')
@@ -360,6 +401,9 @@ def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback):
             nodata = ds.GetRasterBand(1).GetNoDataValue()
             ds = None
 
+            # cutlineDSName masks pixels outside the AOI polygon to dstNodata
+            # (cropToCutline stays off → the bbox extent is preserved). gdal.Warp
+            # ignores cutlineDSName=None, so the no-polygon path is unchanged.
             opts = gdal.WarpOptions(
                 outputBounds=(
                     bbox_wgs84.xMinimum(), bbox_wgs84.yMinimum(),
@@ -368,6 +412,7 @@ def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback):
                 format='GTiff',
                 srcNodata=nodata,
                 dstNodata=nodata if nodata is not None else -32768,
+                cutlineDSName=cutline_path,
             )
             gdal.Warp(out, tp, options=opts)
 

@@ -1016,6 +1016,7 @@ class RunPage(QWizardPage):
                     wizard.contour_page.smoothing(),
                     wizard.contour_page.color(),
                     wizard.feedback,
+                    clip_polygons=wizard.polygons_wgs84,
                 )
                 if wizard.feedback.canceled:
                     engine.cleanup_resources()

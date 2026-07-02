@@ -88,7 +88,7 @@ class TairuDBWriter:
                     points TEXT,
                     style TEXT,
                     wkb BLOB,
-                    FOREIGN KEY(layer_id) REFERENCES layers(uuid)
+                    FOREIGN KEY(layer_id) REFERENCES vector_layers(uuid)
                 );
             """)
 

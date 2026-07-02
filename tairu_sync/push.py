@@ -930,7 +930,7 @@ _NON_ATTRIBUTE_FIELDS = frozenset({
     'recordId', 'tipoRegistro', 'subTipo', 'situation', 'endereco', 'owner',
     'plateTag', 'brand', 'model', 'year', 'valueEstimate', 'eventDateTime',
     'geometryColor', 'geometryBackgroundColor', 'geometrySize', 'circleRadius',
-    'geometryColorValue', 'geometryBackgroundColorValue', 'geometrySize',
+    'geometryColorValue', 'geometryBackgroundColorValue',
     'isDeleted', 'createdBy', 'createdAt', 'lastModified', 'style', 'attributes',
     SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
 })
