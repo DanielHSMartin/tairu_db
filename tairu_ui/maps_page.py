@@ -106,9 +106,20 @@ class MapsPage(QWidget):
         self._uid = uid
         self._rebuild()
 
-    def set_record_count(self, map_id, count):
-        self._counts[map_id] = count
-        self._rebuild()
+    def set_record_counts(self, counts):
+        """Batch-update record counts and rebuild the list ONCE.
+
+        Called once per phase (local, then remote) instead of once per map: a per-map
+        setter that each did a full _rebuild() was O(N^2) widget churn (visible flicker)
+        for users in many expeditions. Only known maps are stored; None counts skipped.
+        """
+        changed = False
+        for map_id, count in (counts or {}).items():
+            if count is not None and map_id in self._maps:
+                self._counts[map_id] = count
+                changed = True
+        if changed:
+            self._rebuild()
 
     def set_busy(self, busy):
         self.refresh_btn.setEnabled(not busy)

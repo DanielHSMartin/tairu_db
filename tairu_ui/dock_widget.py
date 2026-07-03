@@ -336,9 +336,7 @@ class TairuDockWidget(QgsDockWidget):
                 local_counts = cache.record_counts()
             except Exception:
                 local_counts = {}
-        for map_id, count in local_counts.items():
-            if map_id in self.maps:
-                self.maps_page.set_record_count(map_id, count)
+        self.maps_page.set_record_counts(local_counts)
 
         missing_ids = [map_id for map_id in self.maps.keys() if map_id not in local_counts]
         fs = self.fs
@@ -361,9 +359,7 @@ class TairuDockWidget(QgsDockWidget):
             return counts
 
         def apply_counts(counts):
-            for map_id, count in counts.items():
-                if map_id in self.maps:
-                    self.maps_page.set_record_count(map_id, count)
+            self.maps_page.set_record_counts(counts)
 
         run_task(
             'Tairu Maps: contando registros',
