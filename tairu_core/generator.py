@@ -331,8 +331,8 @@ class TileRenderEngine:
 
             self.meta_tiles.append(self.create_individual_metatile(z, tx, ty, n))
 
-        self.feedback.push_info(
-            f"[tempo] {len(self.meta_tiles)} metatiles preparados em {time.time() - prep_t0:.1f}s")
+        self.debug_log(
+            f"{len(self.meta_tiles)} metatiles preparados em {time.time() - prep_t0:.1f}s")
         self.feedback.set_progress_text(f"Renderizando {len(self.meta_tiles)} tiles...")
         self.feedback.reset_progress()  # new phase: the render bar grows from 0
         self._render_t0 = time.time()
@@ -438,23 +438,22 @@ class TileRenderEngine:
     def _report_summary(self):
         self.feedback.set_progress(100)
         total_expected = len(self.spec.filtered_tiles)
+
+        # Clean, one-line summary on success; detail only when tiles actually failed.
+        if self.failed_tiles == 0:
+            self.feedback.push_info(f"{self.processed_tiles} tiles renderizados.")
+            return
+
         success_rate = ((total_expected - self.failed_tiles) / total_expected * 100) if total_expected > 0 else 0
-
-        self.feedback.push_info("Resumo do processamento de tiles:")
-        self.feedback.push_info(f"- Tiles esperados: {total_expected}")
-        self.feedback.push_info(f"- Tiles processados com sucesso: {self.processed_tiles}")
-        self.feedback.push_info(f"- Tiles falhados: {self.failed_tiles}")
-        self.feedback.push_info(f"- Tiles reprocessados: {self.retried_tiles}")
-        self.feedback.push_info(f"- Taxa de sucesso: {success_rate:.1f}%")
-
-        if self.failed_tiles_info and len(self.failed_tiles_info) <= 10:
-            self.feedback.push_info("Detalhes dos tiles falhados:")
-            for fail_info in self.failed_tiles_info:
-                self.feedback.push_info(
-                    f"  - Tile {fail_info['x']},{fail_info['y']}: {fail_info['reason']}"
-                )
-        elif len(self.failed_tiles_info) > 10:
-            self.feedback.push_info(f"({len(self.failed_tiles_info)} failed tiles - too many to list)")
+        self.feedback.push_info(
+            f"{self.processed_tiles} tiles renderizados, {self.failed_tiles} falharam "
+            f"({success_rate:.0f}% sucesso).")
+        for fail_info in self.failed_tiles_info[:10]:
+            self.feedback.push_info(
+                f"  - Tile {fail_info['x']},{fail_info['y']}: {fail_info['reason']}")
+        if len(self.failed_tiles_info) > 10:
+            self.feedback.push_info(
+                f"  … e mais {len(self.failed_tiles_info) - 10} tiles falhados.")
 
     def cleanup_resources(self):
         """Enhanced cleanup with better error handling"""
@@ -666,8 +665,8 @@ class TileRenderEngine:
             # rather than the plugin. Only slow ones are logged, to avoid spam.
             render_dt = time.time() - self._job_started.pop(job, time.time())
             if render_dt >= 1.0:
-                self.feedback.push_info(
-                    f"[tempo] render do tile {meta_tile.tx},{meta_tile.ty}: {render_dt:.1f}s")
+                self.debug_log(
+                    f"render do tile {meta_tile.tx},{meta_tile.ty}: {render_dt:.1f}s")
 
             save_t0 = time.time()
             metatile_image = job.renderedImage()
@@ -705,8 +704,8 @@ class TileRenderEngine:
             self.save_metatile_data(meta_tile, metatile_image)
             save_dt = time.time() - save_t0
             if save_dt >= 1.0:
-                self.feedback.push_info(
-                    f"[tempo] gravação do tile {meta_tile.tx},{meta_tile.ty}: {save_dt:.1f}s")
+                self.debug_log(
+                    f"gravação do tile {meta_tile.tx},{meta_tile.ty}: {save_dt:.1f}s")
 
         except Exception as e:
             # Handle any unexpected errors during tile processing
@@ -908,20 +907,17 @@ class TileRenderEngine:
             if not self._completion_reported:
                 self._completion_reported = True
                 total_dt = time.time() - (self._render_t0 or time.time())
-                self.feedback.push_info(
-                    f"[tempo] render de {self.total_tiles} tiles em {total_dt:.1f}s "
+                self.debug_log(
+                    f"render de {self.total_tiles} tiles em {total_dt:.1f}s "
                     f"(~{total_dt / max(1, self.total_tiles):.2f}s/tile)")
-                # Decisive responsiveness probe: with a 100ms tick, a responsive event
+                # Responsiveness probe (DEBUG): with a 100ms tick, a responsive event
                 # loop yields ~total_dt/0.1 ticks. Far fewer ⇒ the main thread was
                 # hard-blocked (the render/download does not yield), which no event
                 # loop can fix — the lever then is metatiling / an offline base layer.
-                self.feedback.push_info(
-                    f"[tempo] heartbeats do loop: {self._tick_count} "
-                    f"(esperado ~{int(total_dt / 0.1)} se a UI estivesse responsiva)")
-                self.feedback.push_info("Todos os tiles processados, finalizando renderização...")
-                if self.failed_tiles > 0:
-                    self.feedback.push_info(
-                        f"Processamento completo. {self.failed_tiles} tiles falharam, {self.retried_tiles} tiles tentados novamente"
-                    )
+                self.debug_log(
+                    f"heartbeats do loop: {self._tick_count} "
+                    f"(esperado ~{int(total_dt / 0.1)} se responsivo)")
+                # The user-facing render summary is _report_summary() (called from
+                # run() after the loop); keep this block quiet to avoid duplicate lines.
             # Rendering is done — release run()'s nested event loop.
             self._quit_render_loop()

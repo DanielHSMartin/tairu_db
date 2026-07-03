@@ -476,6 +476,15 @@ class VectorLayersPage(QWizardPage):
         layout.addWidget(self._vector_scroll, 1)
 
     def initializePage(self):
+        # initializePage runs on EVERY visit (QWizard re-inits when the user goes back
+        # then forward), and it rebuilds the checkbox list from scratch. Remember which
+        # layers were checked and restore them after rebuilding, so the selection
+        # survives navigating back to the quality/params pages and forward again.
+        # (Rebuilding — rather than skipping — keeps the list in sync if project layers
+        # changed; a layer removed meanwhile simply drops, a new one appears unchecked.)
+        previously_checked = {
+            layer_id for layer_id, cb in self._vector_checkboxes.items() if cb.isChecked()
+        }
         while self._scroll_inner.count():
             item = self._scroll_inner.takeAt(0)
             if item.widget():
@@ -487,6 +496,8 @@ class VectorLayersPage(QWizardPage):
             if not isinstance(layer, QgsVectorLayer) or not layer.isValid():
                 continue
             cb = QCheckBox(layer.name())
+            if layer.id() in previously_checked:
+                cb.setChecked(True)
             self._vector_checkboxes[layer.id()] = cb
             self._scroll_inner.addWidget(cb)
         self._scroll_inner.addStretch(1)
