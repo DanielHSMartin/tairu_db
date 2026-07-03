@@ -3,10 +3,11 @@
 """
 Push: QGIS vector features → /maps/{id}/records documents.
 
-build_push_plan() classifies every feature against a fresh remote snapshot as
-new / update / unchanged / forbidden (and optional deletions), so the user
-approves an explicit diff before anything is written. execute_push() turns an
-approved plan into batched Firestore commits (≤100 writes per commit).
+build_push_plan() classifies every feature against its pull-time baseline (the
+stored tairuSyncHash) as new / update / unchanged / forbidden (and optional
+deletions), so the user approves an explicit diff before anything is written.
+No fresh remote read is performed. execute_push() turns an approved plan into
+batched Firestore commits (≤100 writes per commit).
 
 Geometry comparison ignores the per-point 'ts' values (they change on every
 serialization); only coordinates and radius/colors/styling matter.
@@ -29,10 +30,8 @@ try:
     )
     from .record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, normalized_geometry_points,
-        record_to_attribute_map, resolved_background_argb,
-        resolved_color_argb, sync_record_hash, SYNC_HASH_FIELD,
-        SYNC_LAST_MODIFIED_FIELD,
+        layer_sync_snapshot, record_to_attribute_map, sync_record_hash,
+        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
@@ -43,10 +42,8 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_sync.record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, normalized_geometry_points,
-        record_to_attribute_map, resolved_background_argb,
-        resolved_color_argb, sync_record_hash, SYNC_HASH_FIELD,
-        SYNC_LAST_MODIFIED_FIELD,
+        layer_sync_snapshot, record_to_attribute_map, sync_record_hash,
+        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
     )
     from tairu_sync.tasks import run_task
 
@@ -1109,84 +1106,9 @@ _DIFF_SCALARS = [
 _ALL_UPDATE_FIELDS = list(_DIFF_SCALARS) + [
     'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb',
 ]
-_CANDIDATE_ATTRS = {
-    'nome': 'nome', 'descricao': 'descricao', 'situation': 'situation',
-    'endereco': 'endereco', 'tipoRegistro': 'tipo_registro', 'subTipo': 'sub_tipo',
-    'owner': 'owner', 'plateTag': 'plate_tag', 'brand': 'brand', 'model': 'model',
-    'year': 'year', 'color': 'color', 'valueEstimate': 'value_estimate', 'size': 'size',
-    'eventDateTime': 'event_date_time',
-    'geometrySize': 'geometry_size', 'geometryColorValue': 'geometry_color_value',
-    'geometryBackgroundColorValue': 'geometry_background_color_value',
-}
-
-
-def _rounded_points(rec):
-    # Shared normalization (rounds + strips polygon closing point) so closed
-    # QGIS rings and open Firestore rings compare equal.
-    return normalized_geometry_points(rec, _COORD_PRECISION)
-
-
-def _geometry_changed(candidate, remote):
-    cand_pts = _rounded_points(candidate)
-    remote_pts = _rounded_points(remote)
-    # A record with no points belongs to the no-geometry layer regardless of the
-    # stored type label, so don't treat a 'point'/'polygon' label that never had
-    # coordinates as a geometry change against the candidate's 'none'.
-    cand_type = (candidate.geometry_type or 'none') if cand_pts else 'none'
-    remote_type = (remote.geometry_type or 'none') if remote_pts else 'none'
-    if cand_type != remote_type:
-        return True
-    if cand_pts != remote_pts:
-        return True
-    if (candidate.circle_radius or 0) != (remote.circle_radius or 0):
-        return True
-    return False
-
-
-def _norm_argb(value):
-    """Signed (Python) and unsigned (Dart) ARGB ints compare equal."""
-    return None if value is None else int(value) & 0xFFFFFFFF
-
-
-def _diff_fields(candidate, remote):
-    changed = []
-    for fs_key in _DIFF_SCALARS:
-        if fs_key == 'geometryColorValue':
-            # Compare the rendered color, not the raw nullable value: an absent
-            # color and an explicit type-default color render identically.
-            if resolved_color_argb(candidate) != resolved_color_argb(remote):
-                changed.append(fs_key)
-            continue
-        if fs_key == 'geometryBackgroundColorValue':
-            if resolved_background_argb(candidate) != resolved_background_argb(remote):
-                changed.append(fs_key)
-            continue
-        cand_val = getattr(candidate, _CANDIDATE_ATTRS[fs_key])
-        remote_val = getattr(remote, _CANDIDATE_ATTRS[fs_key])
-        if isinstance(cand_val, float) or isinstance(remote_val, float):
-            if abs(float(cand_val or 0) - float(remote_val or 0)) > 1e-9:
-                changed.append(fs_key)
-        elif (cand_val or None) != (remote_val or None):
-            # '' and None are equivalent absences for string fields
-            if (cand_val or '') != (remote_val or ''):
-                changed.append(fs_key)
-    if _geometry_changed(candidate, remote):
-        changed += ['geometryType', 'geometryPoints', 'geometryBounds']
-        if candidate.circle_radius is not None or remote.circle_radius is not None:
-            changed.append('circleRadius')
-        # Keep the lossless WKB in step with the simplified points (set it when the
-        # feature is holed/multipart, clear it — via None in the mask — otherwise).
-        changed.append('geometryWkb')
-    return changed
-
-
 def _baseline_hash(feature):
     value = _attr(feature, SYNC_HASH_FIELD)
     return str(value or '')
-
-
-def _baseline_last_modified(feature):
-    return _attr_millis(feature, SYNC_LAST_MODIFIED_FIELD) or _attr_millis(feature, 'lastModified')
 
 
 def _append_warning(existing, warning):
@@ -1222,43 +1144,6 @@ def _duplicate_record_id_clones(entries_by_record_id):
                 continue
             clones[entry.feature.id()] = record_id
     return clones
-
-
-def _millis_from_snapshot(value):
-    if value is None:
-        return 0
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _classify_against_baseline(candidate, remote_rec, feature):
-    changed = _diff_fields(candidate, remote_rec)
-    base_hash = _baseline_hash(feature)
-    if base_hash:
-        local_hash = sync_record_hash(candidate)
-        remote_hash = sync_record_hash(remote_rec)
-        if local_hash == remote_hash:
-            if local_hash == base_hash:
-                return 'unchanged', [], ''
-            # local == remote != base: the remote snapshot already reflects the
-            # user's local edits (local GeoPackage mode). We can't diff field-by-
-            # field against the pre-edit state, so include every updateable field.
-            return 'update', _ALL_UPDATE_FIELDS, ''
-        local_changed = local_hash != base_hash
-        remote_changed = remote_hash != base_hash
-        if remote_changed and not local_changed:
-            return 'remote_changed', changed, 'alterado no Tairu Maps desde a última sincronização'
-        if remote_changed and local_changed:
-            return 'conflict', changed, 'alterado no QGIS e no Tairu Maps; baixe novamente para resolver'
-        return ('update', changed, '') if changed else ('unchanged', [], '')
-
-    base_last_modified = _baseline_last_modified(feature)
-    if base_last_modified and remote_rec.last_modified and base_last_modified != remote_rec.last_modified:
-        return 'conflict', changed, (
-            'registro remoto mudou desde o último pull; baixe novamente para resolver')
-    return ('update', changed, '') if changed else ('unchanged', [], '')
 
 
 def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
