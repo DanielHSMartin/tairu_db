@@ -7,7 +7,7 @@ qgisMinimumVersion=3.20
 qgisMaximumVersion=4.99
 description=Connect QGIS to Tairu Maps (https://tairumaps.com) for two-way cloud sync, editable field records, and offline .tairudb map generation.
 description[pt_br]=Conecte o QGIS ao Tairu Maps (https://tairumaps.com) para sincronização em nuvem nos dois sentidos, registros editáveis e geração de mapas offline .tairudb.
-version=2.0.12
+version=2.0.13
 author=Daniel Hulshof Saint Martin
 email=daniel.hulshof@gmail.com
 
@@ -20,6 +20,7 @@ repository=https://github.com/DanielHSMartin/tairu_db
 hasProcessingProvider=yes
 
 changelog=
+  2.0.13 - Geometria complexa (poligonos com ilhas e multipartes) vinda do app agora e lida no pull e renderizada corretamente no QGIS, e uma edicao de atributo nao apaga mais essa geometria na nuvem ao enviar. Cores e preenchimento por registro passam a seguir o estilo do app (styleJson). Geracao de .tairudb nao trava mais a janela do QGIS: os tiles do mapa base online (Google e outros) sao pre-baixados com barra de progresso, o render usa um loop de eventos real, e o download dos dados de elevacao para curvas de nivel mostra progresso e pode ser cancelado; o arquivo e gravado de forma atomica (sem arquivo corrompido) e as barras de progresso crescem junto com cada download. O wizard mantem a selecao de camadas vetoriais ao voltar e avancar entre as etapas, e os logs de geracao ficaram mais limpos. Cache e custo do Firestore: correcoes que evitam reler a colecao inteira de registros a cada abertura em mapas legados e impedem que uma falha de escrita no cache apague registros locais no modo offline. Outras correcoes: vazamento de socket no login pelo navegador, indice de regiao/tiles com feicao de area vazia, limpeza de arquivos temporarios das curvas e diversas melhorias internas de estabilidade.
   2.0.12 - Correcao: o wizard de geracao de .tairudb agora tambem ignora camadas de registros do Tairu na exportacao vetorial (antes apenas o algoritmo de Processamento fazia isso), evitando geometrias duplicadas no mapa e exposicao de dados dos registros. O WKB OGC passa a ser gravado apenas para poligonos com ilhas ou multipartes (geometrias simples nao carregam mais um blob redundante), reduzindo o tamanho do arquivo.
   2.0.11 - Simbologia estruturada (styleJson): camadas vetoriais enviadas e exportadas para .tairudb agora preservam o preenchimento de poligonos, o padrao de traco (tracejado/pontilhado) e a configuracao de rotulos (campo, cor e visibilidade por zoom) do QGIS, resolvidos no app pelo mesmo codec de estilo dos registros. Curvas de nivel mantem o estilo proprio do app. Poligonos com ilhas (aneis internos) e geometrias multipartes agora preservam sua estrutura via WKB OGC tanto na exportacao .tairudb quanto no envio de camadas como registros, permitindo que o app renderize os furos e todas as partes corretamente.
   2.0.10 - Curvas de nivel integradas ao wizard de geracao de arquivo .tairudb: nova etapa de configuracao permite gerar curvas automaticamente a partir de dados de elevacao INPE TOPODATA (Brasil) ou Copernicus GLO-30 (Mundial), com intervalo, suavizacao e cor configuráveis. As curvas sao geradas na etapa de execucao e incluidas no arquivo .tairudb.
