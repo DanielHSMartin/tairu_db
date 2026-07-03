@@ -14,6 +14,7 @@ from qgis.core import QgsMessageLog
 try:
     from ..compat import _MSG_WARNING
     from ..tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
+    from ..tairu_core.reentrancy_guard import run_or_defer
     from ..tairu_core.mbtiles import tairudb_to_mbtiles
     from ..tairu_core.workspace import map_workspace, save_last_pull_ts
     from ..tairu_firebase.config import TAIRUDB_OBJECT_PATH
@@ -23,6 +24,7 @@ try:
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
     from tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
+    from tairu_core.reentrancy_guard import run_or_defer
     from tairu_core.mbtiles import tairudb_to_mbtiles
     from tairu_core.workspace import map_workspace, save_last_pull_ts
     from tairu_firebase.config import TAIRUDB_OBJECT_PATH
@@ -36,15 +38,22 @@ _PULL_CLOCK_SKEW_MS = 30_000
 
 
 def _rows_server_watermark(rows, empty_fallback_ms=0):
-    """Highest serverTimestamp in fetched rows, or fallback for empty snapshots."""
-    saw_row = False
+    """Highest serverTimestamp in fetched rows, or the fallback when none is usable.
+
+    The fallback also covers rows that exist but ALL lack a serverTimestamp (a
+    fully-legacy map): on a full pull the caller passes pull_started_at, so we save a
+    positive watermark and the snapshot flag sticks. Returning 0 here would leave
+    last_full_sync_ms=0 and force a full re-read of the whole collection on EVERY open
+    — the exact unnecessary-reads cost this cache exists to avoid. The incremental
+    caller passes empty_fallback_ms=0 and does `... or since_millis`, so its behaviour
+    is unchanged.
+    """
     high = 0
     for _record_id, fields in rows or []:
-        saw_row = True
         high = max(high, parse_millis((fields or {}).get('serverTimestamp')))
     if high > 0:
         return high
-    return int(empty_fallback_ms or 0) if not saw_row else 0
+    return int(empty_fallback_ms or 0)
 
 
 def start_pull(dock, tmap):
@@ -82,6 +91,11 @@ def start_pull(dock, tmap):
             task.report(1.0, f'{len(rows)} registros recebidos')
         return rows
 
+    # NOTE: apply_pull creates QgsVectorLayer / QgsVectorFileWriter and reads
+    # QgsProject.instance() — those crash the C++ layer off the GUI thread (a worker
+    # attempt hard-crashed QGIS), so the GeoPackage merge stays on the GUI thread here.
+    # The heavy-map freeze is a known trade-off; a safe off-thread merge would need a
+    # thread-confined OGR path that never touches QgsProject/QgsVectorLayer.
     def apply_rows(rows, from_cache=False):
         records = []
         parse_errors = []
@@ -102,7 +116,11 @@ def start_pull(dock, tmap):
             page.set_status(f'Falha ao gravar GeoPackage: {e}', error=True)
             return None
 
-        add_record_layers_to_project(paths['gpkg'], tmap.nome or tmap.map_id)
+        # NEVER mutate QgsProject re-entrantly while a generation is pumping its nested
+        # event loop — addMapLayer there fires the wizard's layer combo and crashes
+        # QGIS. run_or_defer runs this immediately in normal operation, or defers it
+        # until the generation finishes.
+        run_or_defer(lambda: add_record_layers_to_project(paths['gpkg'], tmap.nome or tmap.map_id))
 
         page.set_busy(False)
         if from_cache:
@@ -136,6 +154,7 @@ def start_pull(dock, tmap):
                 rows,
                 empty_fallback_ms=pull_started_at,
             )
+        cache_stored = False
         try:
             cache.store_records(
                 tmap.map_id,
@@ -143,21 +162,29 @@ def start_pull(dock, tmap):
                 pull_started_at,
                 full_snapshot=not is_incremental,
             )
+            cache_stored = True
         except Exception:
             pass
         result = apply_rows(rows)
         if result is None:
             return
-        try:
-            cache.save_sync_state(
-                tmap.map_id,
-                RECORDS_COLLECTION,
-                sync_watermark,
-                full_snapshot=not is_incremental,
-            )
-        except Exception:
-            pass
-        save_last_pull_ts(paths, sync_watermark)
+        # Advance the sync cursor ONLY when the cache actually captured this batch.
+        # If store_records failed, the cache is now missing rows the GeoPackage has;
+        # advancing the watermark would make the next pull skip past them, and a later
+        # OFFLINE pull (which rebuilds the GeoPackage from the cache via remove_missing)
+        # would delete those local records. Leaving the cursor put makes the next pull
+        # re-fetch and re-attempt the cache write, healing the divergence.
+        if cache_stored:
+            try:
+                cache.save_sync_state(
+                    tmap.map_id,
+                    RECORDS_COLLECTION,
+                    sync_watermark,
+                    full_snapshot=not is_incremental,
+                )
+            except Exception:
+                pass
+            save_last_pull_ts(paths, sync_watermark)
 
     def on_error(message):
         cached_rows = []
@@ -210,13 +237,17 @@ def start_tairudb_download(dock, tmap, file_name):
         return results
 
     def on_success(results):
-        added = 0
-        for mbtiles_path, region_label in results:
-            name = f'{os.path.splitext(file_name)[0]} — {region_label}'
-            if add_raster_to_project(mbtiles_path, name, tmap.nome or tmap.map_id):
-                added += 1
+        # Same re-entrancy guard as the records pull: adding raster layers to the
+        # project while a generation pumps its nested loop can crash QGIS.
+        def add_layers():
+            added = 0
+            for mbtiles_path, region_label in results:
+                name = f'{os.path.splitext(file_name)[0]} — {region_label}'
+                if add_raster_to_project(mbtiles_path, name, tmap.nome or tmap.map_id):
+                    added += 1
+            page.set_status(f'{file_name}: {added} camada(s) raster adicionada(s).')
         page.set_busy(False)
-        page.set_status(f'{file_name}: {added} camada(s) raster adicionada(s).')
+        run_or_defer(add_layers)
         dock.notify(f'{file_name} adicionado ao projeto.')
 
     def on_error(message):

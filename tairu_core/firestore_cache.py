@@ -136,10 +136,16 @@ class FirestoreCache:
             # as the incremental cursor. That can miss app-side edits, so all
             # v1 cursors must be rebuilt from a safe full pull.
             conn.execute("DELETE FROM sync_state;")
-        conn.execute(
-            "INSERT OR REPLACE INTO cache_meta(key, value) VALUES ('schema_version', ?);",
-            (str(SCHEMA_VERSION),),
-        )
+        # Only write the version row when it actually changed. _ensure_schema runs on
+        # EVERY connection (and every method opens its own), so an unconditional
+        # INSERT OR REPLACE + commit turned every read into a write transaction (WAL
+        # churn). The CREATE TABLE IF NOT EXISTS statements above are no-ops once the
+        # tables exist, so with this guard commit() writes nothing on the common path.
+        if existing_version != SCHEMA_VERSION:
+            conn.execute(
+                "INSERT OR REPLACE INTO cache_meta(key, value) VALUES ('schema_version', ?);",
+                (str(SCHEMA_VERSION),),
+            )
         conn.commit()
 
     def load_maps(self):

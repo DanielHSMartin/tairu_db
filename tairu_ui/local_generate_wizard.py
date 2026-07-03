@@ -42,6 +42,7 @@ try:
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles
     from ..tairu_core.tile_prefetch import prefetch_basemap_tiles
+    from ..tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
     from ..tairu_core.vector_export import export_vector_layers
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
@@ -62,6 +63,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles
     from tairu_core.tile_prefetch import prefetch_basemap_tiles
+    from tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
     from tairu_core.vector_export import export_vector_layers
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
@@ -996,6 +998,18 @@ class RunPage(QWizardPage):
             pass
 
     def _start(self):
+        # Generation pumps the event loop (nested QEventLoop for prefetch/render,
+        # processEvents during DEM downloads). That dispatches unrelated QgsTask
+        # completions — a background records pull's on_success calls addMapLayer, and
+        # doing that re-entrantly here crashes QGIS via the layer combo. The guard
+        # defers such project mutations until this generation finishes.
+        gen_enter()
+        try:
+            self._run_generation()
+        finally:
+            gen_leave()
+
+    def _run_generation(self):
         wizard = self._wizard
         self._set_back_enabled(False)
 
