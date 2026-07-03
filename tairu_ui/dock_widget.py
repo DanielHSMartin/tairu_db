@@ -209,7 +209,7 @@ class TairuDockWidget(QgsDockWidget):
             return
 
         if remember and self.tokens.refresh_token:
-            encrypted = auth_store.save_refresh_token(
+            auth_store.save_refresh_token(
                 self.env.key, self.tokens.refresh_token, email=self.tokens.email)
         auth_store.save_environment_key(self.env.key)
 

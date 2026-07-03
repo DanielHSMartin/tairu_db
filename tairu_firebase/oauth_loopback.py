@@ -148,8 +148,14 @@ class LoopbackServer(QObject):
             self._timer = None
         server, self._server = self._server, None
         if server is not None:
-            # shutdown() blocks until serve_forever exits; safe from any
-            # thread except a handler thread (we never call it from one).
-            threading.Thread(target=server.shutdown, daemon=True).start()
+            # shutdown() stops serve_forever but does NOT close the listening socket —
+            # only server_close() does, so shutdown() alone leaks one FD per login/
+            # timeout. Do both, in order, on a daemon thread so the GUI never blocks
+            # (shutdown() blocks until serve_forever exits; safe from any non-handler
+            # thread, and we never call it from a handler thread).
+            def _teardown(srv):
+                srv.shutdown()
+                srv.server_close()
+            threading.Thread(target=_teardown, args=(server,), daemon=True).start()
         self._thread = None
         self.port = None

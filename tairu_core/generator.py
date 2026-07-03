@@ -674,8 +674,6 @@ class TileRenderEngine:
 
             # Check for rendering failures and implement retry logic
             if metatile_image.isNull() or metatile_image.width() == 0 or metatile_image.height() == 0:
-                self.failed_tiles += 1
-
                 # Add to retry queue if we haven't exceeded max retries
                 if meta_tile.retry_count < self.max_retries:
                     meta_tile.retry_count += 1
@@ -685,7 +683,9 @@ class TileRenderEngine:
                         f"Tentando tile novamente {meta_tile.tx},{meta_tile.ty} (tentativa {meta_tile.retry_count}/{self.max_retries})"
                     )
                 else:
-                    # Max retries reached, log as failed
+                    # Max retries reached — count as failed exactly once here (not on
+                    # every attempt), so the success-rate report isn't corrupted.
+                    self.failed_tiles += 1
                     self.failed_tiles_info.append({
                         'x': meta_tile.tx,
                         'y': meta_tile.ty,
