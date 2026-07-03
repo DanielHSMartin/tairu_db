@@ -145,6 +145,16 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
 
         _apply_renderer(layer, interval, color)
         feedback.push_info('Curvas de nível geradas com sucesso.')
+
+        # Free the intermediate DEM rasters (merged/smoothed/clipped tiles, cutline,
+        # vrt) — the bulk of the temp footprint. Only contours.gpkg is still needed,
+        # backing the returned layer; the DEM tile cache lives elsewhere and is kept.
+        for name in os.listdir(temp_dir):
+            if not name.startswith('contours.gpkg'):
+                try:
+                    os.remove(os.path.join(temp_dir, name))
+                except OSError:
+                    pass
         return layer
 
     except ContourError:

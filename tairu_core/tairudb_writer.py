@@ -127,7 +127,10 @@ class TairuDBWriter:
             return False
 
         try:
-            table_name = f"tiles_region_{region_id}"
+            # int() at the boundary: the table name is a SQL identifier (can't be a
+            # bound param), so make it provably numeric — defence-in-depth against any
+            # future non-int region_id. Stored in region_tables and reused by saveTile.
+            table_name = f"tiles_region_{int(region_id)}"
             self.cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     zoom_level integer,

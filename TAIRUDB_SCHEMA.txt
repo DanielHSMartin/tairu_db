@@ -1,7 +1,7 @@
 ================================================================================
 TairuDB SQLite Database Schema
 ================================================================================
-Version: 1.3
+Version: 1.2
 Format: SQLite3
 Description: Geographic database format for the Geop mobile application
 ================================================================================
@@ -109,7 +109,10 @@ CREATE TABLE IF NOT EXISTS regions (
 );
 
 Fields:
-  - id      : Region identifier (0, 1, 2, ...)
+  - id      : Region identifier, 1-based (AUTOINCREMENT: 1, 2, 3, ...).
+              NOTE: the tiles_region_{N} tables below are 0-based ({N} = the
+              region's insertion order, 0, 1, 2, ...), so tiles_region_0
+              belongs to regions.id = 1, tiles_region_1 to id = 2, etc.
   - uuid    : Unique identifier (UUID v4 format)
   - name    : Region display name
   - minzoom : Minimum zoom level for this region
@@ -124,7 +127,9 @@ Bounds format:
 TABLES: tiles_region_{N} (dynamic, one per region)
 --------------------------------------------------------------------------------
 Stores raster tiles in TMS (Tile Map Service) format. One table is created for
-each region defined in the regions table, with {N} corresponding to region ID.
+each region defined in the regions table, with {N} being the region's 0-based
+insertion order (so tiles_region_0 pairs with regions.id = 1; see the regions
+table note above).
 
 CREATE TABLE IF NOT EXISTS tiles_region_0 (
     zoom_level INTEGER, 
@@ -220,8 +225,8 @@ FROM features f
 JOIN vector_layers l ON f.layer_id = l.uuid
 WHERE l.name = 'Points of Interest';
 
--- Get database bounds
-SELECT bounds FROM regions WHERE id = 0;
+-- Get database bounds (regions.id is 1-based)
+SELECT bounds FROM regions WHERE id = 1;
 
 -- Get tile data for specific coordinate
 SELECT tile_data 

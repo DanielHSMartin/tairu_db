@@ -123,7 +123,13 @@ def compute_region_tiles(polygons_wgs84, max_zoom, feedback):
                 if polygon_geom_wgs84.intersects(tile_geom):
                     region_tiles.add((tx, ty))
 
-        result.region_tiles[idx] = list(region_tiles)
+        # Key by the DENSE valid-polygon position, not the enumerate idx: an empty
+        # feature earlier in the list `continue`s without a region, so an enumerate
+        # idx would leave a gap (e.g. keys {0, 2}) while bounds_list stays dense. The
+        # Flutter reader maps tiles_region_$i by list position, so a gap orphans a
+        # region's tiles. valid_polygons was just appended, so len-1 is this region's
+        # index and matches bounds_list order. No-op when no feature was skipped.
+        result.region_tiles[len(valid_polygons) - 1] = list(region_tiles)
 
     # Calculate total tiles across all regions
     all_tiles = set()
