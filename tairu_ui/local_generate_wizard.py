@@ -458,7 +458,8 @@ class VectorLayersPage(QWizardPage):
         self.setTitle('Camadas Vetoriais')
         self.setSubTitle(
             'Selecione camadas QGIS a incluir no .tairudb (opcional).\n'
-            'Camadas incluídas não são editáveis no Tairu Maps mobile.')
+            'As camadas vetoriais incluídas serão somente leitura no app '
+            '(não editáveis no Tairu Maps).')
 
         layout = QVBoxLayout(self)
         self._vector_checkboxes = {}
@@ -1128,6 +1129,7 @@ class RunPage(QWizardPage):
                     self._running = False
                     self._set_back_enabled(True)
                     return
+                self._append(f'{contour_layer.featureCount()} curvas de nível geradas.')
                 self._append('Exportando curvas de nível…')
                 export_vector_layers(
                     engine.writer, [contour_layer],
