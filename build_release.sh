@@ -27,7 +27,7 @@ trap 'rm -rf "$stage_parent"' EXIT
 mkdir -p "$stage"
 
 # ---- stage files (mirror pb_tool.cfg) ----
-flat_files="__init__.py tairu_db.py tairu_db_algorithm.py tairu_db_provider.py geopdf_converter.py compat.py
+flat_files="__init__.py tairu_db.py tairu_db_algorithm.py tairu_db_provider.py geopdf_converter.py compat.py qgis_proxy.py
             metadata.txt README.html TAIRUDB_SCHEMA.txt icon.png LICENSE"
 package_dirs="tairu_core tairu_ui tairu_firebase tairu_sync"
 

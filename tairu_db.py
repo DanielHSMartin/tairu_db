@@ -51,6 +51,11 @@ class TairuDBPlugin(object):
         self.icon_path = os.path.join(os.path.dirname(__file__), 'icon.png')
 
     def initProcessing(self):
+        try:
+            from .qgis_proxy import install_qgis_proxy
+            install_qgis_proxy()
+        except Exception:
+            pass  # proxy misconfiguration must never block plugin load
         self.provider = TairuDBProvider()
         QgsApplication.processingRegistry().addProvider(self.provider)
 
@@ -82,6 +87,11 @@ class TairuDBPlugin(object):
         QgsApplication.processingRegistry().removeProvider(self.provider)
 
     def _show_dock(self):
+        try:
+            from .qgis_proxy import install_qgis_proxy
+            install_qgis_proxy()  # pick up proxy settings changed mid-session
+        except Exception:
+            pass
         if self.dock is None:
             from .compat import _DOCK_RIGHT_AREA
             from .tairu_ui.dock_widget import TairuDockWidget

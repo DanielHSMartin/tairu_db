@@ -34,6 +34,7 @@ from qgis.core import (
 )
 
 try:
+    from .qgis_proxy import install_qgis_proxy
     from .compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
     from .tairu_core.feedback import ProcessingFeedbackAdapter
     from .tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401 (re-export)
@@ -47,6 +48,7 @@ try:
     from .tairu_core.vector_export import qvariant_to_python, export_vector_layers  # noqa: F401 (re-export)
     from .tairu_sync.record_convert import is_record_sync_layer
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from qgis_proxy import install_qgis_proxy
     from compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
     from tairu_core.feedback import ProcessingFeedbackAdapter
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401
@@ -170,7 +172,7 @@ def TairuDBAlgorithm():
 
             self.addParameter(QgsProcessingParameterMultipleLayers(
                 VECTOR_LAYERS,
-                self.tr("Camadas vetoriais para exportar"),
+                self.tr("Camadas vetoriais para exportar (somente leitura no app)"),
                 layerType=QgsProcessing.TypeVectorAnyGeometry,
                 optional=True,
             ))
@@ -297,6 +299,13 @@ def TairuDBAlgorithm():
         def processAlgorithm(self, parameters, context, feedback):
             if feedback.isCanceled():
                 return {}
+
+            try:
+                proxy_status = install_qgis_proxy()
+                if proxy_status:
+                    feedback.pushInfo(proxy_status)
+            except Exception as e:
+                feedback.pushInfo('Falha ao aplicar proxy do QGIS: {}'.format(e))
 
             fb = ProcessingFeedbackAdapter(feedback)
             dry_run = self.parameterAsBool(parameters, DRY_RUN, context)
