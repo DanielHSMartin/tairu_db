@@ -32,9 +32,11 @@ from qgis.core import (
 try:
     from ..compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from .tairudb_writer import TairuDBWriter, MetaTile
+    from .map_identity import map_uuid_for_output
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile
+    from tairu_core.map_identity import map_uuid_for_output
 
 # Debug mode - set to True for detailed logging, False for production
 DEBUG_MODE = False
@@ -409,6 +411,11 @@ class TileRenderEngine:
         writer.setMetadataValue("name", base_name)
         writer.setMetadataValue("description", base_name)
         writer.setMetadataValue("version", "1.2")
+        # Stable identity across re-exports: lets the app recognise a newer
+        # version of a map it already has WITHOUT trusting the file name, which
+        # messengers rewrite ("mapa (1).tairudb") and which two unrelated maps
+        # can legitimately share.
+        writer.setMetadataValue("map_uuid", map_uuid_for_output(base_name))
         writer.setMetadataValue("type", "overlay")
         writer.setMetadataValue("minzoom", str(spec.max_zoom))
         writer.setMetadataValue("maxzoom", str(spec.max_zoom))

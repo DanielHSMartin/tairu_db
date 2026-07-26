@@ -15,7 +15,7 @@ Processing algorithm and the raster cloud wizard).
 import datetime
 import os
 
-from qgis.PyQt.QtCore import QTimer, QCoreApplication
+from qgis.PyQt.QtCore import QTimer, QCoreApplication, QSettings
 from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
@@ -752,6 +752,31 @@ class GrgPage(QWizardPage):
 
 # ------------------------------------------------------------------ page 6 — arquivo de destino
 
+# Where the last destination is remembered, so a RE-EXPORT defaults to the same
+# file name instead of a fresh timestamp. Overwriting the previous file is what
+# lets the app replace the map in place on re-import (it evicts the stale
+# instance and reloads); a new name every time makes the user accumulate files
+# and, for anyone who incorporated features, duplicates them against the records.
+# Scoped per expedition in upload mode — two expeditions do not share a name.
+_LAST_OUTPUT_SETTINGS_KEY = 'tairu_db/last_output'
+
+
+def _remember_output(scope, value):
+    """Best-effort: a settings failure must never block an export."""
+    try:
+        QSettings().setValue(f'{_LAST_OUTPUT_SETTINGS_KEY}/{scope}', value)
+    except Exception:
+        pass
+
+
+def _recall_output(scope):
+    try:
+        value = QSettings().value(f'{_LAST_OUTPUT_SETTINGS_KEY}/{scope}')
+        return value if isinstance(value, str) and value.strip() else None
+    except Exception:
+        return None
+
+
 class DestinationPage(QWizardPage):
 
     def __init__(self, wizard):
@@ -791,17 +816,48 @@ class DestinationPage(QWizardPage):
 
         layout.addStretch(1)
 
+    def _settings_scope(self):
+        if self._wizard.is_upload_mode and self._wizard.tmap is not None:
+            return f'map_{self._wizard.tmap.map_id}'
+        return 'local'
+
     def initializePage(self):
+        # Reuse the previous destination when there is one: re-exporting a layer
+        # is the normal update path for users who receive no cloud sync, and
+        # overwriting the same file is what makes the app replace the map instead
+        # of stacking another copy of it.
+        remembered = _recall_output(self._settings_scope())
         if self._wizard.is_upload_mode and self.name_edit is not None:
             if not self.name_edit.text().strip():
-                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-                base = slugify_filename(self._wizard.tmap.nome or 'expedicao')
-                self.name_edit.setText(f'{base}-{date_str}.tairudb')
+                if remembered:
+                    self.name_edit.setText(remembered)
+                else:
+                    date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                    base = slugify_filename(self._wizard.tmap.nome or 'expedicao')
+                    self.name_edit.setText(f'{base}-{date_str}.tairudb')
         elif self.output_edit is not None:
             if not self.output_edit.text().strip():
-                date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-                docs = os.path.expanduser('~/Documents')
-                self.output_edit.setText(os.path.join(docs, f'mapa-{date_str}.tairudb'))
+                # Only reuse a path whose folder still exists — a remembered file
+                # on an unplugged drive would strand the user on an unwritable
+                # destination with no explanation.
+                if remembered and os.path.isdir(os.path.dirname(remembered)):
+                    self.output_edit.setText(remembered)
+                else:
+                    date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                    docs = os.path.expanduser('~/Documents')
+                    self.output_edit.setText(os.path.join(docs, f'mapa-{date_str}.tairudb'))
+
+    def validatePage(self):
+        # Remembered on the way forward, not at generation time: the user may
+        # cancel later, and the destination they chose is still the one they mean
+        # next time.
+        if self._wizard.is_upload_mode:
+            value = self.file_name()
+        else:
+            value = self.output_path()
+        if value:
+            _remember_output(self._settings_scope(), value)
+        return True
 
     def _browse_output(self):
         current = self.output_edit.text().strip()

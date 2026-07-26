@@ -49,8 +49,10 @@ except ImportError as e:
 from tairu_db_algorithm import TairuDBWriter, MetaTile, qvariant_to_python  # type: ignore
 try:
     from tairu_core.vector_types import tairudb_type_for_fields
+    from tairu_core.map_identity import map_uuid_for_output
 except ImportError:
     from .tairu_core.vector_types import tairudb_type_for_fields
+    from .tairu_core.map_identity import map_uuid_for_output
 
 # QGIS 4 (PyQt6) / QGIS 3 (PyQt5) compatibility constants
 try:
@@ -1004,6 +1006,10 @@ class GeoPDFConverter:
         tairudb_writer.setMetadataValue("name", base_name)
         tairudb_writer.setMetadataValue("description", base_name)
         tairudb_writer.setMetadataValue("version", "1.2")
+        # Same stable identity as the tile generator: reconverting the same
+        # GeoPDF replaces the map in the app instead of stacking a second copy.
+        tairudb_writer.setMetadataValue(
+            "map_uuid", map_uuid_for_output(base_name))
         tairudb_writer.setMetadataValue("type", "overlay")
         tairudb_writer.setMetadataValue("minzoom", str(self.zoom_level))
         tairudb_writer.setMetadataValue("maxzoom", str(self.zoom_level))

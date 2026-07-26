@@ -8,12 +8,95 @@ from tairu_db_algorithm during the 2.0 refactor.
 import json
 import uuid
 
-from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry, QgsProject
+from qgis.core import (
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsGeometry,
+    QgsProject,
+    QgsRenderContext,
+)
 
 try:
     from .vector_types import tairudb_type_for_fields
+    from .map_identity import feature_uuid_for
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
+    from tairu_core.map_identity import feature_uuid_for
+
+
+def _layer_default_color(layer):
+    """The colour a feature should get when the renderer resolves no symbol for it.
+
+    `renderer().symbol()` only exists on a SINGLE-SYMBOL renderer. On a
+    categorized/graduated/rule-based layer it raises, and the old code fell
+    straight to a hardcoded blue — so a feature whose attribute matched no
+    category was exported blue instead of the layer's own default. That is the
+    exact case a user hits while still filling in the attribute table.
+
+    Tries, in the order a user would call "the layer's default":
+      1. single symbol;
+      2. the categorized «all other values» category — what QGIS itself draws for
+         an unmatched feature, so it is the most faithful answer;
+      3. sourceSymbol() — the base symbol categorized/graduated renderers keep;
+      4. any symbol the renderer exposes;
+      5. blue, only when the layer offers nothing at all.
+
+    Every step is guarded independently: renderer APIs vary across QGIS versions
+    and a styling lookup must never fail an export.
+    """
+    renderer = None
+    try:
+        renderer = layer.renderer()
+    except Exception:
+        return "#0000FF"
+    if renderer is None:
+        return "#0000FF"
+
+    def _name(symbol):
+        try:
+            return symbol.color().name() if symbol is not None else None
+        except Exception:
+            return None
+
+    try:
+        found = _name(renderer.symbol())
+        if found:
+            return found
+    except Exception:
+        pass
+
+    # «All other values»: the category QGIS renders unmatched features with. Its
+    # value is null/empty, which is exactly how QGIS marks it.
+    try:
+        for category in renderer.categories():
+            try:
+                value = category.value()
+            except Exception:
+                continue
+            if value is None or (isinstance(value, str) and value == ''):
+                found = _name(category.symbol())
+                if found:
+                    return found
+    except Exception:
+        pass
+
+    try:
+        found = _name(renderer.sourceSymbol())
+        if found:
+            return found
+    except Exception:
+        pass
+
+    try:
+        symbols = renderer.symbols(QgsRenderContext()) or []
+        for symbol in symbols:
+            found = _name(symbol)
+            if found:
+                return found
+    except Exception:
+        pass
+
+    return "#0000FF"
 
 
 def _layer_abstract(layer):
@@ -185,10 +268,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         # each feature (graduated/categorized/rule-based aware, with opacity), and
         # contour-aware width/opacity for ELEV lines. Resolved inside the feature
         # loop below; `default_color` is the fallback when it can't be resolved.
-        try:
-            default_color = layer.renderer().symbol().color().name()  # "#RRGGBB"
-        except Exception:
-            default_color = "#0000FF"
+        default_color = _layer_default_color(layer)  # "#RRGGBB"
 
         spec_key = {0: 'point', 1: 'line', 2: 'polygon'}.get(vector_type)
         master_modulo = modulo_fn(layer) if modulo_fn is not None else None
@@ -321,7 +401,10 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                 points_str,
                 layer_uuid,
                 feat_style,
-                feat_wkb
+                feat_wkb,
+                # Stable across re-exports, so a feature the user already
+                # incorporated is recognised instead of arriving as a duplicate.
+                feature_uuid_for(layer, feat),
             )
 
     if writer.conn:

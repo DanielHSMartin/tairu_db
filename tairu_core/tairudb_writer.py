@@ -224,7 +224,7 @@ class TairuDBWriter:
             print(f"SQLite error inserting layer: {e}")
             return False
 
-    def insertFeature(self, type_str, name, attr, color, size, iconType, points, layer_id, style=None, wkb=None):
+    def insertFeature(self, type_str, name, attr, color, size, iconType, points, layer_id, style=None, wkb=None, feature_uuid=None):
         """Insert a feature into the features table.
 
         style: optional styleJson string (polygon fill / dash / label config the
@@ -232,16 +232,30 @@ class TairuDBWriter:
         wkb: optional OGC WKB bytes of the (WGS84) geometry — lets the app render
         polygon holes / multipart structure the flat `points` text can't carry;
         None for features whose `points` already round-trip losslessly.
+        feature_uuid: stable id from `map_identity.feature_uuid_for`, so a
+        re-export keeps the ids the app already knows. None => random, which is
+        right for synthesised features (GRG grids, GeoPDF conversions).
         """
         if not self.cursor:
             return False
+        sql = "INSERT INTO features (uuid, layer_id, type, name, attributes, color, size, iconType, points, style, wkb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+
+        def row(fid):
+            return (fid, layer_id, type_str, name, attr, color, size, iconType, points, style, wkb)
+
         try:
-            feature_uuid = str(uuid.uuid4())
-            self.cursor.execute(
-                "INSERT INTO features (uuid, layer_id, type, name, attributes, color, size, iconType, points, style, wkb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                (feature_uuid, layer_id, type_str, name, attr, color, size, iconType, points, style, wkb)
-            )
+            self.cursor.execute(sql, row(feature_uuid or str(uuid.uuid4())))
             return True
+        except sqlite3.IntegrityError:
+            # The stable id is already in this file — the same source layer was
+            # exported twice. Keep the feature under a random id: an unstable id
+            # is a nuisance, a silently dropped feature is data loss.
+            try:
+                self.cursor.execute(sql, row(str(uuid.uuid4())))
+                return True
+            except sqlite3.Error as e:
+                print(f"SQLite error inserting feature: {e}")
+                return False
         except sqlite3.Error as e:
             print(f"SQLite error inserting feature: {e}")
             return False

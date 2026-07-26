@@ -1,9 +1,44 @@
 ================================================================================
 TairuDB SQLite Database Schema
 ================================================================================
-Version: 1.2
+Document version: 2.0   (this FILE's revision — NOT a value stored in any .tairudb)
 Format: SQLite3
-Description: Geographic database format for the Geop mobile application
+Description: Geographic database format for the Tairu Maps mobile application
+
+Format generations
+--------------------------------------------------------------------------------
+A .tairudb file is one of two things:
+
+  MAP        - cartography: raster tiles and/or read-only vector layers. This is
+               what the QGIS plugin produces. Tables: metadata, vector_layers,
+               features, regions, tiles_region_N.
+
+  PACKAGE    - a transport for expedition data: Records with their groups and
+               photos, sent from one app user to another (or to another
+               expedition). Written by the app, never by the plugin. Adds the
+               records / record_groups / photos tables and stamps
+               metadata.package = '1'.
+
+Readers older than generation 2 do not know the package tables, so a package
+stamps metadata.min_reader_version = '2' and they refuse the file instead of
+importing it as empty.
+
+HOW A READER TELLS THEM APART — and what it does NOT look at:
+
+  min_reader_version   "can I read this at all?"  Absent = yes, any version.
+  package == '1'       "is this expedition data instead of a map?"
+  map_uuid             "is this a newer version of a map I already have?"
+
+  metadata.version     NOTHING GATES ON THIS. The plugin writes "1.2"; the app
+                       parses it and writes it back, and no decision anywhere
+                       depends on its value. Do not raise it expecting an effect,
+                       and do not add a gate to it — the two keys above are the
+                       contract.
+
+This is why the plugin needs no change for generation 2: it only ever produces
+MAP files, which carry neither key, so every app version keeps reading them
+exactly as before. The package tables are additive and readers probe
+sqlite_master before touching them.
 ================================================================================
 
 TABLE: metadata
@@ -19,13 +54,36 @@ Common metadata keys:
   - format       : Tile image format (png, jpg, webp)
   - name         : Database name
   - description  : Database description
-  - version      : Schema version (e.g., "1.2")
+  - version      : Legacy free-form stamp (plugin writes "1.2"). Informational
+                   only — no reader gates on it. See "Format generations".
   - type         : Database type (e.g., "overlay")
   - minzoom      : Minimum zoom level (integer as string)
   - maxzoom      : Maximum zoom level (integer as string)
   - center       : Center point as "longitude,latitude,zoom"
   - generator    : Tool that created the database
   - created      : ISO format timestamp
+  - min_reader_version : Minimum reader generation required (integer as string).
+                   Absent = readable by every version. A reader whose own
+                   generation is lower MUST refuse the file rather than render a
+                   partial/blank map.
+  - map_uuid     : Stable identity of the MAP, minted once and reused on every
+                   re-export (kept as a QGIS project property, so it survives
+                   closing QGIS and travels with the project). A reader uses it
+                   to tell "newer version of a map I already have" from "new
+                   map". NEVER use the file name for that: messengers rewrite it
+                   ("mapa (1).tairudb") and two unrelated maps can share one.
+                   Absent on files made before this existed — those fall back to
+                   name matching.
+  - package      : '1' marks a record PACKAGE (see "Format generations"). Absent
+                   or any other value = an ordinary map.
+  - package_source_map  : (package) mapId the records were exported from
+  - package_app_version : (package) app version that wrote the file
+
+IMPORTANT: `name` and `format` are REQUIRED and must be TEXT. A file missing
+either is classified invalid rather than "needs a newer reader", and the app
+DELETES invalid files — a package written without them is destroyed, not
+refused. Do not add new values to `type`: unknown values raise on read; omit the
+key when neither "baselayer" nor "overlay" applies.
 
 
 TABLE: vector_layers
@@ -208,6 +266,56 @@ Database Usage Notes
 
 
 ================================================================================
+PACKAGE TABLES (generation 2, app-written)
+================================================================================
+Present only when metadata.package = '1'. Absent from every plugin-produced map;
+readers must probe sqlite_master before querying them.
+
+TABLE: records
+--------------------------------------------------------------------------------
+CREATE TABLE records (
+    uuid TEXT UNIQUE NOT NULL,
+    json TEXT NOT NULL,
+    local_only INTEGER NOT NULL DEFAULT 0
+);
+
+Fields:
+  - uuid       : the Record's own id, preserved from the source expedition, so a
+                 re-import merges instead of duplicating
+  - json       : the Record serialized exactly as it is written to the cloud
+                 (Firestore representation). Timestamps are epoch millis and the
+                 WKB geometry blob is base64 — plain JSON cannot hold either.
+  - local_only : 1 when the record is deliberately device-local (its geometry is
+                 too large for the cloud). Rides in its own column because the
+                 cloud representation drops the flag.
+
+TABLE: record_groups
+--------------------------------------------------------------------------------
+CREATE TABLE record_groups (
+    uuid TEXT UNIQUE NOT NULL,
+    json TEXT NOT NULL
+);
+
+The folders referenced by the exported records, so the sender's organisation
+survives the transfer.
+
+TABLE: photos
+--------------------------------------------------------------------------------
+CREATE TABLE photos (
+    id TEXT UNIQUE NOT NULL,
+    record_uuid TEXT NOT NULL,
+    bytes BLOB NOT NULL
+);
+
+JPEG bytes under the same photo ids the record references, so no remapping is
+needed on import. Read ONE ROW AT A TIME: a package can weigh hundreds of MB and
+the app's load pass runs on every map open.
+
+A package also creates the standard MAP tables, empty, so a generation-2 reader
+sees a familiar shape. It creates NO regions row and no tiles_region_N table.
+
+
+================================================================================
 Example Queries
 ================================================================================
 
@@ -227,6 +335,12 @@ WHERE l.name = 'Points of Interest';
 
 -- Get database bounds (regions.id is 1-based)
 SELECT bounds FROM regions WHERE id = 1;
+
+-- Is this file a record package?
+SELECT value FROM metadata WHERE name = 'package';
+
+-- Package tables exist? (never assume — plugin-made maps have none)
+SELECT name FROM sqlite_master WHERE type='table' AND name = 'records';
 
 -- Get tile data for specific coordinate
 SELECT tile_data 
