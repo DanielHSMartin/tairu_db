@@ -8,9 +8,11 @@ and map upload share the same pages, validation, generation and vector export.
 """
 
 try:
-    from .local_generate_wizard import TairuDBGenerateWizard, open_raster_wizard
+    from .local_generate_wizard import (  # noqa: F401 - open_raster_wizard e re-export (dock_widget)
+        TairuDBGenerateWizard, open_raster_wizard)
 except ImportError:  # standalone usage with the plugin dir on sys.path
-    from tairu_ui.local_generate_wizard import TairuDBGenerateWizard, open_raster_wizard
+    from tairu_ui.local_generate_wizard import (  # noqa: F401 - re-export
+        TairuDBGenerateWizard, open_raster_wizard)
 
 
 class RasterWizard(TairuDBGenerateWizard):

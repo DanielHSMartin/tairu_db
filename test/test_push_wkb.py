@@ -170,6 +170,36 @@ class TestBuildWritesGeometryGuard(unittest.TestCase):
         self.assertEqual(w['fields']['geometryWkb'], b'\x01\x03\x00\x00')
 
 
+class TestBuildWritesLastModifiedBy(unittest.TestCase):
+    """Every push write must credit the pushing user in `lastModifiedBy` (the app
+    reads it as Record.lastEditorId). An update is a masked patch, so omitting the
+    field leaves the previous app editor credited for an edit the plugin made."""
+
+    def _writes_for(self, item):
+        plan = PushPlan(map_id='m1')
+        plan.items.append(item)
+        return build_writes(_FakeFs(), plan, 'uid1')[0]
+
+    def test_new_record_stamps_pusher(self):
+        rec = TairuRecord(record_id='r1', tipo_registro='local', geometry_type='none')
+        w = self._writes_for(PushItem('new', rec, feature_id=1))
+        self.assertEqual(w['fields']['lastModifiedBy'], 'uid1')
+
+    def test_update_stamps_pusher_in_fields_and_mask(self):
+        rec = TairuRecord(record_id='r1', geometry_type='polygon',
+                          geometry_points_json='[{"la":1.0,"lo":2.0,"ts":0}]')
+        w = self._writes_for(PushItem('update', rec, feature_id=1,
+                                      changed_fields=list(_ALL_UPDATE_FIELDS)))
+        self.assertIn('lastModifiedBy', w['mask'])
+        # Not in to_fields(), so the mask None-fill would blank it if set too early.
+        self.assertEqual(w['fields']['lastModifiedBy'], 'uid1')
+
+    def test_delete_tombstone_stamps_pusher(self):
+        w = self._writes_for(PushItem('delete', TairuRecord(record_id='r1')))
+        self.assertIn('lastModifiedBy', w['mask'])
+        self.assertEqual(w['fields']['lastModifiedBy'], 'uid1')
+
+
 class TestStyleFirstColorResolution(unittest.TestCase):
     """QGIS must resolve colour the way the app renders it: styleJson base first, then
     the flat geometryColorValue shadow (which can be stale/divergent). Regression for

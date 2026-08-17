@@ -22,6 +22,7 @@ persist the property, so each export mints a fresh id and the app falls back to
 its previous name-based behaviour. No worse than before, never wrong.
 """
 
+import contextlib
 import os
 import re
 import uuid
@@ -101,10 +102,8 @@ def map_uuid_for_output(output_name, project=None):
         return str(uuid.uuid4())
 
     minted = str(uuid.uuid4())
-    try:
+    # Not persisted: the next export mints another one and the app falls
+    # back to matching by name, exactly as it did before this existed.
+    with contextlib.suppress(Exception):
         instance.writeEntry(_SCOPE, key, minted)
-    except Exception:
-        # Not persisted: the next export mints another one and the app falls
-        # back to matching by name, exactly as it did before this existed.
-        pass
     return minted

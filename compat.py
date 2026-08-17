@@ -104,3 +104,16 @@ def _exec_dialog(dialog):
         return dialog.exec()
     except AttributeError:
         return dialog.exec_()
+
+
+def _exec_loop(loop):
+    """QEventLoop.exec() (PyQt6) / exec_() (older PyQt5).
+
+    Mesma razao de [_exec_dialog]: o Qt6 renomeou `exec_` para `exec`, o
+    relatorio de compatibilidade do plugins.qgis.org sinaliza a grafia antiga, e
+    o PyQt5 do QGIS 3.40 (5.15.4) ja aceita as duas — verificado. Preferir a
+    nova e manter a antiga como queda evita apostar em qualquer uma das duas."""
+    try:
+        return loop.exec()
+    except AttributeError:
+        return loop.exec_()

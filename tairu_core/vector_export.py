@@ -5,6 +5,7 @@ Vector layer export into the .tairudb features/vector_layers tables, extracted
 from tairu_db_algorithm during the 2.0 refactor.
 """
 
+import contextlib
 import json
 import uuid
 
@@ -22,6 +23,10 @@ try:
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
     from tairu_core.map_identity import feature_uuid_for
+
+
+# Categorias que nao puderam ser lidas; inspecionavel em depuracao.
+_skipped_categories = []
 
 
 def _layer_default_color(layer):
@@ -58,43 +63,38 @@ def _layer_default_color(layer):
         except Exception:
             return None
 
-    try:
+    with contextlib.suppress(Exception):
         found = _name(renderer.symbol())
         if found:
             return found
-    except Exception:
-        pass
 
     # «All other values»: the category QGIS renders unmatched features with. Its
     # value is null/empty, which is exactly how QGIS marks it.
-    try:
+    with contextlib.suppress(Exception):
         for category in renderer.categories():
             try:
                 value = category.value()
             except Exception:
+                # Categoria ilegivel (renderer de outra versao do QGIS): segue
+                # para a proxima. Registrado para nao virar um silencio.
+                _skipped_categories.append(repr(category))
                 continue
             if value is None or (isinstance(value, str) and value == ''):
                 found = _name(category.symbol())
                 if found:
                     return found
-    except Exception:
-        pass
 
-    try:
+    with contextlib.suppress(Exception):
         found = _name(renderer.sourceSymbol())
         if found:
             return found
-    except Exception:
-        pass
 
-    try:
+    with contextlib.suppress(Exception):
         symbols = renderer.symbols(QgsRenderContext()) or []
         for symbol in symbols:
             found = _name(symbol)
             if found:
                 return found
-    except Exception:
-        pass
 
     return "#0000FF"
 
@@ -277,7 +277,17 @@ def export_vector_layers(writer, layers, transform_context, feedback,
 
         # Prepare transformation to WGS84
         layer_crs = layer.crs()
-        transform = QgsCoordinateTransform(layer_crs, QgsCoordinateReferenceSystem("EPSG:4326"), transform_context)
+        transform = QgsCoordinateTransform(
+            layer_crs, QgsCoordinateReferenceSystem("EPSG:4326"), transform_context)
+        # Validado UMA vez, antes do laco: se a transformacao e invalida, toda
+        # feicao seria gravada no .tairudb em metros — geometria no lugar errado,
+        # sem erro nenhum. O retorno de transform() era ignorado abaixo.
+        if not layer_crs.isValid() or not transform.isValid():
+            origem = layer_crs.authid() or layer_crs.description() or 'origem desconhecida'
+            feedback.report_error(
+                f'Camada "{layer.name()}" não pôde ser reprojetada de {origem} '
+                'para WGS84 (EPSG:4326) — não foi exportada.')
+            continue
 
         feature_count = 0
         total_features = layer.featureCount()
@@ -300,7 +310,9 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             feature_count += 1
             # Update progress more frequently for better feedback
             if feature_count % 10 == 0 and total_features > 0:
-                layer_progress = progress_start + (progress_span * (layer_idx + feature_count / total_features) / len(layers))
+                layer_progress = progress_start + (
+                    progress_span
+                    * (layer_idx + feature_count / total_features) / len(layers))
                 feedback.set_progress(min(99, layer_progress))
 
             geom = feat.geometry()
@@ -328,7 +340,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             # Convert QVariant values to native Python types for JSON serialization.
             feat_attr = json.dumps({k: qvariant_to_python(feat[k]) for k in attrs})
 
-            # Transform geometry to WGS84
+            # Transform geometry to WGS84 (transform já validado acima)
             geom_wgs = QgsGeometry(geom)
             geom_wgs.transform(transform)
             points_groups = []
@@ -363,14 +375,12 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             feat_color = default_color
             feat_size = size
             if style_fn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     style_argb, style_size = style_fn(layer, feat, spec_key, master_modulo)
                     if style_argb is not None and argb_to_hex is not None:
                         feat_color = argb_to_hex(style_argb)  # "#AARRGGBB" (alpha = opacity)
                     if style_size is not None:
                         feat_size = style_size
-                except Exception:
-                    pass
 
             # Structured styleJson (polygon fill / dash / label) the app resolves
             # through RecordStyle; None for a plain feature (color/size suffice).

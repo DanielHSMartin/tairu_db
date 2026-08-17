@@ -201,7 +201,7 @@ class FirestoreClient:
             doc = row.get('document')
             if doc:
                 result.append((doc_id_from_name(doc['name']),
-                                fields_to_dict(doc.get('fields') or {})))
+                               fields_to_dict(doc.get('fields') or {})))
         return result
 
     def count_records(self, map_id):

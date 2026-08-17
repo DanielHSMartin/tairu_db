@@ -11,14 +11,15 @@ from qgis.PyQt.QtWidgets import (
 
 try:
     from ..compat import _USER_ROLE, _exec_dialog
-    from .style import (
+    # INFO/INFO_CONTAINER/badge_style: selo de papel (ver linha comentada abaixo)
+    from .style import (  # noqa: F401
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
         badge_style, set_action_button, set_muted, set_plain_button,
         set_primary_button, set_section_title, set_title, status_style,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _USER_ROLE, _exec_dialog
-    from tairu_ui.style import (
+    from tairu_ui.style import (  # noqa: F401 - idem
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
         badge_style, set_action_button, set_muted, set_plain_button,
         set_primary_button, set_section_title, set_title, status_style,

@@ -215,6 +215,57 @@ Tile coordinate system:
   - Convert from XYZ to TMS: tms_y = (2^zoom - 1) - xyz_y
 
 
+TABLE: elevation_tiles (optional)
+--------------------------------------------------------------------------------
+Terrain elevation for the mapped area, so the app can show the altitude of a
+point and the elevation profile of a line with no internet. Written by the
+plugin when "Incluir dados de altitude do terreno" is on (default).
+
+CREATE TABLE IF NOT EXISTS elevation_tiles (
+    zoom_level INTEGER,
+    tile_x     INTEGER,
+    tile_y     INTEGER,
+    tile_data  BLOB
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS elevation_tiles_index
+    ON elevation_tiles (zoom_level, tile_x, tile_y);
+
+READ THIS BEFORE TOUCHING IT — three things differ from tiles_region_{N}:
+
+  1. XYZ, NOT TMS. tile_x/tile_y are slippy-map indices with a TOP-LEFT origin.
+     The columns are deliberately NOT named tile_column/tile_row, because those
+     names carry the TMS convention everywhere else in this file. A missed flip
+     does not fail: it returns the altitude of a different latitude, and the
+     number looks perfectly reasonable.
+
+  2. NOT A REGION, on purpose. Every row of `regions` becomes a raster layer the
+     app draws. tile_data here is a Terrarium-encoded PNG — false colour, not
+     imagery — so drawn on a map it is a screenful of pink noise. Its own table
+     is also invisible to older readers, which enumerate `regions` and never
+     probe for this one: no min_reader_version bump is needed and no existing
+     app version is affected.
+
+  3. Fixed zoom 12. The source grid is ~30 m; a deeper zoom would only resample
+     the same numbers and a shallower one would throw away resolution the
+     profile needs. The app looks tiles up at that exact zoom — there is no
+     pyramid fallback here, unlike the raster tiles.
+
+tile_data: 256x256 PNG, Terrarium encoding (AWS Open Data "Terrain Tiles").
+           elevation_metres = (R * 256 + G + B / 256) - 32768
+           The high byte is in R, so the fraction in B is optional precision, not
+           optional data — a reader that ignores B is off by under a metre.
+
+Source and licence: SRTM / GMTED2010 / 3DEP, all U.S. Geological Survey public
+domain, which is WHY it may be here at all — a .tairudb is redistributed (shared
+between users, uploaded to expedition storage), unlike a device-local tile cache,
+so it may only carry data that may be passed on. The required courtesy notice is
+written to metadata.elevation_attribution.
+
+metadata key:
+  - elevation_attribution : USGS courtesy notice; present iff tiles were stored.
+
+
 ================================================================================
 Schema Relationships
 ================================================================================
@@ -224,6 +275,9 @@ vector_layers (1) ──────< (N) features
 
 regions (1) ──────< (1) tiles_region_{N}
     id                   implicit (N in table name)
+
+elevation_tiles
+    (standalone, no foreign keys — NOT tied to a region; see its note above)
 
 metadata
     (standalone key-value store, no foreign keys)

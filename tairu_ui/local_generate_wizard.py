@@ -12,20 +12,23 @@ Generation runs on the GUI thread (same TileRenderEngine constraint as the
 Processing algorithm and the raster cloud wizard).
 """
 
+import contextlib
 import datetime
 import os
+import traceback
 
 from qgis.PyQt.QtCore import QTimer, QCoreApplication, QSettings
 from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
-    QPlainTextEdit, QProgressBar, QFileDialog, QGroupBox, QScrollArea,
+    QPlainTextEdit, QProgressBar, QFileDialog, QScrollArea,
     QCheckBox, QWidget, QColorDialog, QSlider, QMessageBox,
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
-    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsGeometry, QgsProject,
+    Qgis, QgsMessageLog,
+    QgsCoordinateReferenceSystem, QgsGeometry, QgsProject,
     QgsVectorLayer,
 )
 from qgis.gui import QgsMapLayerComboBox
@@ -40,10 +43,13 @@ try:
     )
     from ..tairu_core.feedback import FeedbackAdapter
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
-    from ..tairu_core.tile_math import compute_region_tiles
+    from ..tairu_core.tile_math import compute_region_tiles, to_wgs84
     from ..tairu_core.tile_prefetch import prefetch_basemap_tiles
     from ..tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
     from ..tairu_core.vector_export import export_vector_layers
+    from ..tairu_core.elevation_tiles import (
+        write_elevation_tiles, elevation_tiles_for_extent,
+        estimate_bytes as elevation_estimate_bytes)
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
     from .style import (
@@ -61,10 +67,13 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_core.feedback import FeedbackAdapter
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
-    from tairu_core.tile_math import compute_region_tiles
+    from tairu_core.tile_math import compute_region_tiles, to_wgs84
     from tairu_core.tile_prefetch import prefetch_basemap_tiles
     from tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
     from tairu_core.vector_export import export_vector_layers
+    from tairu_core.elevation_tiles import (
+        write_elevation_tiles, elevation_tiles_for_extent,
+        estimate_bytes as elevation_estimate_bytes)
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
     from tairu_ui.style import (
@@ -73,24 +82,24 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         set_warning_banner, status_style, SCROLLBAR_STYLE,
     )
 
-_VECTOR_LIST_STYLE = f"""
-QScrollArea {{
+_VECTOR_LIST_STYLE = """
+QScrollArea {
     border: none;
     background: transparent;
-}}
-QWidget#VectorScrollContent {{
+}
+QWidget#VectorScrollContent {
     background: transparent;
-}}
-QCheckBox {{
+}
+QCheckBox {
     padding: 6px 8px;
     spacing: 8px;
     border: 1px solid transparent;
     border-radius: 6px;
-}}
-QCheckBox:hover {{
+}
+QCheckBox:hover {
     background: rgba(0, 106, 67, 0.08);
     border-color: rgba(0, 106, 67, 0.2);
-}}
+}
 """
 
 _RESOLUTIONS = [
@@ -151,17 +160,13 @@ class WizardFeedback(FeedbackAdapter):
         if v < self._last_progress:
             return
         self._last_progress = v
-        try:
+        with contextlib.suppress(RuntimeError):
             self._bar.setValue(v)
-        except RuntimeError:
-            pass
 
     def reset_progress(self):
         self._last_progress = 0
-        try:
+        with contextlib.suppress(RuntimeError):
             self._bar.setValue(0)
-        except RuntimeError:
-            pass
 
     def set_progress_text(self, text):
         self.push_info(text)
@@ -169,17 +174,13 @@ class WizardFeedback(FeedbackAdapter):
     def heartbeat(self, text):
         # Live, in-place status on the progress bar itself (no log spam). If this
         # keeps updating during a long render, the UI is alive — and the user sees it.
-        try:
+        with contextlib.suppress(RuntimeError):
             self._bar.setFormat(text)
-        except RuntimeError:
-            pass
 
     def push_info(self, text):
-        try:
+        with contextlib.suppress(RuntimeError):
             if text:
                 self._log(text)
-        except RuntimeError:
-            pass
 
     def report_error(self, text, fatal=False):
         self.push_info(f'ERRO: {text}')
@@ -243,7 +244,7 @@ class TairuDBGenerateWizard(QWizard):
         }
         primary = {'NextButton', 'FinishButton', 'CommitButton'}
         for name, label in labels.items():
-            try:
+            with contextlib.suppress(Exception):
                 button_id = self._wizard_button_id(name)
                 self.setButtonText(button_id, label)
                 button = self.button(button_id)
@@ -251,8 +252,6 @@ class TairuDBGenerateWizard(QWizard):
                     set_primary_button(button)
                 elif button is not None:
                     set_plain_button(button)
-            except Exception:
-                pass
 
     def visible_basemap_layers(self):
         """Visible raster and vector-tile layers, in the project's draw order.
@@ -286,6 +285,7 @@ class LocalGenerateWizard(TairuDBGenerateWizard):
 
 
 # ------------------------------------------------------------------ page 1
+
 
 class ExtentPage(QWizardPage):
 
@@ -363,31 +363,59 @@ class ExtentPage(QWizardPage):
             return True
         return self.layer_combo.currentLayer() is not None
 
+    def source_description(self):
+        """Qual opção de área está marcada e com que CRS — para o log."""
+        try:
+            if self.draw_radio.isChecked():
+                crs = QgsProject.instance().crs()
+                return f'retângulo desenhado (CRS do projeto {crs.authid() or "?"})'
+            if self.canvas_radio.isChecked():
+                bruta = self._wizard.iface.mapCanvas().mapSettings().destinationCrs()
+                usada = self._canvas_crs()
+                origem = 'canvas' if bruta.isValid() else 'projeto (canvas sem SRC)'
+                return f'área visível do mapa (CRS do {origem}: {usada.authid() or "?"})'
+            layer = self.layer_combo.currentLayer()
+            if layer is None:
+                return 'camada de polígonos (nenhuma selecionada)'
+            return f'camada "{layer.name()}" (CRS {layer.crs().authid() or "?"})'
+        except Exception as exc:
+            return f'indeterminada ({exc})'
+
+    def _canvas_crs(self):
+        """CRS em que `canvas.extent()` está expresso.
+
+        O canvas desenha NA CRS DO PROJETO — são o mesmo ajuste sob dois nomes.
+        Visto em campo: um canvas em Web Mercator (extent em metros) cujo
+        `mapSettings().destinationCrs()` respondia INVÁLIDO. O código antigo
+        montava um transform inválido com isso, a reprojeção virava no-op sem
+        erro, e os metros seguiam para uma matemática que espera graus. Perguntar
+        ao canvas primeiro e cair para o projeto cobre os dois lados.
+        """
+        crs = self._wizard.iface.mapCanvas().mapSettings().destinationCrs()
+        return crs if crs.isValid() else QgsProject.instance().crs()
+
     def polygons_wgs84(self):
         wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
         ctx = QgsProject.instance().transformContext()
         polygons = []
         if self.draw_radio.isChecked():
-            transform = QgsCoordinateTransform(QgsProject.instance().crs(), wgs84, ctx)
-            geom = QgsGeometry.fromRect(self.drawn_rect)
-            geom.transform(transform)
-            polygons.append(geom)
+            # O retângulo é desenhado SOBRE o canvas, então vem na CRS dele.
+            crs = QgsProject.instance().crs()
+            polygons.append(to_wgs84(
+                QgsGeometry.fromRect(self.drawn_rect),
+                crs if crs.isValid() else self._canvas_crs(), wgs84, ctx))
         elif self.canvas_radio.isChecked():
             canvas = self._wizard.iface.mapCanvas()
-            transform = QgsCoordinateTransform(canvas.mapSettings().destinationCrs(), wgs84, ctx)
-            geom = QgsGeometry.fromRect(canvas.extent())
-            geom.transform(transform)
-            polygons.append(geom)
+            polygons.append(to_wgs84(
+                QgsGeometry.fromRect(canvas.extent()),
+                self._canvas_crs(), wgs84, ctx))
         else:
             layer = self.layer_combo.currentLayer()
-            transform = QgsCoordinateTransform(layer.crs(), wgs84, ctx)
             for feature in layer.getFeatures():
                 geom = feature.geometry()
                 if geom is None or geom.isEmpty():
                     continue
-                geom = QgsGeometry(geom)
-                geom.transform(transform)
-                polygons.append(geom)
+                polygons.append(to_wgs84(QgsGeometry(geom), layer.crs(), wgs84, ctx))
         return polygons
 
 
@@ -430,6 +458,26 @@ class ParamsPage(QWizardPage):
         self._sync_quality_state()
 
         layout.addLayout(form)
+
+        # On by default, and it belongs here rather than under Curvas de Nível:
+        # the two come from different sources and either is useful without the
+        # other. Cheap enough that asking would be the bigger imposition — one
+        # ~36 KB tile covers 82 km², so a 30x30 km map gains under 1 MB.
+        self.elevation_check = QCheckBox('Incluir dados de altitude do terreno')
+        self.elevation_check.setChecked(True)
+        self.elevation_check.setToolTip(
+            'Permite ao app mostrar a altitude de pontos e o perfil de elevação '
+            'de linhas sem internet. Baixa tiles do modelo de terreno (USGS) '
+            'para a área do mapa.')
+        layout.addWidget(self.elevation_check)
+
+        _elev_hint = QLabel(
+            'ℹ️  Requer Tairu Maps versão 1.0.66 ou superior. '
+            'Versões anteriores ignoram estes dados e abrem o arquivo normalmente.')
+        _elev_hint.setWordWrap(True)
+        _elev_hint.setStyleSheet('color: #666; font-style: italic;')
+        layout.addWidget(_elev_hint)
+
         layout.addStretch(1)
 
     def initializePage(self):
@@ -440,6 +488,9 @@ class ParamsPage(QWizardPage):
 
     def max_zoom(self):
         return self.resolution_combo.currentData()
+
+    def elevation_enabled(self):
+        return self.elevation_check.isChecked()
 
     def tile_format(self):
         return self.format_combo.currentText()
@@ -583,7 +634,7 @@ class ContourPage(QWizardPage):
         try:
             opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
         except AttributeError:
-            opt = QColorDialog.ShowAlphaChannel
+            opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
         color = QColorDialog.getColor(
             self._color, self, 'Cor das curvas de nível', options=opt)
         if color.isValid():
@@ -666,7 +717,7 @@ class GrgPage(QWizardPage):
         self._grg_width_spin.setMaximumWidth(80)
         width_lay.addWidget(self._grg_width_spin)
         width_lay.addWidget(QLabel('Opacidade:'))
-        self._grg_opacity_slider = QSlider(Qt.Horizontal)
+        self._grg_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._grg_opacity_slider.setRange(0, 100)
         self._grg_opacity_slider.setValue(80)
         self._grg_opacity_label = QLabel('80%%')
@@ -763,10 +814,8 @@ _LAST_OUTPUT_SETTINGS_KEY = 'tairu_db/last_output'
 
 def _remember_output(scope, value):
     """Best-effort: a settings failure must never block an export."""
-    try:
+    with contextlib.suppress(Exception):
         QSettings().setValue(f'{_LAST_OUTPUT_SETTINGS_KEY}/{scope}', value)
-    except Exception:
-        pass
 
 
 def _recall_output(scope):
@@ -945,19 +994,45 @@ class EstimatePage(QWizardPage):
             self.completeChanged.emit()
             return
 
+        QgsMessageLog.logMessage(
+            'Estimativa: origem=' + wizard.extent_page.source_description()
+            + f', zoom={wizard.params_page.max_zoom()}', 'TairuDB', Qgis.MessageLevel.Info)
         try:
             wizard.polygons_wgs84 = wizard.extent_page.polygons_wgs84()
             wizard.region_result = compute_region_tiles(
                 wizard.polygons_wgs84, wizard.params_page.max_zoom(), FeedbackAdapter())
         except Exception as e:
-            self.report.setPlainText('')
-            self.gate_label.setText(f'Falha ao calcular a área: {e}')
+            # Log com traceback: este caminho era mudo, e "nada nos logs" virou o
+            # sintoma mais caro de diagnosticar deste assistente.
+            detalhe = traceback.format_exc()
+            texto = f'Falha ao calcular a área: {e}'
+            self.report.setPlainText(texto + '\n\n' + detalhe)
+            self.gate_label.setText(texto)
+            QgsMessageLog.logMessage(texto + '\n' + detalhe, 'TairuDB', Qgis.MessageLevel.Critical)
             self.completeChanged.emit()
             return
 
         if wizard.region_result is None or not wizard.region_result.filtered_tiles:
             self.report.setPlainText('')
-            self.gate_label.setText('Nenhum tile intersecta a área selecionada.')
+            # Dizer O QUE foi encontrado, nao so a conclusao. Sem isto a mensagem
+            # e indiagnosticavel: nao distingue "nenhuma area escolhida" de
+            # "a area nao virou tiles", e nao deixa rastro nenhum no log.
+            n_poly = len(wizard.polygons_wgs84 or [])
+            if wizard.region_result is None:
+                motivo = 'cálculo interrompido'
+            elif n_poly == 0:
+                motivo = ('nenhum polígono de área foi produzido — verifique a '
+                          'opção escolhida na etapa "Área de interesse"')
+            else:
+                bb = wizard.region_result.wgs84_extent
+                motivo = (f'{n_poly} polígono(s), extensão WGS84 '
+                          f'{bb.xMinimum():.5f},{bb.yMinimum():.5f} → '
+                          f'{bb.xMaximum():.5f},{bb.yMaximum():.5f}')
+            texto = (f'Nenhum tile intersecta a área selecionada '
+                     f'(zoom {wizard.params_page.max_zoom()}; {motivo}).')
+            self.gate_label.setText(texto)
+            self.report.setPlainText(texto)
+            QgsMessageLog.logMessage(texto, 'TairuDB', Qgis.MessageLevel.Warning)
             self.completeChanged.emit()
             return
 
@@ -981,6 +1056,12 @@ class EstimatePage(QWizardPage):
 
         cp = wizard.contour_page
         gp = wizard.grg_page
+        elev_enabled = wizard.params_page.elevation_enabled()
+        # Counted from the same extent the download will use, so the estimate
+        # and the file agree instead of being two guesses.
+        elev_tiles = (len(elevation_tiles_for_extent(
+            wizard.region_result.wgs84_extent)) if elev_enabled else 0)
+        elev_bytes = elevation_estimate_bytes(elev_tiles)
         format_estimate_report(
             wizard.estimate_result, _Collector(),
             num_vector_layers=len(vector_layers),
@@ -991,17 +1072,26 @@ class EstimatePage(QWizardPage):
             contour_interval=cp.interval(),
             contour_smoothing=cp.smoothing(),
             grg_enabled=gp.grg_enabled(),
-            grg_type_label=gp.grg_type_label())
+            grg_type_label=gp.grg_type_label(),
+            elevation_enabled=elev_enabled,
+            elevation_tiles=elev_tiles,
+            elevation_mb=elev_bytes / (1024 * 1024))
         self.report.setPlainText('\n'.join(lines))
 
-        if wizard.is_upload_mode and wizard.estimate_result.avg_mb > _UPLOAD_SOFT_LIMIT_MB:
+        # The size gates weigh EVERYTHING that lands in the file, elevation
+        # included: the server's 100 MB cap is checked against the finished
+        # file, so a pre-flight that left a component out would wave through a
+        # generation that then fails on upload — after the whole render.
+        total_mb = wizard.estimate_result.avg_mb + elev_bytes / (1024 * 1024)
+
+        if wizard.is_upload_mode and total_mb > _UPLOAD_SOFT_LIMIT_MB:
             self.gate_label.setText(
-                f'Estimativa de {wizard.estimate_result.avg_mb:.0f} MB excede o limite de '
+                f'Estimativa de {total_mb:.0f} MB excede o limite de '
                 f'{_UPLOAD_SOFT_LIMIT_MB} MB para envio (máximo do servidor: 100 MB). '
                 'Reduza a área, a resolução ou a qualidade.')
-        elif wizard.estimate_result.avg_mb > _LARGE_FILE_WARN_MB:
+        elif total_mb > _LARGE_FILE_WARN_MB:
             self.warn_label.setText(
-                f'⚠ Estimativa de {wizard.estimate_result.avg_mb:.0f} MB. Arquivos grandes '
+                f'⚠ Estimativa de {total_mb:.0f} MB. Arquivos grandes '
                 'demoram para gerar e consomem bastante memória ao abrir no Tairu Maps mobile, '
                 'e ultrapassam o limite de 100 MB para envio a uma expedição na nuvem. '
                 'Você ainda pode gerar e usar o arquivo localmente.')
@@ -1058,12 +1148,10 @@ class RunPage(QWizardPage):
         return self._done
 
     def _set_back_enabled(self, enabled):
-        try:
+        with contextlib.suppress(Exception):
             back = QWizard.WizardButton.BackButton if hasattr(QWizard, 'WizardButton') \
-                else QWizard.BackButton
+                else QWizard.WizardButton.BackButton
             self._wizard.button(back).setEnabled(enabled)
-        except Exception:
-            pass
 
     def _start(self):
         # Generation pumps the event loop (nested QEventLoop for prefetch/render,
@@ -1118,8 +1206,9 @@ class RunPage(QWizardPage):
                 f'Este arquivo é grande (~{est_mb:.0f} MB, {n_tiles} tiles). A geração pode '
                 'levar vários minutos e a janela do QGIS pode parecer travada durante o '
                 'processo — isso é normal. Não feche o QGIS.\n\nDeseja continuar?',
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-            if proceed != QMessageBox.Yes:
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if proceed != QMessageBox.StandardButton.Yes:
                 self._append('Geração cancelada pelo usuário.')
                 self._running = False
                 self._set_back_enabled(True)
@@ -1209,6 +1298,26 @@ class RunPage(QWizardPage):
             ok = engine.writer.writeGrg(bounds, grid_type, grg_opts)
             if not ok:
                 self._append('Aviso: falha ao gerar grade GRG (grade não incluída).')
+
+        if wizard.params_page.elevation_enabled():
+            self._append('Baixando dados de altitude do terreno…')
+            wizard.feedback.heartbeat('Baixando dados de altitude…')
+            QCoreApplication.processEvents()
+            try:
+                stored = write_elevation_tiles(
+                    engine.writer,
+                    wizard.region_result.wgs84_extent,
+                    wizard.feedback,
+                )
+                if stored:
+                    self._append(f'{stored} tile(s) de altitude incluídos.')
+                else:
+                    # Never fatal: a map without terrain is still a map, and the
+                    # app falls back to fetching altitude itself when online.
+                    self._append('Aviso: nenhum tile de altitude baixado — '
+                                 'o app buscará a altitude quando houver internet.')
+            except Exception as exc:
+                self._append(f'Aviso: altitude não incluída — {exc}')
 
         # Repaint before the (main-thread) commit so the window shows the stage and
         # doesn't read as frozen while the file is written out.
@@ -1300,12 +1409,10 @@ class RunPage(QWizardPage):
             self._set_back_enabled(True)
 
         def on_progress(fraction, message):
-            try:
+            with contextlib.suppress(RuntimeError):
                 self.progress.setValue(int(fraction * 100))
                 if message:
                     self._append(message)
-            except RuntimeError:
-                pass
 
         run_task(f'Tairu Maps: upload {file_name}', send,
                  on_success=on_success, on_error=on_error, on_progress=on_progress)

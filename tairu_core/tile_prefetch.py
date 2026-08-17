@@ -15,6 +15,7 @@ Best-effort by design: if the layer is not a plain XYZ source (no {x}/{y}/{z} ur
 skipped and generation proceeds exactly as before.
 """
 
+import contextlib
 import urllib.parse
 
 
@@ -75,12 +76,10 @@ def prefetch_basemap_tiles(layers, tiles, zoom, feedback):
     try:
         return _download_all(urls, feedback)
     except Exception as e:
-        try:
+        with contextlib.suppress(Exception):
             feedback.push_info(
                 f"Aviso: pré-download do mapa base falhou ({e}); "
                 "seguindo com renderização direta.")
-        except Exception:
-            pass
         return 0
 
 
@@ -91,6 +90,13 @@ def _download_all(urls, feedback, concurrency=8):
     from qgis.core import QgsNetworkAccessManager
     from qgis.PyQt.QtCore import QUrl, QEventLoop, QTimer
     from qgis.PyQt.QtNetwork import QNetworkRequest
+    # Import LOCAL a funcao, como os de cima: este modulo e importavel sem QGIS
+    # de proposito (test_tile_prefetch.py exercita a montagem de URLs sozinha), e
+    # um import de topo puxando compat->qgis quebra isso.
+    try:
+        from ..compat import _exec_loop
+    except ImportError:  # standalone usage with the plugin dir on sys.path
+        from compat import _exec_loop
 
     nam = QgsNetworkAccessManager.instance()
     total = len(urls)
@@ -116,15 +122,11 @@ def _download_all(urls, feedback, concurrency=8):
             def on_done(r=reply):
                 st['inflight'] -= 1
                 st['done'] += 1
-                try:
+                with contextlib.suppress(Exception):
                     r.deleteLater()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     feedback.set_progress(int(100 * st['done'] / total))
                     feedback.heartbeat(f"Baixando mapa base… {st['done']}/{total} tiles")
-                except Exception:
-                    pass
                 if all_dispatched_and_drained():
                     loop.quit()
                 else:
@@ -140,6 +142,6 @@ def _download_all(urls, feedback, concurrency=8):
 
     pump()
     if not all_dispatched_and_drained():
-        loop.exec_()
+        _exec_loop(loop)
     tick.stop()
     return st['done']

@@ -60,7 +60,9 @@ class LoginPage(QWidget):
         local_title = set_title(QLabel('TairuDB'))
         layout.addWidget(local_title)
 
-        local_desc = set_muted(QLabel('Gere um arquivo .tairudb diretamente no seu computador, sem necessidade de login.'))
+        local_desc = set_muted(QLabel(
+            'Gere um arquivo .tairudb diretamente no seu computador, '
+            'sem necessidade de login.'))
         local_desc.setWordWrap(True)
         layout.addWidget(local_desc)
 

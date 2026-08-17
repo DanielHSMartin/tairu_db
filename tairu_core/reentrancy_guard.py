@@ -14,6 +14,7 @@ So: while a generation is active, don't mutate the project re-entrantly — defe
 until the outermost generation finishes, when it runs on a clean stack. Pure Python,
 main-thread only (generation and task callbacks both run on the GUI thread).
 """
+import contextlib
 
 _depth = 0
 _pending = []
@@ -33,10 +34,8 @@ def leave():
         pending = list(_pending)
         _pending.clear()
         for fn in pending:
-            try:
+            with contextlib.suppress(Exception):
                 fn()
-            except Exception:
-                pass
 
 
 def active():

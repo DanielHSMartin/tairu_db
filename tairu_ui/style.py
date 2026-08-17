@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """Shared Tairu Maps visual style for the QGIS plugin."""
+import contextlib
 
 PRIMARY = '#006A43'
 ON_PRIMARY = '#FFFFFF'
@@ -566,26 +567,22 @@ def apply_tairu_style(widget):
 
 def apply_combo_popup_style(combo):
     combo.setStyleSheet(COMBO_LOCAL_STYLE)
-    try:
+    with contextlib.suppress(Exception):
         view = combo.view()
         view.setStyleSheet(POPUP_VIEW_STYLE)
         view.viewport().setStyleSheet(f'background-color: {SURFACE_CONTAINER_LOWEST};')
         view.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
         view.horizontalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
-    except Exception:
-        pass
 
 
 def apply_table_style(table):
     table.setStyleSheet(TABLE_LOCAL_STYLE)
-    try:
+    with contextlib.suppress(Exception):
         table.horizontalHeader().setStyleSheet(TABLE_LOCAL_STYLE)
         table.verticalHeader().setStyleSheet(TABLE_LOCAL_STYLE)
         table.horizontalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
         table.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
         table.viewport().setStyleSheet(f'background-color: {SURFACE_CONTAINER_LOWEST};')
-    except Exception:
-        pass
 
 
 def set_title(label):
@@ -654,32 +651,26 @@ def set_control_enabled(widget, enabled, disabled_opacity=0.58):
     if enabled:
         widget.setGraphicsEffect(None)
         return
-    try:
+    with contextlib.suppress(Exception):
         from qgis.PyQt.QtWidgets import QGraphicsOpacityEffect
         effect = QGraphicsOpacityEffect(widget)
         effect.setOpacity(disabled_opacity)
         widget.setGraphicsEffect(effect)
-    except Exception:
-        pass
 
 
 def _remove_button_focus(button):
-    try:
+    with contextlib.suppress(Exception):
         from qgis.PyQt.QtCore import Qt
         no_focus = Qt.FocusPolicy.NoFocus if hasattr(Qt, 'FocusPolicy') else Qt.NoFocus
         button.setFocusPolicy(no_focus)
-    except Exception:
-        pass
 
 
 def _refresh_widget_style(widget):
-    try:
+    with contextlib.suppress(Exception):
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)
         widget.update()
-    except Exception:
-        pass
 
 
 def status_style(error=False):

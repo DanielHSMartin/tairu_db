@@ -5,6 +5,7 @@ SQLite persistence layer for .tairudb files (TairuDBWriter) and the MetaTile
 render unit. Moved verbatim from tairu_db_algorithm.py during the 2.0 refactor.
 """
 
+import contextlib
 import os
 import sqlite3
 import uuid
@@ -51,10 +52,9 @@ class TairuDBWriter:
         """Create or open TairuDB database"""
         # Close any existing connection before creating a new one
         if self.conn:
-            try:
+            # Ignore errors during cleanup
+            with contextlib.suppress(Exception):
                 self.conn.close()
-            except Exception:
-                pass  # Ignore errors during cleanup
 
         # Reset state variables
         self.conn = None
@@ -66,10 +66,8 @@ class TairuDBWriter:
             # Drop any stale partial from a previously killed run so INSERT OR REPLACE
             # never merges new tiles into a corrupt leftover.
             if os.path.exists(self._work_path):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(self._work_path)
-                except OSError:
-                    pass
             self.conn = sqlite3.connect(self._work_path)
             self.cursor = self.conn.cursor()
 
@@ -139,11 +137,64 @@ class TairuDBWriter:
                     tile_data blob
                 );
             """)
-            self.cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {table_name}_index ON {table_name} (zoom_level, tile_column, tile_row);")
+            self.cursor.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {table_name}_index "
+                f"ON {table_name} (zoom_level, tile_column, tile_row);")
             self.region_tables[region_id] = table_name
             return True
         except sqlite3.Error as e:
             print(f"SQLite error creating tiles table for region {region_id}: {e}")
+            return False
+
+    def createElevationTable(self):
+        """Create the terrain-elevation tile table.
+
+        Its own table, NOT a region: every entry in `regions` becomes a raster
+        layer the app draws, and a Terrarium PNG drawn on a map is a screenful
+        of pink noise. A separate table is also invisible to older readers,
+        which enumerate `regions` and never probe for this one — so the file
+        stays readable everywhere without a min_reader_version bump.
+
+        The columns are `tile_x`/`tile_y`, not `tile_column`/`tile_row`, on
+        purpose: these are XYZ (top-left origin), while tiles_region_N is TMS
+        (Y-flipped). Same names would invite the same convention, and a missed
+        flip does not fail — it returns the altitude of somewhere else.
+        """
+        if not self.cursor:
+            return False
+        try:
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS elevation_tiles (
+                    zoom_level integer,
+                    tile_x integer,
+                    tile_y integer,
+                    tile_data blob
+                );
+            """)
+            self.cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS elevation_tiles_index "
+                "ON elevation_tiles (zoom_level, tile_x, tile_y);")
+            return True
+        except sqlite3.Error as e:
+            print(f"SQLite error creating elevation table: {e}")
+            return False
+
+    def saveElevationTile(self, zoom, x, y, data):
+        """Store one XYZ Terrarium tile. See [createElevationTable] for the
+        coordinate convention."""
+        if not self.cursor:
+            return False
+        try:
+            blob_data = bytes(data) if data else b''
+            if not blob_data:
+                return False
+            self.cursor.execute(
+                "INSERT OR REPLACE INTO elevation_tiles VALUES (?, ?, ?, ?);",
+                (zoom, x, y, blob_data)
+            )
+            return True
+        except sqlite3.Error as e:
+            print(f"SQLite error saving elevation tile {zoom}/{x}/{y}: {e}")
             return False
 
     def setMetadataValue(self, name, value):
@@ -224,7 +275,9 @@ class TairuDBWriter:
             print(f"SQLite error inserting layer: {e}")
             return False
 
-    def insertFeature(self, type_str, name, attr, color, size, iconType, points, layer_id, style=None, wkb=None, feature_uuid=None):
+    def insertFeature(self, type_str, name, attr, color, size, iconType,
+                      points, layer_id, style=None, wkb=None,
+                      feature_uuid=None):
         """Insert a feature into the features table.
 
         style: optional styleJson string (polygon fill / dash / label config the
@@ -238,7 +291,9 @@ class TairuDBWriter:
         """
         if not self.cursor:
             return False
-        sql = "INSERT INTO features (uuid, layer_id, type, name, attributes, color, size, iconType, points, style, wkb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+        sql = ("INSERT INTO features (uuid, layer_id, type, name, attributes, "
+               "color, size, iconType, points, style, wkb) "
+               "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);")
 
         def row(fid):
             return (fid, layer_id, type_str, name, attr, color, size, iconType, points, style, wkb)
@@ -328,17 +383,13 @@ class TairuDBWriter:
         """Close and delete the partial work file (cancel/error path) so no corrupt
         .part is left behind to merge into on the next attempt."""
         if self.conn:
-            try:
+            with contextlib.suppress(Exception):
                 self.conn.close()
-            except Exception:
-                pass
             self.conn = None
             self.cursor = None
         if self._work_path and os.path.exists(self._work_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(self._work_path)
-            except OSError:
-                pass
 
     def writeGrg(self, bounds, grid_type: str, options: dict) -> bool:
         """Generate and write a GRG grid into this .tairudb.

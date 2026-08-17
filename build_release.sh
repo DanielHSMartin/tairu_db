@@ -77,15 +77,66 @@ PY
 # Mark intentional public values (e.g. the Firebase web API key) with a trailing
 # '# pragma: allowlist secret' comment, which detect-secrets honours.
 if command -v detect-secrets >/dev/null 2>&1; then
-  findings=$( (cd "$stage" && detect-secrets scan) \
+  findings=$( (cd "$stage" && detect-secrets scan --all-files \
+      --exclude-files 'metadata\.txt' --exclude-files '\.secrets\.baseline') \
     | "$PYTHON" -c 'import json,sys; print(sum(len(v) for v in json.load(sys.stdin).get("results",{}).values()))' )
   if [ "${findings:-0}" != "0" ]; then
-    (cd "$stage" && detect-secrets scan | "$PYTHON" -m json.tool | grep -E '"filename"|"type"' || true)
+    (cd "$stage" && detect-secrets scan --all-files | "$PYTHON" -m json.tool | grep -E '"filename"|"type"' || true)
     fail "detect-secrets found $findings potential secret(s) — add '# pragma: allowlist secret' or exclude the file"
   fi
   echo "detect-secrets OK (0 findings)"
 else
   echo "WARNING: detect-secrets not installed (pip install detect-secrets) — secret scan skipped"
+fi
+
+# ---- CHECK 5: bandit BLOCKING rules (plugins.qgis.org/docs/security-scanning/rules) ----
+# NOT "--severity-level medium". The repo classifies PER RULE, not by severity:
+# B105 (hardcoded password) is Bandit-LOW and blocks publication, so a severity
+# filter hides exactly the findings that get a plugin rejected. That mistake
+# shipped a blocked upload once — do not reintroduce it.
+# B110/B112 (try/except/pass) are Warning-level there and are NOT checked here.
+blockers="B102,B105,B106,B107,B304,B305,B307,B506,B602,B613"
+if "$PYTHON" -m bandit --version >/dev/null 2>&1; then
+  # `|| true` on BOTH: bandit exits 1 when it finds something, and with
+  # `set -e -o pipefail` that killed the script right here — aborting the build
+  # with no message at all. The report has to say WHY it refused.
+  report=$("$PYTHON" -m bandit -r "$stage" -f json -t "$blockers" 2>/dev/null || true)
+  hits=$(printf '%s' "$report" \
+    | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin)["results"]))' || echo 0)
+  if [ "${hits:-0}" != "0" ]; then
+    printf '%s' "$report" | "$PYTHON" -c '
+import json, sys
+for r in json.load(sys.stdin)["results"]:
+    print("  {} {}:{}  {}".format(
+        r["test_id"], r["filename"], r["line_number"], r["issue_text"]))
+' || true
+    fail "bandit found $hits BLOCKING finding(s) — plugins.qgis.org would refuse this upload"
+  fi
+  echo "bandit OK (0 blocking findings)"
+else
+  echo "WARNING: bandit not installed (pip install bandit) — blocking-rule scan skipped"
+fi
+
+# ---- CHECK 6: no executable/binary extensions (QGIS "FILE_SUSPICIOUS") ----
+suspicious=$(find "$stage" \( -name '*.exe' -o -name '*.dll' -o -name '*.so' \
+                              -o -name '*.sh' -o -name '*.bat' -o -name '*.cmd' \) || true)
+[ -z "$suspicious" ] || fail "suspicious file types in package:\n$suspicious"
+echo "file types OK"
+
+# ---- CHECK 7: flake8, com os MESMOS parametros do servidor ----
+# `--max-line-length=120`, lido de qgis-app/plugins/security_scanner.py. Rodar
+# com um limite maior esconde E501 que o servidor reporta: aconteceu, com 200.
+if "$PYTHON" -m flake8 --version >/dev/null 2>&1; then
+  f8=$("$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "${f8:-0}" != "0" ]; then
+    "$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null | head -20
+    echo "WARNING: flake8 reportou $f8 achado(s) — nao bloqueiam a publicacao,"
+    echo "         mas contam no relatorio e podem levar a revisao manual."
+  else
+    echo "flake8 OK (0 achados)"
+  fi
+else
+  echo "WARNING: flake8 nao instalado (pip install flake8) — scan de qualidade pulado"
 fi
 
 # ---- package ----

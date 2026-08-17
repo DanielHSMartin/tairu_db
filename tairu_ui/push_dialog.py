@@ -89,9 +89,9 @@ try:
     )
 except AttributeError:
     _EDIT_TRIGGERS = (
-        QTableWidget.DoubleClicked |
-        QTableWidget.EditKeyPressed |
-        QTableWidget.AnyKeyPressed
+        QTableWidget.EditTrigger.DoubleClicked |
+        QTableWidget.EditTrigger.EditKeyPressed |
+        QTableWidget.EditTrigger.AnyKeyPressed
     )
 
 
@@ -156,7 +156,7 @@ class PushDialog(QDialog):
         header.setStretchLastSection(True)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive
                                     if hasattr(QHeaderView, 'ResizeMode')
-                                    else QHeaderView.Interactive)
+                                    else QHeaderView.ResizeMode.Interactive)
         layout.addWidget(self.table, 1)
 
         buttons = QHBoxLayout()

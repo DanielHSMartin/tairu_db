@@ -17,13 +17,13 @@ computed in Python). push.py strips back the type-default so round-trip pulls do
 produce false diffs.
 """
 
+import contextlib
 import hashlib
 import json
 from dataclasses import dataclass, field
 
 from qgis.PyQt.QtCore import QDateTime, QVariant
 from qgis.core import (
-    QgsCoordinateReferenceSystem,
     QgsFeature,
     QgsField,
     QgsFillSymbol,
@@ -447,13 +447,11 @@ def _set_layer_sync_snapshot(layer):
             'hash': str(feat.attribute(hash_idx) or ''),
             'lastModified': str(feat.attribute(last_modified_idx) or ''),
         }
-    try:
+    with contextlib.suppress(Exception):
         layer.setCustomProperty(
             SYNC_SNAPSHOT_PROPERTY,
             json.dumps(snapshot, sort_keys=True, separators=(',', ':')),
         )
-    except Exception:
-        pass
 
 
 def configure_record_layer_fields(layer):
@@ -464,30 +462,22 @@ def configure_record_layer_fields(layer):
     for name, alias in FIELD_ALIASES.items():
         idx = fields.indexOf(name)
         if idx >= 0:
-            try:
+            with contextlib.suppress(Exception):
                 layer.setFieldAlias(idx, alias)
-            except Exception:
-                pass
     for name in INTERNAL_FIELDS:
         idx = fields.indexOf(name)
         if idx < 0:
             continue
-        try:
+        with contextlib.suppress(Exception):
             layer.setFieldEditable(idx, False)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             config = layer.editFormConfig()
             config.setReadOnly(idx, True)
             layer.setEditFormConfig(config)
-        except Exception:
-            pass
         if QgsEditorWidgetSetup is not None:
-            try:
+            with contextlib.suppress(Exception):
                 layer.setEditorWidgetSetup(idx, QgsEditorWidgetSetup('Hidden', {}))
-            except Exception:
-                pass
-    try:
+    with contextlib.suppress(Exception):
         config = layer.attributeTableConfig()
         columns = config.columns()
         changed = False
@@ -498,12 +488,8 @@ def configure_record_layer_fields(layer):
         if changed:
             config.setColumns(columns)
             layer.setAttributeTableConfig(config)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         _set_layer_sync_snapshot(layer)
-    except Exception:
-        pass
 
 
 # --------------------------------------------------------- local snapshot io
@@ -585,7 +571,7 @@ def _gpkg_feature_to_record(feat, fields, spec_key):
     points_json = None
     geom = feat.geometry()
     if geom and not geom.isEmpty() and spec_key != 'none':
-        try:
+        with contextlib.suppress(Exception):
             if spec_key in ('point', 'circle'):
                 pt = geom.asPoint()
                 pts = [(pt.y(), pt.x())]
@@ -601,8 +587,6 @@ def _gpkg_feature_to_record(feat, fields, spec_key):
                 pts = []
             if pts:
                 points_json = points_to_json(pts, ts=_qdt_ms('lastModified') or now_millis())
-        except Exception:
-            pass
 
     # last_modified: tairuSyncLastModified is written as plain epoch-ms string
     # during pull — prefer it over the QDateTime roundtrip to keep the baseline
@@ -610,10 +594,8 @@ def _gpkg_feature_to_record(feat, fields, spec_key):
     last_modified = _qdt_ms('lastModified')
     sync_lm_raw = _str(SYNC_LAST_MODIFIED_FIELD)
     if sync_lm_raw:
-        try:
+        with contextlib.suppress((ValueError, TypeError)):
             last_modified = int(sync_lm_raw)
-        except (ValueError, TypeError):
-            pass
 
     return TairuRecord(
         record_id=record_id,
@@ -965,12 +947,12 @@ def style_layer(layer, spec_key):
         layer.triggerRepaint()
 
         # Persist inside the gpkg so the style survives re-opening the file
-        try:
+        with contextlib.suppress(Exception):
             layer.saveStyleToDatabase(f'tairu_{spec_key}', 'Estilo Tairu Maps', True, '')
-        except Exception:
-            pass
-    except Exception:
-        pass  # styling must never break a pull
+    except Exception as exc:
+        # Estilo nunca pode derrubar um pull; o registro existe para que
+        # "as camadas vieram sem cor" tenha onde ser investigado.
+        _log_style_failed(exc)
 
 
 # --------------------------------------------------------------- project
@@ -1023,3 +1005,13 @@ def add_raster_to_project(mbtiles_path, display_name, map_name):
     project.addMapLayer(layer, False)
     group.addLayer(layer)
     return layer
+
+
+def _log_style_failed(exc):
+    """Registra falha ao aplicar estilo numa camada puxada (nunca propaga)."""
+    try:
+        from qgis.core import QgsMessageLog, Qgis
+        QgsMessageLog.logMessage(
+            f'TairuDB: falha ao estilizar camada: {exc}', 'TairuDB', Qgis.MessageLevel.Info)
+    except Exception:
+        print(f'TairuDB: falha ao estilizar camada: {exc}')

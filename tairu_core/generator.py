@@ -11,6 +11,7 @@ main (GUI) thread — the same constraint expressed by FlagNoThreading in the
 Processing algorithm. Never call run() from a QgsTask worker thread.
 """
 
+import contextlib
 import math
 import os
 import time
@@ -33,10 +34,14 @@ try:
     from ..compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from .tairudb_writer import TairuDBWriter, MetaTile
     from .map_identity import map_uuid_for_output
+    from ..compat import _exec_loop
+    from .elevation_tiles import ELEVATION_ZOOM
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile
     from tairu_core.map_identity import map_uuid_for_output
+    from compat import _exec_loop
+    from tairu_core.elevation_tiles import ELEVATION_ZOOM
 
 # Debug mode - set to True for detailed logging, False for production
 DEBUG_MODE = False
@@ -166,7 +171,9 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
                            dry_run_footer=True, contour_enabled=False,
                            contour_source_label='', contour_interval=10,
                            contour_smoothing='Médio',
-                           grg_enabled=False, grg_type_label=''):
+                           grg_enabled=False, grg_type_label='',
+                           elevation_enabled=False, elevation_tiles=0,
+                           elevation_mb=0.0):
     """Push the dry-run report through a feedback adapter."""
     num_regions = len(est.region_tile_counts)
     quality_str = f" (qualidade {est.quality})" if est.fmt in ('JPG', 'WEBP') else ""
@@ -189,6 +196,9 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
               f"· {vector_feature_count:,} feição{feat_s}").replace(',', '.'))
     if contour_enabled:
         line(f"  Curvas de nível : {contour_source_label} · {contour_interval} m · {contour_smoothing}")
+    if elevation_enabled:
+        line((f"  Altitude        : {elevation_tiles:,} tile(s) · zoom "
+              f"{ELEVATION_ZOOM} · ~{_fmt_size(elevation_mb)}").replace(',', '.'))
     if grg_enabled:
         line(f"  Grade GRG       : {grg_type_label}")
     line()
@@ -212,7 +222,9 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
     line()
     line("TEMPO ESTIMADO")
     line(sep)
-    line(f"  {est.threads_number} thread{'s' if est.threads_number != 1 else ''} paralela{'s' if est.threads_number != 1 else ''} : {est.time_str}")
+    line(f"  {est.threads_number} "
+         f"thread{'s' if est.threads_number != 1 else ''} "
+         f"paralela{'s' if est.threads_number != 1 else ''} : {est.time_str}")
     line("  (~0,15 s/tile em hardware típico)")
     if num_vector_layers > 0:
         line()
@@ -234,6 +246,16 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
         line(f"  Suavização  : {contour_smoothing}")
         line("  Requer internet. Tiles DEM são salvos em cache localmente.")
         line("  Tempo de download não incluído nesta estimativa.")
+    if elevation_enabled:
+        line()
+        line("ALTITUDE DO TERRENO")
+        line(sep)
+        line(f"  Tiles       : {elevation_tiles:,}".replace(',', '.'))
+        line(f"  Tamanho     : ~{_fmt_size(elevation_mb)}  (~36 KB/tile)")
+        line("  Resolução   : ~30 m  ·  1 tile cobre ~82 km²")
+        line("  Fonte       : USGS (SRTM, GMTED2010, 3DEP) · domínio público")
+        line("  Permite altitude e perfil de elevação no app sem internet.")
+        line("  Requer internet AGORA, para baixar. Tempo não incluído acima.")
     line()
 
     if est.warnings:
@@ -354,7 +376,7 @@ class TileRenderEngine:
             tick.timeout.connect(self._on_render_tick)
             tick.start()
             try:
-                self._event_loop.exec_()
+                _exec_loop(self._event_loop)
             finally:
                 tick.stop()
                 self._event_loop = None
@@ -385,7 +407,7 @@ class TileRenderEngine:
         elapsed = time.time() - (self._render_t0 or time.time())
         self.feedback.heartbeat(
             f"Renderizando… {self.processed_tiles}/{self.total_tiles} tiles  ·  {elapsed:.0f}s "
-            f"(aguardando o mapa base; na 1ª vez baixa os tiles da internet)")
+            "(aguardando o mapa base; na 1ª vez baixa os tiles da internet)")
         if not self.renderer_jobs:
             if self.meta_tiles or self.retry_queue:
                 self.start_jobs()
@@ -472,14 +494,11 @@ class TileRenderEngine:
             jobs_count = len(self.renderer_jobs)
             self.debug_log(f"cleanup_resources: Cancelando {jobs_count} jobs")
             for job in list(self.renderer_jobs.keys()):
-                try:
-                    # Disconnect finished signal BEFORE cancel/delete so that
-                    # process_metatile is never called on an already-deleted job.
+                # Ignore cleanup errors
+                with contextlib.suppress(Exception):
                     job.finished.disconnect()
                     job.cancelWithoutBlocking()
                     job.deleteLater()
-                except Exception:
-                    pass  # Ignore cleanup errors
             self.renderer_jobs.clear()
 
             # Force process events to handle deleteLater() immediately
@@ -498,14 +517,10 @@ class TileRenderEngine:
                 try:
                     self.debug_log("cleanup_resources: Fechando conexão do banco de dados")
                     # Try to commit any pending changes before closing
-                    try:
+                    with contextlib.suppress(Exception):
                         self.writer.conn.commit()
-                    except Exception:
-                        pass
-                    try:
+                    with contextlib.suppress(Exception):
                         self.writer.conn.close()
-                    except Exception:
-                        pass
                     self.writer.conn = None
                 except Exception as e:
                     self.feedback.push_info(f"Aviso ao fechar banco de dados: {str(e)}")
@@ -513,10 +528,8 @@ class TileRenderEngine:
             # Delete the partial work file so a canceled/failed run never leaves a
             # corrupt .part behind for the next attempt to merge into.
             if self.writer:
-                try:
+                with contextlib.suppress(Exception):
                     self.writer.discard()
-                except Exception:
-                    pass
 
             # Process more events to ensure cleanup is complete
             self.debug_log("cleanup_resources: Processando eventos finais")
@@ -630,7 +643,9 @@ class TileRenderEngine:
                 # Additional map settings for better rendering
                 map_settings.setFlag(Qgis.MapSettingsFlag.RenderMapTile, True)  # type: ignore
                 map_settings.setFlag(Qgis.MapSettingsFlag.DrawLabeling, True)  # type: ignore
-                map_settings.setFlag(Qgis.MapSettingsFlag.UseAdvancedEffects, False)  # Disable for stability  # type: ignore
+                # Disable for stability
+                map_settings.setFlag(
+                    Qgis.MapSettingsFlag.UseAdvancedEffects, False)  # type: ignore
 
                 # Create and start job
                 job = QgsMapRendererSequentialJob(map_settings)
@@ -661,10 +676,8 @@ class TileRenderEngine:
             meta_tile = self.renderer_jobs.get(job)
             if not meta_tile:
                 # Job was already cleaned up by cleanup_resources (cancel path).
-                try:
+                with contextlib.suppress(RuntimeError):
                     job.deleteLater()
-                except RuntimeError:
-                    pass
                 return
 
             # Per-tile render timing: this isolates whether the wall time is the map
@@ -686,8 +699,9 @@ class TileRenderEngine:
                     self.retry_queue.append(meta_tile)
                     self.retried_tiles += 1
                     self.feedback.push_info(
-                        f"Tentando tile novamente {meta_tile.tx},{meta_tile.ty} (tentativa {meta_tile.retry_count}/{self.max_retries})"
-                    )
+                        f"Tentando tile novamente {meta_tile.tx},{meta_tile.ty} "
+                        f"(tentativa {meta_tile.retry_count}/"
+                        f"{self.max_retries})")
                 else:
                     # Max retries reached — count as failed exactly once here (not on
                     # every attempt), so the success-rate report isn't corrupted.
@@ -732,10 +746,9 @@ class TileRenderEngine:
             # already disconnected and deleted this job (cancel during render).
             if job in self.renderer_jobs:
                 del self.renderer_jobs[job]
-            try:
+            # C++ object already deleted by cleanup_resources
+            with contextlib.suppress(RuntimeError):
                 job.deleteLater()
-            except RuntimeError:
-                pass  # C++ object already deleted by cleanup_resources
 
             self.check_completion()
 

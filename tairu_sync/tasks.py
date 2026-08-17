@@ -10,6 +10,7 @@ Rules of the road:
   (the classic QgsTask garbage-collection pitfall).
 """
 
+import contextlib
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 from qgis.core import QgsApplication, QgsTask, QgsMessageLog, Qgis
 
@@ -34,7 +35,7 @@ class FirebaseTask(QgsTask):
     and check task.isCanceled(). Exceptions become readable failure messages."""
 
     def __init__(self, description, fn):
-        super().__init__(description, QgsTask.CanCancel)
+        super().__init__(description, QgsTask.Flag.CanCancel)
         self._fn = fn
         self.reporter = TaskReporter()
         self._result = None
@@ -89,7 +90,5 @@ def run_task(description, fn, on_success=None, on_error=None, on_progress=None):
 
 def cancel_all_tasks():
     for task in list(_ACTIVE_TASKS):
-        try:
+        with contextlib.suppress(Exception):
             task.cancel()
-        except Exception:
-            pass

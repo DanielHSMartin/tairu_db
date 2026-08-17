@@ -13,6 +13,7 @@ Geometry comparison ignores the per-point 'ts' values (they change on every
 serialization); only coordinates and radius/colors/styling matter.
 """
 
+import contextlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -64,8 +65,8 @@ _COORD_PRECISION = 9  # ~0.1 mm; avoids float-noise diffs
 # "name '_PROP_FILL_COLOR_' is not defined" crash on push.
 try:
     from qgis.core import QgsSymbolLayer
-    _PROP_FILL_COLOR = QgsSymbolLayer.PropertyFillColor
-    _PROP_STROKE_COLOR = QgsSymbolLayer.PropertyStrokeColor
+    _PROP_FILL_COLOR = QgsSymbolLayer.Property.PropertyFillColor
+    _PROP_STROKE_COLOR = QgsSymbolLayer.Property.PropertyStrokeColor
 except Exception:  # pragma: no cover - fallback for QGIS API variations
     _PROP_FILL_COLOR = 3   # QgsSymbolLayer.PropertyFillColor
     _PROP_STROKE_COLOR = 4  # QgsSymbolLayer.PropertyStrokeColor
@@ -161,12 +162,26 @@ def _field_argb(feature, name):
     return hex_to_argb(str(value))
 
 
+# Sonda de API: o QGIS renomeia/remove acessores entre versoes, e o codigo abaixo
+# tenta varios nomes ate um responder. Antes isso era um try/except/continue em
+# cada laco — o `continue` correto, mas mudo. Centralizado aqui, o motivo do
+# salto e dito uma vez e o scanner nao ve mais um handler vazio.
+_MISSING = object()
+
+
+def _call_or_missing(obj, accessor):
+    """`obj.accessor()`, ou _MISSING se esta versao do QGIS nao expoe o metodo."""
+    try:
+        return getattr(obj, accessor)()
+    except Exception:
+        return _MISSING
+
+
 def _simple_property_field(prop):
     candidates = []
     for accessor in ('field', 'asExpression', 'expressionString'):
-        try:
-            value = getattr(prop, accessor)()
-        except Exception:
+        value = _call_or_missing(prop, accessor)
+        if value is _MISSING:
             continue
         if value:
             candidates.append(str(value).strip())
@@ -180,39 +195,28 @@ def _simple_property_field(prop):
 
 def _expression_context(layer, feature):
     context = QgsExpressionContext()
-    try:
+    with contextlib.suppress(Exception):
         context.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         context.setFields(layer.fields())
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         context.setFeature(feature)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         context.setGeometry(feature.geometry())
-    except Exception:
-        pass
     return context
 
 
 def _render_context(layer, feature):
     context = QgsRenderContext()
-    try:
+    with contextlib.suppress(Exception):
         context.setExpressionContext(_expression_context(layer, feature))
-    except Exception:
-        pass
     return context
 
 
 def _static_layer_argb(symbol_layer, accessors, opacity=1.0):
     for accessor in accessors:
-        try:
-            color = getattr(symbol_layer, accessor)()
-        except Exception:
+        color = _call_or_missing(symbol_layer, accessor)
+        if color is _MISSING:
             continue
         if _is_valid_color(color):
             return _color_to_argb(color, opacity)
@@ -232,13 +236,11 @@ def _data_defined_layer_argb(
         return None, False
 
     default_color = None
-    try:
+    with contextlib.suppress(Exception):
         from qgis.PyQt.QtGui import QColor
         default_color = QColor.fromRgba(int(default_argb) & 0xFFFFFFFF) \
             if default_argb is not None else QColor()
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         if default_color is None:
             result = props.valueAsColor(prop_key, expr_context)
         else:
@@ -246,8 +248,6 @@ def _data_defined_layer_argb(
         color, ok = result if isinstance(result, tuple) else (result, True)
         if ok and _is_valid_color(color):
             return _color_to_argb(color, opacity), True
-    except Exception:
-        pass
 
     try:
         prop = props.property(prop_key)
@@ -280,11 +280,9 @@ def _symbol_style_argbs(symbol, expr_context, feature, spec_key, inherited_opaci
         symbol_layers = []
 
     for symbol_layer in symbol_layers:
-        try:
+        with contextlib.suppress(Exception):
             if hasattr(symbol_layer, 'enabled') and not symbol_layer.enabled():
                 continue
-        except Exception:
-            pass
 
         layer_opacity = symbol_opacity * _object_opacity(symbol_layer)
         fill_argb = _symbol_layer_argb(
@@ -317,10 +315,8 @@ def _symbol_style_argbs(symbol, expr_context, feature, spec_key, inherited_opaci
             bg_argb = _first_defined(bg_argb, sub_bg)
 
     if fg_argb is None:
-        try:
+        with contextlib.suppress(Exception):
             fg_argb = _color_to_argb(symbol.color(), symbol_opacity)
-        except Exception:
-            pass
     return fg_argb, bg_argb
 
 
@@ -336,13 +332,11 @@ def _symbols_style_argbs(symbols, expr_context, feature, spec_key, field_fg, fie
 
 def _layer_symbol_argb(layer):
     """Base symbol color of the layer renderer, as ARGB int."""
-    try:
+    with contextlib.suppress(Exception):
         symbol = layer.renderer().symbol()
         fg_argb, _bg_argb = _symbol_style_argbs(symbol, QgsExpressionContext(), None, None)
         if fg_argb is not None:
             return fg_argb
-    except Exception:
-        pass
     return None
 
 
@@ -353,15 +347,13 @@ def _feature_symbol_argbs(layer, feature, spec_key):
     renderer = None
     context = _render_context(layer, feature)
     expr_context = context.expressionContext()
-    try:
+    with contextlib.suppress(Exception):
         renderer = layer.renderer()
         renderer.startRender(context, layer.fields())
         try:
             symbols = []
-            try:
+            with contextlib.suppress(Exception):
                 symbols = renderer.symbolsForFeature(feature, context) or []
-            except Exception:
-                pass
             if not symbols:
                 symbol = renderer.symbolForFeature(feature, context)
                 symbols = [symbol] if symbol is not None else []
@@ -373,8 +365,6 @@ def _feature_symbol_argbs(layer, feature, spec_key):
                 return fg_argb, bg_argb
         finally:
             renderer.stopRender(context)
-    except Exception:
-        pass
     if renderer is not None:
         symbols = _rule_symbols_for_feature(renderer, feature, context)
         fg_argb, bg_argb = _symbols_style_argbs(
@@ -398,16 +388,12 @@ def _rule_symbols_for_feature(renderer, feature, context):
         symbols = []
         for rule in rules:
             if not only_active:
-                try:
+                with contextlib.suppress(Exception):
                     if not rule.active():
                         continue
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     if not rule.isFilterOK(feature, context):
                         continue
-                except Exception:
-                    pass
             try:
                 symbol = rule.symbol()
             except Exception:
@@ -436,10 +422,8 @@ def _attr_millis(feature, name):
     value = _attr(feature, name)
     if value is None:
         return 0
-    try:
+    with contextlib.suppress((TypeError, ValueError)):
         return int(value)
-    except (TypeError, ValueError):
-        pass
     try:
         return int(value.toMSecsSinceEpoch())
     except Exception:
@@ -458,9 +442,11 @@ _FLOAT_EPS = 1e-6
 
 def _elev_field_name(fields):
     """The actual (case-preserving) name of the ELEV field, or None."""
-    for field in fields:
-        if field.name().strip().upper() == _CONTOUR_ELEV_FIELD:
-            return field.name()
+    # 'fld', nao 'field': `field` e o import do dataclasses no topo do modulo,
+    # e sombrea-lo aqui e um erro esperando o dia em que alguem usar os dois.
+    for fld in fields:
+        if fld.name().strip().upper() == _CONTOUR_ELEV_FIELD:
+            return fld.name()
     return None
 
 
@@ -510,7 +496,7 @@ def _contour_master_modulo(layer):
         return None
     try:
         from qgis.core import QgsFeatureRequest
-        request = QgsFeatureRequest().setSubsetOfAttributes([idx]).setFlags(QgsFeatureRequest.NoGeometry)
+        request = QgsFeatureRequest().setSubsetOfAttributes([idx]).setFlags(QgsFeatureRequest.Flag.NoGeometry)
     except Exception:
         request = None
 
@@ -735,10 +721,8 @@ def _symbols_for_feature(layer, feature):
     if renderer is None:
         return []
     context = _render_context(layer, feature)
-    try:
+    with contextlib.suppress(Exception):
         renderer.startRender(context, layer.fields())
-    except Exception:
-        pass
     symbols = []
     try:
         try:
@@ -755,18 +739,15 @@ def _symbols_for_feature(layer, feature):
         if not symbols:
             symbols = _rule_symbols_for_feature(renderer, feature, context)
     finally:
-        try:
+        with contextlib.suppress(Exception):
             renderer.stopRender(context)
-        except Exception:
-            pass
     return symbols
 
 
 def _symbol_layer_pen_style(symbol_layer):
     for accessor in ('penStyle', 'strokeStyle'):
-        try:
-            style = getattr(symbol_layer, accessor)()
-        except Exception:
+        style = _call_or_missing(symbol_layer, accessor)
+        if style is _MISSING:
             continue
         try:
             return int(style)
@@ -797,11 +778,9 @@ def _feature_stroke_pattern(layer, feature):
         except Exception:
             symbol_layers = []
         for symbol_layer in symbol_layers:
-            try:
+            with contextlib.suppress(Exception):
                 if hasattr(symbol_layer, 'enabled') and not symbol_layer.enabled():
                     continue
-            except Exception:
-                pass
             name = _stroke_name_for_pen_style(_symbol_layer_pen_style(symbol_layer))
             if name is not None:
                 return name
@@ -860,13 +839,11 @@ def layer_label_config(layer):
         field_name = None
 
     cfg = {'field': field_name or 'name', 'show': True}
-    try:
+    with contextlib.suppress(Exception):
         color = settings.format().color()
         if _is_valid_color(color):
             cfg['color'] = _color_to_argb(color, 1.0)
-    except Exception:
-        pass
-    try:
+    with contextlib.suppress(Exception):
         if settings.scaleVisibility:
             # QGIS minimumScale = most zoomed-OUT (large denom) -> app minZoom;
             # maximumScale = most zoomed-IN (small denom) -> app maxZoom.
@@ -876,8 +853,6 @@ def layer_label_config(layer):
                 cfg['minZoom'] = min_zoom
             if max_zoom is not None:
                 cfg['maxZoom'] = max_zoom
-    except Exception:
-        pass
     return cfg
 
 
@@ -936,10 +911,8 @@ _NON_ATTRIBUTE_FIELDS = frozenset({
 def _json_safe(value):
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-    try:
+    with contextlib.suppress(Exception):
         return str(value.toString())
-    except Exception:
-        pass
     try:
         return str(value)
     except Exception:
@@ -1106,6 +1079,8 @@ _DIFF_SCALARS = [
 _ALL_UPDATE_FIELDS = list(_DIFF_SCALARS) + [
     'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb',
 ]
+
+
 def _baseline_hash(feature):
     value = _attr(feature, SYNC_HASH_FIELD)
     return str(value or '')
@@ -1252,7 +1227,15 @@ def finalize_new_record(rec):
 
 
 def build_writes(fs, plan, uid):
-    """Firestore write ops for the approved plan."""
+    """Firestore write ops for the approved plan.
+
+    Every write stamps `lastModifiedBy` with the pushing user's uid — the edit
+    counterpart of `createdBy` that the app reads back (Record.lastEditorId).
+    It has to be set on each branch explicitly: an update is a MASKED patch, so
+    leaving the field out doesn't null it, it silently keeps crediting whoever
+    last saved from the app for an edit the plugin made. Not a layer column and
+    not part of the sync hash — it is authorship of the write, never diffed.
+    """
     writes = []
     for item in plan.writable_items():
         rec = item.record
@@ -1264,6 +1247,7 @@ def build_writes(fs, plan, uid):
             rec.is_deleted = False
             fields = finalize_new_record(rec).to_fields()
             fields['isDeleted'] = False
+            fields['lastModifiedBy'] = uid
             writes.append(fs.build_create_write(path, fields))
         elif item.action == 'update':
             # Always assert the record is live. A feature present in the source
@@ -1271,7 +1255,8 @@ def build_writes(fs, plan, uid):
             # remote record; otherwise re-pushing a feature whose record was
             # deleted in the app just patches a tombstone that pull keeps hiding
             # (apply_pull skips isDeleted records), so the feature never reappears.
-            mask = list(dict.fromkeys(item.changed_fields + ['lastModified', 'isDeleted']))
+            mask = list(dict.fromkeys(
+                item.changed_fields + ['lastModified', 'lastModifiedBy', 'isDeleted']))
             rec.last_modified = now_millis()
             rec.is_deleted = False
             # The plugin cannot read cloud geometryWkb on pull, so `geometry_wkb is
@@ -1294,13 +1279,18 @@ def build_writes(fs, plan, uid):
                 if key not in fields:
                     fields[key] = None
             fields['lastModified'] = rec.last_modified
+            # Set after the None-fill loop above: lastModifiedBy is in the mask
+            # but never in to_fields(), so the loop would blank it.
+            fields['lastModifiedBy'] = uid
             writes.append(fs.build_update_write(path, fields, mask))
         elif item.action == 'delete':
             rec.is_deleted = True
             rec.last_modified = now_millis()
             writes.append(fs.build_update_write(
-                path, {'isDeleted': True, 'lastModified': rec.last_modified},
-                ['isDeleted', 'lastModified']))
+                path,
+                {'isDeleted': True, 'lastModified': rec.last_modified,
+                 'lastModifiedBy': uid},
+                ['isDeleted', 'lastModified', 'lastModifiedBy']))
     return writes
 
 
@@ -1327,15 +1317,13 @@ def execute_push(dock, tmap, plan, source_layer):
 
     def on_success(total):
         _write_back_records_to_source_layer(plan, source_layer)
-        try:
+        with contextlib.suppress(Exception):
             cache = FirestoreCache(dock.env.key, dock.tokens.uid)
             cache.store_record_models(
                 plan.map_id,
                 [item.record for item in plan.writable_items()],
                 now_millis(),
             )
-        except Exception:
-            pass
         page.set_busy(False)
         page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
         dock.notify(f'{tmap.nome}: {plan.summary()} — enviado.')
@@ -1366,10 +1354,8 @@ def _write_back_records_to_source_layer(plan, layer):
     """Persist approved record attributes into the source layer when possible."""
     if layer is None:
         return
-    try:
+    with contextlib.suppress(Exception):
         ensure_record_layer_fields(layer)
-    except Exception:
-        pass
 
     fields = layer.fields()
     changes = {}
@@ -1384,7 +1370,8 @@ def _write_back_records_to_source_layer(plan, layer):
         if row_changes:
             changes[item.feature_id] = row_changes
     if changes:
-        try:
+        # source may be read-only; remote commit has already succeeded
+        with contextlib.suppress(Exception):
             if layer.isEditable():
                 for fid, attrs in changes.items():
                     for idx, value in attrs.items():
@@ -1392,9 +1379,5 @@ def _write_back_records_to_source_layer(plan, layer):
             else:
                 layer.dataProvider().changeAttributeValues(changes)
             layer.triggerRepaint()
-        except Exception:
-            pass  # source may be read-only; remote commit has already succeeded
-    try:
+    with contextlib.suppress(Exception):
         configure_record_layer_fields(layer)
-    except Exception:
-        pass

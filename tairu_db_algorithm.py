@@ -27,7 +27,6 @@ from qgis.core import (
     QgsProcessingParameterFeatureSource,
     QgsProcessingParameterBoolean,
     QgsCoordinateReferenceSystem,
-    QgsCoordinateTransform,
     QgsGeometry,
     QgsProject,
     QgsProcessingParameterMultipleLayers,
@@ -38,7 +37,7 @@ try:
     from .compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
     from .tairu_core.feedback import ProcessingFeedbackAdapter
     from .tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401 (re-export)
-    from .tairu_core.tile_math import compute_region_tiles
+    from .tairu_core.tile_math import compute_region_tiles, to_wgs84
     from .tairu_core.generator import (
         GenerationSpec,
         TileRenderEngine,
@@ -52,7 +51,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
     from tairu_core.feedback import ProcessingFeedbackAdapter
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401
-    from tairu_core.tile_math import compute_region_tiles
+    from tairu_core.tile_math import compute_region_tiles, to_wgs84
     from tairu_core.generator import (
         GenerationSpec,
         TileRenderEngine,
@@ -107,7 +106,9 @@ def TairuDBAlgorithm():
             return ""
 
         def shortHelpString(self):
-            return self.tr("Gera um arquivo TairuDB com dos dados do projeto atual e exporta camadas vetoriais selecionadas.")
+            return self.tr(
+                "Gera um arquivo TairuDB com dos dados do projeto atual "
+                "e exporta camadas vetoriais selecionadas.")
 
         def createInstance(self):
             return TairuDBAlgorithm()
@@ -129,7 +130,7 @@ def TairuDBAlgorithm():
             self.addParameter(QgsProcessingParameterFeatureSource(
                 EXTENT_POLYGON,
                 self.tr("Área de interesse (polígono)"),
-                [QgsProcessing.TypeVectorPolygon],
+                [QgsProcessing.SourceType.TypeVectorPolygon],
                 optional=False
             ))
 
@@ -163,7 +164,7 @@ def TairuDBAlgorithm():
             self.addParameter(QgsProcessingParameterNumber(
                 QUALITY,
                 self.tr("Qualidade (apenas JPG/WebP)"),
-                QgsProcessingParameterNumber.Integer,
+                QgsProcessingParameterNumber.Type.Integer,
                 90,
                 False,
                 1,
@@ -173,7 +174,7 @@ def TairuDBAlgorithm():
             self.addParameter(QgsProcessingParameterMultipleLayers(
                 VECTOR_LAYERS,
                 self.tr("Camadas vetoriais para exportar (somente leitura no app)"),
-                layerType=QgsProcessing.TypeVectorAnyGeometry,
+                layerType=QgsProcessing.SourceType.TypeVectorAnyGeometry,
                 optional=True,
             ))
 
@@ -194,8 +195,9 @@ def TairuDBAlgorithm():
             self.selected_vector_layers = []
             vector_layer_ids = self.parameterAsLayerList(parameters, VECTOR_LAYERS, context)
             if vector_layer_ids:
-                if all(hasattr(l, "isValid") for l in vector_layer_ids):
-                    self.selected_vector_layers = [l for l in vector_layer_ids if l.isValid()]
+                if all(hasattr(lyr, "isValid") for lyr in vector_layer_ids):
+                    self.selected_vector_layers = [
+                        lyr for lyr in vector_layer_ids if lyr.isValid()]
                 else:
                     all_layers = QgsProject.instance().mapLayers()
                     for lid in vector_layer_ids:
@@ -247,10 +249,11 @@ def TairuDBAlgorithm():
             self.tile_format = tile_formats[tile_format_idx]
 
             # Get layers from current project
-            self.layers = [layer for layer in QgsProject.instance().mapLayers().values()
-               if QgsProject.instance().layerTreeRoot().findLayer(layer.id()) and
-               QgsProject.instance().layerTreeRoot().findLayer(layer.id()).isVisible() and
-               layer.type() in [_RASTER_LAYER_TYPE]]
+            self.layers = [
+                layer for layer in QgsProject.instance().mapLayers().values()
+                if QgsProject.instance().layerTreeRoot().findLayer(layer.id()) and
+                QgsProject.instance().layerTreeRoot().findLayer(layer.id()).isVisible() and
+                layer.type() in [_RASTER_LAYER_TYPE]]
 
             if not self.layers:
                 feedback.reportError(self.tr("Nenhuma camada encontrada para renderizar."))
@@ -258,7 +261,6 @@ def TairuDBAlgorithm():
 
             self.transform_context = context.transformContext()
             source_crs = source.sourceCrs() if hasattr(source, "sourceCrs") else context.project().crs()
-            src2wgs = QgsCoordinateTransform(source_crs, self.wgs84_crs, self.transform_context)
 
             feedback.pushInfo(self.tr(f"CRS do polígono: {source_crs.authid()}"))
 
@@ -271,9 +273,14 @@ def TairuDBAlgorithm():
                 if polygon_geom is None or polygon_geom.isEmpty():
                     polygons_wgs84.append(QgsGeometry())  # reported invalid downstream
                     continue
-                polygon_geom_wgs84 = QgsGeometry(polygon_geom)
-                polygon_geom_wgs84.transform(src2wgs)
-                polygons_wgs84.append(polygon_geom_wgs84)
+                try:
+                    polygons_wgs84.append(to_wgs84(
+                        QgsGeometry(polygon_geom), source.sourceCrs(),
+                        QgsCoordinateReferenceSystem('EPSG:4326'),
+                        context.transformContext()))
+                except ValueError as exc:
+                    feedback.reportError(str(exc))
+                    return False
 
             self.region_result = compute_region_tiles(
                 polygons_wgs84, self.max_zoom, ProcessingFeedbackAdapter(feedback)
@@ -282,8 +289,12 @@ def TairuDBAlgorithm():
                 return False
 
             total_region_tiles = sum(len(tiles) for tiles in self.region_result.region_tiles.values())
-            feedback.pushInfo(self.tr(f"Encontrados {total_region_tiles} tiles em {len(self.region_result.region_tiles)} regiões"))
-            feedback.pushInfo(self.tr(f"Encontrados {self.region_result.total_tiles} tiles únicos que intersectam com os polígonos selecionados."))
+            feedback.pushInfo(self.tr(
+                f"Encontrados {total_region_tiles} tiles em "
+                f"{len(self.region_result.region_tiles)} regiões"))
+            feedback.pushInfo(self.tr(
+                f"Encontrados {self.region_result.total_tiles} tiles únicos que "
+                f"intersectam com os polígonos selecionados."))
 
             for region_id, tiles in self.region_result.region_tiles.items():
                 feedback.pushInfo(self.tr(f"Região {region_id}: {len(tiles)} tiles"))

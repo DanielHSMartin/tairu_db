@@ -8,6 +8,7 @@ and routes between LoginPage, MapsPage and MapDetailPage. All network work
 happens in FirebaseTask background tasks; this class only touches widgets.
 """
 
+import contextlib
 from qgis.PyQt.QtCore import QUrl
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
@@ -241,11 +242,9 @@ class TairuDockWidget(QgsDockWidget):
 
     def _stop_loopback(self):
         if self._loopback is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._loopback.credentialsReceived.disconnect()
                 self._loopback.failed.disconnect()
-            except Exception:
-                pass
             self._loopback.stop()
             self._loopback = None
 
@@ -309,10 +308,8 @@ class TairuDockWidget(QgsDockWidget):
     def _on_maps_loaded(self, rows):
         cache = self._cache()
         if cache is not None:
-            try:
+            with contextlib.suppress(Exception):
                 cache.store_maps(rows, now_millis())
-            except Exception:
-                pass
         self.maps_page.set_busy(False)
         self._apply_map_rows(rows, status='')
 

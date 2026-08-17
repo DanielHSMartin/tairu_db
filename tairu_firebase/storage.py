@@ -9,6 +9,7 @@ files get real progress reporting and survive a token refresh mid-transfer
 'Authorization: Firebase <idToken>' scheme required for Firebase ID tokens.
 """
 
+import contextlib
 import json as jsonlib
 import os
 import urllib.error
@@ -92,10 +93,8 @@ class StorageClient:
             raise FirebaseError('NETWORK', str(e.reason)) from e
         finally:
             if os.path.exists(tmp_path):
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_path)
-                except OSError:
-                    pass
 
     # -------------------------------------------------------------- upload
 
@@ -181,8 +180,12 @@ class StorageClient:
                 method='POST',
             )
             urllib.request.urlopen(req, timeout=15).read()  # nosec B310
-        except Exception:
-            pass  # best effort
+        except Exception as exc:
+            # Best effort: o cancelamento e cortesia com o servidor, a sessao ja
+            # foi abandonada de qualquer jeito. Dito em voz alta em vez de
+            # engolido — um cancelamento que nunca funciona e um vazamento de
+            # sessoes de upload que ninguem veria.
+            _log_cancel_failed(exc)
 
 
 def _storage_error(status, body_bytes):
@@ -196,3 +199,13 @@ def _storage_error(status, body_bytes):
     except Exception:
         message = body_bytes[:300].decode('utf-8', errors='replace') if body_bytes else ''
     return FirebaseError(code, message, http_status=status)
+
+
+def _log_cancel_failed(exc):
+    """Registra a falha ao cancelar um upload retomavel (nunca propaga)."""
+    try:
+        from qgis.core import QgsMessageLog, Qgis
+        QgsMessageLog.logMessage(
+            f'TairuDB: falha ao cancelar upload: {exc}', 'TairuDB', Qgis.MessageLevel.Info)
+    except Exception:
+        print(f'TairuDB: falha ao cancelar upload: {exc}')

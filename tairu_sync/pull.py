@@ -7,6 +7,7 @@ Network + sqlite conversion run in a FirebaseTask; everything that touches
 QgsProject / widgets happens back on the GUI thread in the success handlers.
 """
 
+import contextlib
 import os
 
 from qgis.core import QgsMessageLog
@@ -155,7 +156,7 @@ def start_pull(dock, tmap):
                 empty_fallback_ms=pull_started_at,
             )
         cache_stored = False
-        try:
+        with contextlib.suppress(Exception):
             cache.store_records(
                 tmap.map_id,
                 rows,
@@ -163,8 +164,6 @@ def start_pull(dock, tmap):
                 full_snapshot=not is_incremental,
             )
             cache_stored = True
-        except Exception:
-            pass
         result = apply_rows(rows)
         if result is None:
             return
@@ -175,15 +174,13 @@ def start_pull(dock, tmap):
         # would delete those local records. Leaving the cursor put makes the next pull
         # re-fetch and re-attempt the cache write, healing the divergence.
         if cache_stored:
-            try:
+            with contextlib.suppress(Exception):
                 cache.save_sync_state(
                     tmap.map_id,
                     RECORDS_COLLECTION,
                     sync_watermark,
                     full_snapshot=not is_incremental,
                 )
-            except Exception:
-                pass
             save_last_pull_ts(paths, sync_watermark)
 
     def on_error(message):

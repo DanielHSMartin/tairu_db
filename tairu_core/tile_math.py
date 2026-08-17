@@ -11,7 +11,69 @@ origin). The TMS flip happens only at save time, in the render engine.
 import math
 from dataclasses import dataclass, field
 
-from qgis.core import QgsRectangle, QgsGeometry
+from qgis.core import QgsRectangle, QgsGeometry, QgsCoordinateTransform
+
+
+def to_wgs84(geom, src, wgs84, ctx):
+    """Reprojeta `geom` para WGS84, ou levanta dizendo por que nao deu.
+
+    O retorno de QgsGeometry.transform() era ignorado em TODOS os pontos que
+    reprojetam (area do assistente, algoritmo de Processamento, exportacao
+    vetorial). Com uma CRS de origem invalida o QgsCoordinateTransform nasce
+    invalido, transform() devolve erro e a geometria segue INTACTA, em metros.
+    Dali em diante metro e tratado como grau: o intervalo de tiles colapsa e o
+    usuario recebe "nenhum tile intersecta a area" — ou, pior, na exportacao
+    vetorial, feicoes gravadas no lugar errado, sem aviso nenhum.
+
+    A checagem de faixa e o guarda de verdade: nao depende da versao do QGIS nem
+    do nome do enum de retorno, e pega qualquer saida que nao esteja em graus.
+    """
+    if not src.isValid():
+        raise ValueError(
+            'A área selecionada não tem sistema de coordenadas válido — nem o '
+            'canvas nem o projeto informaram um SRC. Defina o SRC do projeto '
+            '(canto inferior direito da janela do QGIS) e tente de novo.')
+    transform = QgsCoordinateTransform(src, wgs84, ctx)
+    origem = src.authid() or src.description() or 'origem desconhecida'
+    if not transform.isValid():
+        raise ValueError(
+            f'Não há transformação de {origem} para WGS84 (EPSG:4326) neste projeto.')
+    geom.transform(transform)
+    bb = geom.boundingBox()
+    if (-180.0 <= bb.xMinimum() and bb.xMaximum() <= 180.0
+            and -90.0 <= bb.yMinimum() and bb.yMaximum() <= 90.0):
+        return geom
+    raise ValueError(
+        f'A área não foi reprojetada de {origem} para WGS84 — os valores '
+        f'continuam fora de graus ({bb.toString(2)}). {_crs_hint(bb, origem)}')
+
+
+def _crs_hint(bb, origem):
+    """Palpite util sobre a CRS real, a partir da GRANDEZA das coordenadas.
+
+    O caso que motivou isto: a origem declarada e EPSG:4326, entao a
+    transformacao para WGS84 vira identidade e nao converte nada — mas os dados
+    estao em metros. Sem esta dica a mensagem diz apenas "nao reprojetou", e o
+    usuario nao tem como saber que o defeito esta na CRS DECLARADA do dado, nao
+    no plugin.
+    """
+    x, y = abs(bb.xMinimum()), abs(bb.yMinimum())
+    if x <= 180.0 and y <= 90.0:
+        return 'Verifique o SRC do projeto e as transformações de datum.'
+    if x < 20037509.0 and y < 20048967.0:
+        provavel = 'Web Mercator (EPSG:3857)'
+    elif x < 1000000.0:
+        provavel = 'uma projeção UTM local'
+    else:
+        provavel = 'alguma projeção métrica'
+    if origem.upper().endswith('4326'):
+        return (f'Os valores têm a grandeza de {provavel}, mas a origem está '
+                f'declarada como {origem} — nesse caso a conversão vira '
+                'identidade e nada é reprojetado. Corrija o SRC declarado da '
+                'camada/projeto (clique com o botão direito na camada → '
+                'Propriedades → Fonte → SRC) e tente de novo.')
+    return (f'Os valores têm a grandeza de {provavel}. Confirme se o SRC '
+            f'declarado ({origem}) corresponde de fato aos dados.')
 
 
 def lon2tilex(lon, n):
