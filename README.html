@@ -54,7 +54,17 @@
   <li><strong>Pull raster files</strong> — download <code>.tairudb</code> raster packages and
       load them as raster layers via MBTiles.</li>
   <li><strong>Push vector layers</strong> — upload a QGIS vector layer as records to a map,
-      with a diff preview so you can review what will change before confirming.</li>
+      with a diff preview so you can review what will change before confirming. Only
+      <strong>visible</strong> layers are offered: a layer unchecked in the Layers panel
+      (or inside an unchecked group) is skipped by the plugin, in the push dialog and in
+      the generation wizard alike. The wizard's area-of-interest picker is the one
+      exception: the boundary polygon layer stays selectable even when unchecked, because
+      hiding it after drawing it is routine.</li>
+  <li><strong>Copy records between maps</strong> &mdash; pull one map's records and push
+      the layer to a <em>different</em> map: they are created there as new records, owned
+      by whoever copies them, keeping the original record id so re-sending the same layer
+      updates the copies instead of duplicating them. Nothing is deleted on the target map
+      and the source map is left untouched.</li>
   <li><strong>Generate &amp; upload rasters</strong> — use the built-in wizard to generate a
       <code>.tairudb</code> raster for a chosen area and upload it directly to a selected map.</li>
 </ul>
@@ -121,12 +131,14 @@
   <tr><td><code>tiles_region_N</code></td><td>TMS raster tiles per region (PNG, JPG or WebP)</td></tr>
   <tr><td><code>vector_layers</code></td><td>Exported vector layers (point, line, polygon)</td></tr>
   <tr><td><code>features</code></td><td>Features with geometry, style and JSON attributes</td></tr>
+  <tr><td><code>elevation_tiles</code></td><td>Terrain elevation tiles, for offline altitude and elevation profiles (USGS, public domain)</td></tr>
 </table>
 <p>Full schema details in <code>TAIRUDB_SCHEMA.txt</code>.</p>
 
 <h2>Version history</h2>
 <table>
   <tr><th>Version</th><th>Changes</th></tr>
+  <tr><td>2.0.x</td><td>See the <code>changelog</code> entry in <code>metadata.txt</code> for the per-release history, kept up to date there rather than duplicated here</td></tr>
   <tr><td>2.0</td><td>Tairu Maps dock with Firebase login (e-mail, Google, Apple); pull records as editable GeoPackage layers and .tairudb files as raster; push vector layers as records with diff preview; wizard to generate and upload .tairudb rasters directly to a map</td></tr>
   <tr><td>1.2.1</td><td>Support for QGIS 4</td></tr>
   <tr><td>1.2</td><td>Multi-region support; vector layer export with JSON attributes; automatic tile retry; WebP support; dry-run mode for estimating tile count and file size</td></tr>

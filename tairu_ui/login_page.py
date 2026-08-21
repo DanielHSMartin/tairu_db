@@ -53,8 +53,8 @@ class LoginPage(QWidget):
 
         separator = QFrame()
         separator.setObjectName('TairuSeparator')
-        separator.setFrameShape(QFrame.Shape.HLine if hasattr(QFrame, 'Shape') else QFrame.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken if hasattr(QFrame, 'Shadow') else QFrame.Sunken)
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(separator)
 
         local_title = set_title(QLabel('TairuDB'))

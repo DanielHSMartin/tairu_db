@@ -10,7 +10,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 try:
-    from ..compat import _USER_ROLE, _exec_dialog
+    from ..compat import _USER_ROLE
     # INFO/INFO_CONTAINER/badge_style: selo de papel (ver linha comentada abaixo)
     from .style import (  # noqa: F401
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
@@ -18,17 +18,14 @@ try:
         set_primary_button, set_section_title, set_title, status_style,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
-    from compat import _USER_ROLE, _exec_dialog
+    from compat import _USER_ROLE
     from tairu_ui.style import (  # noqa: F401 - idem
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
         badge_style, set_action_button, set_muted, set_plain_button,
         set_primary_button, set_section_title, set_title, status_style,
     )
 
-try:
-    _TRANSPARENT_MOUSE = Qt.WidgetAttribute.WA_TransparentForMouseEvents
-except AttributeError:
-    _TRANSPARENT_MOUSE = Qt.WA_TransparentForMouseEvents
+_TRANSPARENT_MOUSE = Qt.WidgetAttribute.WA_TransparentForMouseEvents
 
 
 class MapDetailPage(QWidget):
@@ -172,6 +169,7 @@ class MapDetailPage(QWidget):
             return
         dialog = TairuDbFilesDialog(self._map, self)
         name = dialog.selected_file()
+        dialog.deleteLater()  # parented to this page: exec() returning does not destroy it
         if name:
             self.downloadFileRequested.emit(self._map.map_id, name)
 
@@ -221,7 +219,7 @@ class TairuDbFilesDialog(QDialog):
         apply_tairu_style(self)
 
     def selected_file(self):
-        if _exec_dialog(self):
+        if self.exec():
             return self._selected_name
         return None
 

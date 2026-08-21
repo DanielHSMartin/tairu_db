@@ -1,0 +1,17 @@
+{
+  "fetched_note": "hashes aceitos por --update-pins",
+  "sources": {
+    "security_scanner.py": {
+      "sha256": "cbe3fef41492e1959064550d8c17aad8b4fcc26bd820e6a0189b9553dcb6dbe6",
+      "lines": 742
+    },
+    "validator.py": {
+      "sha256": "3753c45d7c5ece4efd6bc566720acd2c2a9db2a2a112c83c9459ffd2a29da955",
+      "lines": 593
+    },
+    "tasks/run_security_scan.py": {
+      "sha256": "4c95e2fda408685a7fe249e81e69ffc2bff4b0414cdd6cba8f5952148b6c9f64",
+      "lines": 314
+    }
+  }
+}

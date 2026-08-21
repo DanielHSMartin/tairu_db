@@ -123,11 +123,6 @@ def _download_into(writer, tiles, feedback, concurrency=8):
     from qgis.PyQt.QtNetwork import QNetworkRequest
     # Local a funcao, como os de cima: o modulo tem de importar sem QGIS para
     # test_elevation_tiles.py exercitar a matematica de tiles sozinha.
-    try:
-        from ..compat import _exec_loop
-    except ImportError:  # standalone usage with the plugin dir on sys.path
-        from compat import _exec_loop
-
     nam = QgsNetworkAccessManager.instance()
     total = len(tiles)
     feedback.push_info(f'Baixando {total} tile(s) de altitude…')
@@ -195,7 +190,7 @@ def _download_into(writer, tiles, feedback, concurrency=8):
 
     pump()
     if not drained():
-        _exec_loop(loop)
+        loop.exec()
     tick.stop()
 
     # Said out loud rather than swallowed: a partial download is a map with

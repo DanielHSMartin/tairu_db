@@ -118,18 +118,37 @@ else
 fi
 
 # ---- CHECK 6: no executable/binary extensions (QGIS "FILE_SUSPICIOUS") ----
+# Lista identica a suspicious_extensions em qgis-app/plugins/security_scanner.py.
+# .dylib e .ps1 faltavam aqui: o gate local passava e o servidor acusaria.
 suspicious=$(find "$stage" \( -name '*.exe' -o -name '*.dll' -o -name '*.so' \
+                              -o -name '*.dylib' -o -name '*.ps1' \
                               -o -name '*.sh' -o -name '*.bat' -o -name '*.cmd' \) || true)
 [ -z "$suspicious" ] || fail "suspicious file types in package:\n$suspicious"
 echo "file types OK"
+
+# ---- CHECK 6b: nenhum .py com bit de execucao (QGIS "FILE_EXECUTABLE") ----
+# O scanner le a permissao gravada NO ZIP (external_attr) e acusa todo .py
+# executavel. Um .py nunca precisa do bit num plugin, entao normalizamos a copia
+# em stage em vez de reprovar o build por isso.
+execbits=$(find "$stage" -name '*.py' -type f \
+             \( -perm -u+x -o -perm -g+x -o -perm -o+x \) | wc -l | tr -d ' ')
+if [ "${execbits:-0}" != "0" ]; then
+  find "$stage" -name '*.py' -type f -exec chmod a-x {} +
+  echo "exec bits: removidos de $execbits arquivo(s) .py no pacote (FILE_EXECUTABLE)"
+else
+  echo "exec bits OK (nenhum .py executavel)"
+fi
 
 # ---- CHECK 7: flake8, com os MESMOS parametros do servidor ----
 # `--max-line-length=120`, lido de qgis-app/plugins/security_scanner.py. Rodar
 # com um limite maior esconde E501 que o servidor reporta: aconteceu, com 200.
 if "$PYTHON" -m flake8 --version >/dev/null 2>&1; then
-  f8=$("$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null | wc -l | tr -d ' ')
+  # `|| true` nos DOIS, pela mesma razao do bandit acima: o flake8 sai com 1
+  # quando acha algo e, com `set -e -o pipefail`, isso matava o script aqui —
+  # sem mensagem e sem zip, exatamente como se o build tivesse dado certo.
+  f8=$( ("$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null || true) | wc -l | tr -d ' ')
   if [ "${f8:-0}" != "0" ]; then
-    "$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null | head -20
+    "$PYTHON" -m flake8 --max-line-length=120 "$stage" 2>/dev/null | head -20 || true
     echo "WARNING: flake8 reportou $f8 achado(s) — nao bloqueiam a publicacao,"
     echo "         mas contam no relatorio e podem levar a revisao manual."
   else

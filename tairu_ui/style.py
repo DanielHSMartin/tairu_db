@@ -575,6 +575,19 @@ def apply_combo_popup_style(combo):
         view.horizontalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
 
 
+def apply_cell_combo_style(table):
+    """Style QComboBox cell widgets from the TABLE's own stylesheet.
+
+    Qt propagates a stylesheet down the parent chain, so one call here does what
+    apply_combo_popup_style() did per cell widget. It matters at table scale: 500 rows
+    x 3 combos x the 5 setStyleSheet() calls in apply_combo_popup_style measured 2.6 s
+    of the 3.6 s the push preview took to build (QGIS 3.40 LTR, offscreen) — dead time
+    with the window unpainted. COMBO_LOCAL_STYLE already scopes its popup rules under
+    QComboBox, so nothing here can reach the table itself (also a QAbstractItemView).
+    """
+    table.setStyleSheet(f'{table.styleSheet()}\n{COMBO_LOCAL_STYLE}')
+
+
 def apply_table_style(table):
     table.setStyleSheet(TABLE_LOCAL_STYLE)
     with contextlib.suppress(Exception):
@@ -661,7 +674,7 @@ def set_control_enabled(widget, enabled, disabled_opacity=0.58):
 def _remove_button_focus(button):
     with contextlib.suppress(Exception):
         from qgis.PyQt.QtCore import Qt
-        no_focus = Qt.FocusPolicy.NoFocus if hasattr(Qt, 'FocusPolicy') else Qt.NoFocus
+        no_focus = Qt.FocusPolicy.NoFocus
         button.setFocusPolicy(no_focus)
 
 

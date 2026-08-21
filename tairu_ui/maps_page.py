@@ -26,15 +26,9 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         status_style,
     )
 
-try:
-    _TRANSPARENT_MOUSE = Qt.WidgetAttribute.WA_TransparentForMouseEvents
-except AttributeError:
-    _TRANSPARENT_MOUSE = Qt.WA_TransparentForMouseEvents
+_TRANSPARENT_MOUSE = Qt.WidgetAttribute.WA_TransparentForMouseEvents
 
-try:
-    _STYLED_BACKGROUND = Qt.WidgetAttribute.WA_StyledBackground
-except AttributeError:
-    _STYLED_BACKGROUND = Qt.WA_StyledBackground
+_STYLED_BACKGROUND = Qt.WidgetAttribute.WA_StyledBackground
 
 _MAP_LIST_STYLE = """
 QListWidget#TairuMapsList {

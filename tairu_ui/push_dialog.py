@@ -2,29 +2,34 @@
 
 """Push dialog: pick a vector layer, preview records, edit values, then send."""
 
-from qgis.PyQt.QtCore import QDateTime, QTimer, Qt
+from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QEventLoop, QTimer, Qt
 from qgis.PyQt.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDateTimeEdit,
 )
+from qgis.core import QgsProject
 from qgis.gui import QgsMapLayerComboBox
 
 try:
-    from ..compat import _VECTOR_LAYER_FILTER, _exec_dialog
+    from ..compat import _VECTOR_LAYER_FILTER
+    from ..tairu_core.layer_tree import layer_is_visible
+    from ..tairu_sync.record_convert import layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from ..tairu_sync.push import build_push_plan, execute_push
     from ..tairu_core.vector_types import has_elevation_attribute
     from .style import (
-        apply_combo_popup_style, apply_table_style, apply_tairu_style,
+        apply_cell_combo_style, apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_info_banner, set_muted, set_plain_button, set_primary_button,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
-    from compat import _VECTOR_LAYER_FILTER, _exec_dialog
+    from compat import _VECTOR_LAYER_FILTER
+    from tairu_core.layer_tree import layer_is_visible
+    from tairu_sync.record_convert import layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from tairu_sync.push import build_push_plan, execute_push
     from tairu_core.vector_types import has_elevation_attribute
     from tairu_ui.style import (
-        apply_combo_popup_style, apply_table_style, apply_tairu_style,
+        apply_cell_combo_style, apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_info_banner, set_muted, set_plain_button, set_primary_button,
     )
 
@@ -74,30 +79,35 @@ _HEADERS = ['Ação'] + [label for _key, label, _attr, _kind in _DATA_COLUMNS] +
 _COLUMN_BY_KEY = {key: index + 1 for index, (key, _label, _attr, _kind) in enumerate(_DATA_COLUMNS)}
 _GEOMETRY_COL = len(_DATA_COLUMNS) + 1
 _DETAILS_COL = len(_DATA_COLUMNS) + 2
+_ROUNDTRIP_TEXT = (
+    'Esta camada veio do Tairu Maps: os atributos existentes serão preservados '
+    'e os registros ausentes aparecerão como exclusões na prévia.')
+
 _MAX_PREVIEW_ROWS = 500
+# Rows between event-loop turns while filling the preview table (see _fill_table).
+_FILL_PUMP_EVERY = 50
 
-try:
-    _ITEM_IS_EDITABLE = Qt.ItemFlag.ItemIsEditable
-except AttributeError:
-    _ITEM_IS_EDITABLE = Qt.ItemIsEditable
+_ITEM_IS_EDITABLE = Qt.ItemFlag.ItemIsEditable
+_EDIT_TRIGGERS = (
+    QTableWidget.EditTrigger.DoubleClicked |
+    QTableWidget.EditTrigger.EditKeyPressed |
+    QTableWidget.EditTrigger.AnyKeyPressed
+)
 
-try:
-    _EDIT_TRIGGERS = (
-        QTableWidget.EditTrigger.DoubleClicked |
-        QTableWidget.EditTrigger.EditKeyPressed |
-        QTableWidget.EditTrigger.AnyKeyPressed
-    )
-except AttributeError:
-    _EDIT_TRIGGERS = (
-        QTableWidget.EditTrigger.DoubleClicked |
-        QTableWidget.EditTrigger.EditKeyPressed |
-        QTableWidget.EditTrigger.AnyKeyPressed
-    )
+
+class _PreviewAborted(Exception):
+    """The preview being computed was superseded, or the dialog went away."""
 
 
 def open_push_dialog(dock, tmap):
     dialog = PushDialog(dock, tmap)
-    _exec_dialog(dialog)
+    dialog.exec()
+    # The dialog is parented to the dock, so returning from exec() does NOT destroy it:
+    # every closed dialog stays alive hidden and its layer combo keeps answering
+    # layerChanged, re-running build_push_plan (a full scan of the layer) on every
+    # layer added to the project. Opening "Enviar Camada" N times made the next pull
+    # do N scans on the GUI thread — the freeze users reported.
+    dialog.deleteLater()
 
 
 def _default_subtype(tipo):
@@ -131,14 +141,19 @@ class PushDialog(QDialog):
         form = QFormLayout()
         self.layer_combo = QgsMapLayerComboBox()
         self.layer_combo.setFilters(_VECTOR_LAYER_FILTER)
+        # Camada desmarcada no painel de camadas não é enviada. O diálogo é modal, então
+        # a lista não muda enquanto ele está aberto — basta calcular na abertura.
+        project = QgsProject.instance()
+        hidden_layers = [lyr for lyr in project.mapLayers().values()
+                         if not layer_is_visible(lyr, project)]
+        self._hidden_layer_count = len(hidden_layers)
+        self.layer_combo.setExceptedLayerList(hidden_layers)
         apply_combo_popup_style(self.layer_combo)
         self.layer_combo.layerChanged.connect(self._on_layer_changed)
         form.addRow('Camada:', self.layer_combo)
         layout.addLayout(form)
 
-        self.roundtrip_label = set_info_banner(QLabel(
-            'Esta camada veio do Tairu Maps: os atributos existentes serão preservados '
-            'e os registros ausentes aparecerão como exclusões na prévia.'))
+        self.roundtrip_label = set_info_banner(QLabel(_ROUNDTRIP_TEXT))
         self.roundtrip_label.setWordWrap(True)
         self.roundtrip_label.hide()
         layout.addWidget(self.roundtrip_label)
@@ -152,6 +167,9 @@ class PushDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(_EDIT_TRIGGERS)
         apply_table_style(self.table)
+        # One stylesheet for every combo the preview puts in a cell (see the helper):
+        # applying it per widget was most of the time the table took to appear.
+        apply_cell_combo_style(self.table)
         header = self.table.horizontalHeader()
         header.setStretchLastSection(True)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive
@@ -179,6 +197,16 @@ class PushDialog(QDialog):
         is_roundtrip = False
         if layer is not None:
             is_roundtrip = layer.fields().indexOf('recordId') >= 0
+        origin = layer_origin_map_id(layer) if is_roundtrip else ''
+        if origin and origin != self.tmap.map_id:
+            # O texto padrão prometeria exclusões que não vão acontecer: nada é apagado
+            # na expedição de destino, onde estes registros nem existem ainda.
+            self.roundtrip_label.setText(
+                f'Esta camada veio de OUTRA expedição: os registros serão criados como '
+                f'novos em «{self.tmap.nome}», em seu nome. Nada é excluído lá, e '
+                f'reenviar esta mesma camada depois atualiza as cópias.')
+        else:
+            self.roundtrip_label.setText(_ROUNDTRIP_TEXT)
         self.roundtrip_label.setVisible(is_roundtrip)
         self._invalidate_plan()
         self._schedule_preview()
@@ -222,7 +250,13 @@ class PushDialog(QDialog):
     def _compute_preview(self):
         layer = self.layer_combo.currentLayer()
         if layer is None:
-            self.summary_label.setText('Selecione uma camada vetorial.')
+            if self._hidden_layer_count and not self.layer_combo.count():
+                self.summary_label.setText(
+                    'Nenhuma camada vetorial visível. Camadas desmarcadas no painel de '
+                    'camadas não são enviadas — marque a camada no painel e abra esta '
+                    'janela de novo.')
+            else:
+                self.summary_label.setText('Selecione uma camada vetorial.')
             return
         if layer.featureCount() == 0:
             self.summary_label.setText('A camada selecionada não possui feições.')
@@ -237,7 +271,10 @@ class PushDialog(QDialog):
         try:
             self.plan = build_push_plan(
                 layer, mapping, self.tmap, self.dock.tokens.uid,
-                propagate_deletions=include_deletions)
+                propagate_deletions=include_deletions,
+                progress=self._preview_progress(generation))
+        except _PreviewAborted:
+            return
         except Exception as e:
             self.summary_label.setText(f'Falha ao montar prévia: {e}')
             return
@@ -245,7 +282,10 @@ class PushDialog(QDialog):
         if generation != self._preview_generation:
             return
 
-        self._fill_table()
+        try:
+            self._fill_table(generation)
+        except _PreviewAborted:
+            return
         extras = []
         if self._hidden_unchanged_count:
             extras.append(f'{self._hidden_unchanged_count} inalterados ocultos')
@@ -255,7 +295,36 @@ class PushDialog(QDialog):
         self.summary_label.setText(f'Prévia: {self.plan.summary()}.{suffix}')
         self.send_btn.setEnabled(bool(self.plan.writable_items()))
 
-    def _fill_table(self):
+    def _preview_progress(self, generation):
+        """Keep the window painted while the plan is built.
+
+        The scan is Python-heavy (~0.3 ms/feature measured on QGIS 3.40 LTR) and runs on
+        the GUI thread, so a layer with thousands of features used to block before the
+        dialog's first paint: a blank window titled "(Não está respondendo)".
+        User input stays excluded — pumping it here would let a click re-enter the
+        preview (or the send) in the middle of the scan.
+        """
+        def report(done, total, phase='Calculando prévia'):
+            if total:
+                self.summary_label.setText(f'{phase}… {done} de {total} feições')
+            else:
+                self.summary_label.setText(f'{phase}… {done} feições')
+            self._pump(generation)
+        return report
+
+    def _pump(self, generation):
+        """Give the event loop a turn, then bail out if this preview was superseded."""
+        if generation != self._preview_generation:
+            raise _PreviewAborted()
+        QCoreApplication.processEvents(
+            QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+        # A pull finishing mid-scan adds layers -> layerChanged -> _invalidate_plan,
+        # which bumps the generation and clears the table. Re-check after pumping,
+        # never after the fact.
+        if generation != self._preview_generation:
+            raise _PreviewAborted()
+
+    def _fill_table(self, generation=None):
         items = self.plan.items if self.plan else []
         visible_items = [item for item in items if item.action != 'unchanged' or item.warning]
         shown = visible_items[:_MAX_PREVIEW_ROWS]
@@ -264,6 +333,11 @@ class PushDialog(QDialog):
         self._truncated_preview_count = max(0, len(visible_items) - len(shown))
         self.table.setRowCount(len(shown))
         for row, item in enumerate(shown):
+            # Each row is ~4 cell widgets; 500 of them measured 1.5 s in one blocked
+            # chunk. Same treatment as the scan: hand the loop back regularly.
+            if generation is not None and row and row % _FILL_PUMP_EVERY == 0:
+                self.summary_label.setText(f'Montando prévia… {row} de {len(shown)} linhas')
+                self._pump(generation)
             self.table.setItem(row, 0, self._readonly_item(_ACTION_LABELS.get(item.action, item.action)))
             for col_offset, (key, _label, attr, kind) in enumerate(_DATA_COLUMNS, start=1):
                 self._set_data_cell(row, col_offset, item, key, attr, kind)
@@ -345,7 +419,6 @@ class PushDialog(QDialog):
         combo = QComboBox()
         self._fill_combo(combo, [(key, label) for key, label in RECORD_TYPES.items()], value)
         combo.setEnabled(editable)
-        apply_combo_popup_style(combo)
         return combo
 
     def _subtype_combo(self, tipo, value, editable):
@@ -353,7 +426,6 @@ class PushDialog(QDialog):
         options = [(key, RECORD_SUBTYPES.get(key, key)) for key in SUBTYPES_BY_TYPE.get(tipo, [])]
         self._fill_combo(combo, options, value)
         combo.setEnabled(editable)
-        apply_combo_popup_style(combo)
         return combo
 
     def _situation_combo(self, tipo, value, editable):
@@ -361,7 +433,6 @@ class PushDialog(QDialog):
         options = [(sit, sit) for sit in SITUATIONS_BY_TYPE.get(tipo, ['Ativo'])]
         self._fill_combo(combo, options, value)
         combo.setEnabled(editable)
-        apply_combo_popup_style(combo)
         return combo
 
     def _fill_combo(self, combo, options, value):

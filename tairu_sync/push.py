@@ -31,8 +31,9 @@ try:
     )
     from .record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, record_to_attribute_map, sync_record_hash,
-        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
+        sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        SYNC_MAP_ID_PROPERTY,
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
@@ -43,8 +44,9 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_sync.record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
-        layer_sync_snapshot, record_to_attribute_map, sync_record_hash,
-        SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
+        sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        SYNC_MAP_ID_PROPERTY,
     )
     from tairu_sync.tasks import run_task
 
@@ -85,6 +87,9 @@ class PushItem:
 class PushPlan:
     map_id: str
     items: list = field(default_factory=list)
+    # Expedição de onde a camada veio, quando o envio é uma CÓPIA para outra (ver
+    # layer_origin_map_id). Vazio no caso normal.
+    copied_from_map_id: str = ''
 
     def count(self, action):
         return sum(1 for i in self.items if i.action == action)
@@ -207,10 +212,102 @@ def _expression_context(layer, feature):
 
 
 def _render_context(layer, feature):
+    session = _active_render_session(layer)
+    if session is not None:
+        return session.context_for(feature)
     context = QgsRenderContext()
     with contextlib.suppress(Exception):
         context.setExpressionContext(_expression_context(layer, feature))
     return context
+
+
+# ------------------------------------------------------- per-layer render session
+# QgsExpressionContextUtils.globalProjectLayerScopes() and renderer.startRender() are
+# LAYER work, not feature work: the first re-reads the global/project variables (QSettings)
+# on every call, the second re-prepares every symbol layer and data-defined property.
+# Building both per feature measured 0.39 ms/feature against 0.002 ms/feature reusing
+# them (QGIS 3.40 LTR, trivial layer, 2000 features), and feature_to_record does it TWICE
+# per feature. Measured end to end it is ~20-25% of the preview scan — real, but NOT the
+# whole story: the rest is per-vertex geometry serialization, which is the record format
+# itself. Don't come here first when the scan is slow; profile.
+#
+# Hoisting is what QGIS's own render loop does: start the renderer once, then only swap
+# the feature on the shared expression context. Callers that don't open a session keep
+# the old per-feature behaviour, so nothing outside the hot loops changes.
+# GUI thread only, one layer at a time; the stack just keeps nesting honest.
+_render_sessions = []
+
+
+class _RenderSession:
+
+    def __init__(self, layer):
+        self.layer = layer
+        self.layer_id = _layer_key(layer)
+        self.context = QgsRenderContext()
+        expression = QgsExpressionContext()
+        with contextlib.suppress(Exception):
+            expression.appendScopes(QgsExpressionContextUtils.globalProjectLayerScopes(layer))
+        with contextlib.suppress(Exception):
+            expression.setFields(layer.fields())
+        with contextlib.suppress(Exception):
+            self.context.setExpressionContext(expression)
+        self.renderer = None
+        self.started = False
+        with contextlib.suppress(Exception):
+            self.renderer = layer.renderer()
+        if self.renderer is not None:
+            with contextlib.suppress(Exception):
+                self.renderer.startRender(self.context, layer.fields())
+                self.started = True
+
+    def context_for(self, feature):
+        """The shared context, pointed at `feature` (what the per-feature build did)."""
+        expression = self.context.expressionContext()
+        with contextlib.suppress(Exception):
+            expression.setFeature(feature)
+        with contextlib.suppress(Exception):
+            expression.setGeometry(feature.geometry())
+        return self.context
+
+    def close(self):
+        if self.started:
+            self.started = False
+            with contextlib.suppress(Exception):
+                self.renderer.stopRender(self.context)
+
+
+def _layer_key(layer):
+    try:
+        return layer.id()
+    except Exception:
+        return id(layer)
+
+
+def _active_render_session(layer):
+    if not _render_sessions or layer is None:
+        return None
+    key = _layer_key(layer)
+    for session in reversed(_render_sessions):
+        if session.layer_id == key:
+            return session
+    return None
+
+
+@contextlib.contextmanager
+def layer_render_session(layer):
+    """Prepare the layer's renderer once for a whole per-feature loop.
+
+    Wrap any loop that calls feature_to_record / feature_export_style* for MANY
+    features of the SAME layer. Never wrap work that switches layers mid-loop.
+    """
+    session = _RenderSession(layer)
+    _render_sessions.append(session)
+    try:
+        yield session
+    finally:
+        with contextlib.suppress(ValueError):
+            _render_sessions.remove(session)
+        session.close()
 
 
 def _static_layer_argb(symbol_layer, accessors, opacity=1.0):
@@ -345,11 +442,13 @@ def _feature_symbol_argbs(layer, feature, spec_key):
     field_fg = _field_argb(feature, 'geometryColor')
     field_bg = _field_argb(feature, 'geometryBackgroundColor')
     renderer = None
+    session = _active_render_session(layer)
     context = _render_context(layer, feature)
     expr_context = context.expressionContext()
     with contextlib.suppress(Exception):
         renderer = layer.renderer()
-        renderer.startRender(context, layer.fields())
+        if session is None:
+            renderer.startRender(context, layer.fields())
         try:
             symbols = []
             with contextlib.suppress(Exception):
@@ -364,7 +463,8 @@ def _feature_symbol_argbs(layer, feature, spec_key):
             if fg_argb is not None or bg_argb is not None:
                 return fg_argb, bg_argb
         finally:
-            renderer.stopRender(context)
+            if session is None:
+                renderer.stopRender(context)
     if renderer is not None:
         symbols = _rule_symbols_for_feature(renderer, feature, context)
         fg_argb, bg_argb = _symbols_style_argbs(
@@ -433,6 +533,18 @@ def _attr_millis(feature, name):
 _CONTOUR_ELEV_FIELD = 'ELEV'  # matched case-insensitively
 # Master (index) contours occur every 5th line; their style stands out.
 _CONTOUR_MASTER_EVERY = 5
+
+# How often build_push_plan reports progress. The scan costs ~0.3 ms/feature (measured,
+# QGIS 3.40 LTR), so 250 features is ~0.08 s between paints: smooth, and cheap enough
+# that the reporting itself doesn't show up in a profile.
+_PROGRESS_EVERY = 250
+
+# The two passes report under different names on purpose. With a single name the counter
+# would climb to N and drop back to 0 — which reads exactly like the freeze we are fixing.
+_COPY_FROM_OTHER_MAP = 'cópia de outra expedição: enviado como registro novo'
+
+_PHASE_SCAN = 'Calculando prévia'
+_PHASE_COMPARE = 'Comparando com o Tairu'
 _CONTOUR_MASTER_SIZE = 3.0
 _CONTOUR_NORMAL_SIZE = 2.0
 _CONTOUR_MASTER_OPACITY = 0.8
@@ -642,12 +754,17 @@ def _feature_lossy_wkb(feature, transform):
     geom = feature.geometry()
     if geom is None or geom.isEmpty():
         return None
+    # Test for holes/parts BEFORE cloning and reprojecting: that structure is what a
+    # coordinate transform never changes, and simple geometry (every contour line, every
+    # single-ring polygon) returns None here anyway. Doing it after meant a second deep
+    # copy + reprojection of every geometry in the layer, thrown away — the per-vertex
+    # half of the preview's cost, paid twice.
+    if not _geometry_is_lossy(geom):
+        return None
     g = QgsGeometry(geom)
     try:
         g.transform(transform)
     except Exception:
-        return None
-    if not _geometry_is_lossy(g):
         return None
     try:
         abstract = g.get()
@@ -720,9 +837,11 @@ def _symbols_for_feature(layer, feature):
         return []
     if renderer is None:
         return []
+    session = _active_render_session(layer)
     context = _render_context(layer, feature)
-    with contextlib.suppress(Exception):
-        renderer.startRender(context, layer.fields())
+    if session is None:
+        with contextlib.suppress(Exception):
+            renderer.startRender(context, layer.fields())
     symbols = []
     try:
         try:
@@ -739,8 +858,9 @@ def _symbols_for_feature(layer, feature):
         if not symbols:
             symbols = _rule_symbols_for_feature(renderer, feature, context)
     finally:
-        with contextlib.suppress(Exception):
-            renderer.stopRender(context)
+        if session is None:
+            with contextlib.suppress(Exception):
+                renderer.stopRender(context)
     return symbols
 
 
@@ -1121,7 +1241,7 @@ def _duplicate_record_id_clones(entries_by_record_id):
     return clones
 
 
-def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
+def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progress=None):
     """Compare source layer features against the pull-time baseline (tairuSyncHash).
 
     No Firestore or GeoPackage snapshot read is performed. For round-trip layers
@@ -1129,15 +1249,39 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
     stored hash is the sole baseline: if sync_record_hash(candidate) == tairuSyncHash
     the record is unchanged; otherwise it needs an update. Detection of remote
     changes or conflicts requires a fresh 'Receber Registros' pull.
+
+    progress(done, total, phase), when given, is called once up front and then every
+    _PROGRESS_EVERY features of BOTH passes — the scan AND the classification, where
+    sync_record_hash costs 8 s per 50k features on a round-trip layer (measured) and used
+    to be the one stretch that never handed the event loop back. It runs on the caller's
+    thread — the dialog uses it to paint and stay responsive — and may raise to abort.
     """
     role = tmap.role_for(uid)
     is_admin = role in ('owner', 'admin')
+
+    # Camada baixada de OUTRA expedição: o tairuSyncHash das feições é a fotografia dos
+    # registros lá, não aqui. Comparar com ele respondia à pergunta errada e classificava
+    # tudo como "inalterado" — prévia vazia e botão Enviar desligado, com os registros
+    # nem existindo no destino. Aqui eles são registros NOVOS, de quem está copiando.
+    origin_map_id = layer_origin_map_id(layer)
+    copying_from_other_map = bool(origin_map_id) and origin_map_id != tmap.map_id
+    if copying_from_other_map:
+        # O snapshot também é o da origem: propagá-lo mandaria exclusões de registros de
+        # outra expedição para esta.
+        propagate_deletions = False
+
+    total = 0
+    if progress is not None:
+        with contextlib.suppress(Exception):
+            total = layer.featureCount()
+        progress(0, total, _PHASE_SCAN)
 
     transform = QgsCoordinateTransform(
         layer.crs(), QgsCoordinateReferenceSystem('EPSG:4326'),
         QgsProject.instance().transformContext())
 
-    plan = PushPlan(map_id=tmap.map_id)
+    plan = PushPlan(map_id=tmap.map_id,
+                    copied_from_map_id=origin_map_id if copying_from_other_map else '')
     seen_ids = set()
     sync_snapshot = layer_sync_snapshot(layer)
     # One scan of the layer's ELEV values infers the contour interval up front so
@@ -1148,17 +1292,24 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
 
     feature_entries = []
     entries_by_record_id = {}
-    for index, feature in enumerate(layer.getFeatures(), start=1):
-        candidate, warning = feature_to_record(
-            feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg)
-        entry = _FeatureCandidate(feature, candidate, warning)
-        feature_entries.append(entry)
-        if candidate.record_id:
-            entries_by_record_id.setdefault(candidate.record_id, []).append(entry)
+    # One render session for the whole layer instead of two per feature (see
+    # layer_render_session): this is what keeps the preview from freezing the GUI.
+    with layer_render_session(layer):
+        for index, feature in enumerate(layer.getFeatures(), start=1):
+            candidate, warning = feature_to_record(
+                feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg)
+            entry = _FeatureCandidate(feature, candidate, warning)
+            feature_entries.append(entry)
+            if candidate.record_id:
+                entries_by_record_id.setdefault(candidate.record_id, []).append(entry)
+            if progress is not None and index % _PROGRESS_EVERY == 0:
+                progress(index, total, _PHASE_SCAN)
 
     duplicate_clones = _duplicate_record_id_clones(entries_by_record_id)
 
-    for entry in feature_entries:
+    for position, entry in enumerate(feature_entries, start=1):
+        if progress is not None and position % _PROGRESS_EVERY == 0:
+            progress(position, total, _PHASE_COMPARE)
         feature = entry.feature
         candidate = entry.record
         warning = entry.warning
@@ -1179,6 +1330,19 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False):
                 warning,
                 f'cópia local de {duplicate_source_id}: enviada como novo registro')
             plan.items.append(PushItem('new', candidate, feature.id(), [], warning))
+            continue
+
+        if candidate.record_id and copying_from_other_map:
+            # Mantém o recordId (registro vive em maps/{mapId}/records, então não há
+            # colisão entre expedições) para que reenviar a mesma camada ATUALIZE a cópia
+            # em vez de empilhar um segundo lote. Autoria e datas são de quem copia — o
+            # candidato já vem assim de feature_to_record; é justamente a restauração
+            # abaixo que não deve acontecer aqui. Sem isso, um MEMBRO copiando registros
+            # de outra pessoa via tudo como "sem permissão".
+            seen_ids.add(candidate.record_id)
+            plan.items.append(PushItem(
+                'new', candidate, feature.id(), [],
+                _append_warning(warning, _COPY_FROM_OTHER_MAP)))
             continue
 
         if candidate.record_id:
@@ -1248,7 +1412,16 @@ def build_writes(fs, plan, uid):
             fields = finalize_new_record(rec).to_fields()
             fields['isDeleted'] = False
             fields['lastModifiedBy'] = uid
-            writes.append(fs.build_create_write(path, fields))
+            if plan.copied_from_map_id:
+                # Cópia para outra expedição mantendo o recordId: a cópia PODE já estar lá
+                # (segundo envio da mesma camada), e build_create_write exige que o
+                # documento não exista — o lote inteiro falharia. O upsert cria na
+                # primeira vez e atualiza a cópia depois, que é o que "manter o mesmo ID"
+                # precisa significar para o usuário.
+                writes.append(fs.build_update_write(
+                    path, fields, list(fields.keys()), require_existing=False))
+            else:
+                writes.append(fs.build_create_write(path, fields))
         elif item.action == 'update':
             # Always assert the record is live. A feature present in the source
             # layer must clear any prior soft-delete (isDeleted=True) on the
@@ -1316,7 +1489,12 @@ def execute_push(dock, tmap, plan, source_layer):
         return len(writes)
 
     def on_success(total):
-        _write_back_records_to_source_layer(plan, source_layer)
+        # Numa cópia para outra expedição a camada de origem NÃO é atualizada: ela
+        # pertence à expedição de onde veio, e gravar nela o carimbo desta faria o próximo
+        # envio de volta para a origem virar outra "cópia" — trocando a autoria dos
+        # registros originais pela de quem copiou.
+        if not plan.copied_from_map_id:
+            _write_back_records_to_source_layer(plan, source_layer)
         with contextlib.suppress(Exception):
             cache = FirestoreCache(dock.env.key, dock.tokens.uid)
             cache.store_record_models(
@@ -1356,6 +1534,10 @@ def _write_back_records_to_source_layer(plan, layer):
         return
     with contextlib.suppress(Exception):
         ensure_record_layer_fields(layer)
+    # A camada passa a carregar recordId/tairuSyncHash DESTA expedição; sem registrar
+    # qual é, um envio posterior para outra expedição repetiria o bug da prévia vazia.
+    with contextlib.suppress(Exception):
+        layer.setCustomProperty(SYNC_MAP_ID_PROPERTY, plan.map_id)
 
     fields = layer.fields()
     changes = {}

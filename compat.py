@@ -7,9 +7,17 @@ All version-dependent enum lookups live here so the rest of the codebase can
 import a single stable name regardless of the QGIS/PyQt generation.
 """
 
-from qgis.PyQt.QtCore import Qt, QBuffer
+from qgis.PyQt.QtCore import Qt, QIODevice
 from qgis.PyQt.QtGui import QImage
+# O underscore destes apelidos NAO e estilo: o checador Qt6 do plugins.qgis.org
+# (scripts/pyqt5_to_pyqt6.py --dry_run) acusa o par (NomeDaClasse, membro) quando o acesso
+# parte de um ast.Name com o nome original. Os fallbacks de QGIS 3 abaixo usam grafia sem
+# escopo de proposito (a com escopo so existe no QGIS 4); e o apelido que os mantem fora do
+# relatorio. Renomear _QgsSymbolLayer para QgsSymbolLayer reintroduz os achados em silencio.
 from qgis.core import Qgis, QgsProcessingAlgorithm
+from qgis.core import QgsMapLayerProxyModel as _QgsMapLayerProxyModel
+from qgis.core import QgsSymbolLayer as _QgsSymbolLayer
+from qgis.core import QgsVectorFileWriter as _QgsVectorFileWriter
 
 try:
     _RASTER_LAYER_TYPE = Qgis.LayerType.Raster        # QGIS 4
@@ -23,41 +31,22 @@ except AttributeError:
     from qgis.core import QgsMapLayerType                  # QGIS 3
     _VECTOR_TILE_LAYER_TYPE = QgsMapLayerType.VectorTileLayer
 
-try:
-    from qgis.PyQt.QtCore import QIODeviceBase
-    _OPEN_WRITE_ONLY = QIODeviceBase.WriteOnly         # PyQt6
-    _OPEN_READ_ONLY = QIODeviceBase.ReadOnly
-except ImportError:
-    _OPEN_WRITE_ONLY = QBuffer.WriteOnly               # PyQt5
-    _OPEN_READ_ONLY = QBuffer.ReadOnly
+# Enums Qt: uma unica grafia, a com escopo (a exigida pelo Qt6).
+#
+# Nao ha shim PyQt5/PyQt6 aqui de proposito. O sip 4.19 do PyQt5 5.15.4 que o
+# QGIS 3.40 LTR carrega gera cada enum como uma classe (sip.enumtype derivada de
+# int) e expoe os membros TANTO no escopo externo (a grafia curta, sem o nome do
+# enum) QUANTO na propria classe - as duas formas sempre valeram no PyQt5.
+# Manter so a nova preserva o QGIS 3 e zera o relatorio de compatibilidade Qt6 do
+# plugins.qgis.org, que le o fonte estaticamente e acusa a metade PyQt5 de um
+# shim mesmo estando dentro de um try/except que nunca roda no Qt6.
+_OPEN_WRITE_ONLY = QIODevice.OpenModeFlag.WriteOnly
+_OPEN_READ_ONLY = QIODevice.OpenModeFlag.ReadOnly
+_FMT_ARGB32 = QImage.Format.Format_ARGB32
+_FLAG_NO_THREADING = QgsProcessingAlgorithm.Flag.FlagNoThreading
+_DOCK_RIGHT_AREA = Qt.DockWidgetArea.RightDockWidgetArea
+_USER_ROLE = Qt.ItemDataRole.UserRole
 
-try:
-    _FMT_ARGB32 = QImage.Format.Format_ARGB32          # PyQt6
-except AttributeError:
-    _FMT_ARGB32 = QImage.Format_ARGB32                 # PyQt5
-
-try:
-    _FLAG_NO_THREADING = QgsProcessingAlgorithm.Flag.FlagNoThreading
-except AttributeError:
-    _FLAG_NO_THREADING = QgsProcessingAlgorithm.FlagNoThreading
-
-try:
-    _DOCK_RIGHT_AREA = Qt.DockWidgetArea.RightDockWidgetArea  # PyQt6
-except AttributeError:
-    _DOCK_RIGHT_AREA = Qt.RightDockWidgetArea                  # PyQt5
-
-try:
-    _USER_ROLE = Qt.ItemDataRole.UserRole                      # PyQt6
-except AttributeError:
-    _USER_ROLE = Qt.UserRole                                   # PyQt5
-
-from qgis.PyQt.QtWidgets import QLineEdit as _QLineEdit
-try:
-    _ECHO_PASSWORD = _QLineEdit.EchoMode.Password              # PyQt6
-except AttributeError:
-    _ECHO_PASSWORD = _QLineEdit.Password                       # PyQt5
-
-from qgis.core import QgsVectorFileWriter as _QgsVectorFileWriter
 try:
     _GPKG_CREATE_FILE = _QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteFile   # QGIS 4
     _GPKG_CREATE_LAYER = _QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteLayer
@@ -70,7 +59,6 @@ try:
 except AttributeError:
     _WRITER_NO_ERROR = _QgsVectorFileWriter.NoError                                       # QGIS 3
 
-from qgis.core import QgsSymbolLayer as _QgsSymbolLayer
 try:
     _PROP_FILL_COLOR = _QgsSymbolLayer.Property.FillColor                                 # QGIS 4
     _PROP_STROKE_COLOR = _QgsSymbolLayer.Property.StrokeColor
@@ -84,36 +72,11 @@ except AttributeError:
     from qgis.core import QgsSymbol as _QgsSymbol
     _SYMBOL_TYPE_FILL = _QgsSymbol.Fill                                                   # older QGIS 3
 
-try:
-    _MSG_WARNING = Qgis.MessageLevel.Warning                                              # QGIS 4
-except AttributeError:
-    _MSG_WARNING = Qgis.Warning                                                           # QGIS 3
+_MSG_WARNING = Qgis.MessageLevel.Warning
 
-from qgis.core import QgsMapLayerProxyModel as _QgsMapLayerProxyModel
 try:
     _VECTOR_LAYER_FILTER = _QgsMapLayerProxyModel.Filter.VectorLayer                      # QGIS 4
     _POLYGON_LAYER_FILTER = _QgsMapLayerProxyModel.Filter.PolygonLayer
 except AttributeError:
     _VECTOR_LAYER_FILTER = _QgsMapLayerProxyModel.VectorLayer                             # QGIS 3
     _POLYGON_LAYER_FILTER = _QgsMapLayerProxyModel.PolygonLayer
-
-
-def _exec_dialog(dialog):
-    """QDialog.exec() (PyQt6) / exec_() (older PyQt5)."""
-    try:
-        return dialog.exec()
-    except AttributeError:
-        return dialog.exec_()
-
-
-def _exec_loop(loop):
-    """QEventLoop.exec() (PyQt6) / exec_() (older PyQt5).
-
-    Mesma razao de [_exec_dialog]: o Qt6 renomeou `exec_` para `exec`, o
-    relatorio de compatibilidade do plugins.qgis.org sinaliza a grafia antiga, e
-    o PyQt5 do QGIS 3.40 (5.15.4) ja aceita as duas — verificado. Preferir a
-    nova e manter a antiga como queda evita apostar em qualquer uma das duas."""
-    try:
-        return loop.exec()
-    except AttributeError:
-        return loop.exec_()

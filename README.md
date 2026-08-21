@@ -27,13 +27,25 @@ criptografado do QGIS. **Recursos de nuvem exigem plano Online ou Tempo Real.**
   (MBTiles) georreferenciada no grupo `Tairu/{mapa}`.
 
 **Enviar para o Tairu Maps (Push)**
-- *Camada → registros*: converte feições de qualquer camada vetorial em registros, com
+- *Camada → registros*: converte feições de qualquer camada vetorial **visível** em
+  registros (camadas desmarcadas no painel de camadas não são oferecidas), com
   mapeamento de campos (nome/descrição), tipo/subtipo e **prévia das alterações**
   (novos / atualizados / inalterados / sem permissão) antes de enviar. Camadas baixadas
   pelo pull fazem ida-e-volta preservando os atributos por feição.
+- *Copiar registros entre expedições*: receba os registros de uma expedição e envie a
+  camada para **outra** — eles são criados lá como registros novos, em nome de quem
+  copiou, mantendo o identificador de origem (reenviar a mesma camada atualiza as cópias
+  em vez de duplicá-las). Nada é excluído na expedição de destino, e a expedição de origem
+  não é alterada.
 - *Gerar e enviar raster*: assistente que gera um `.tairudb` da área escolhida (polígono de
   camada ou retângulo desenhado no mapa), com estimativa de tamanho (limite do servidor:
   100 MB) e upload direto para o mapa. Requer papel de dono ou administrador.
+
+Em toda a geração e todo o envio, **camada oculta é camada ignorada**: o que está
+desmarcado no painel de camadas do QGIS (ou dentro de um grupo desmarcado) não é
+renderizado no `.tairudb`, não aparece na lista de camadas vetoriais a incluir e não é
+oferecido para envio. A área de interesse é a exceção — ali a camada de polígonos continua
+selecionável mesmo oculta, porque desmarcar o limite depois de desenhá-lo é rotina.
 
 Permissões refletem as regras do servidor: membros leem tudo e criam/editam os próprios
 registros; donos e administradores editam tudo e enviam arquivos raster.

@@ -18,8 +18,12 @@ import os
 from qgis.core import QgsApplication
 
 
+WORKSPACE_DIR_NAME = 'tairu_workspace'
+GPKG_FILE_NAME = 'records.gpkg'
+
+
 def workspace_root(env_key):
-    root = os.path.join(QgsApplication.qgisSettingsDirPath(), 'tairu_workspace', env_key)
+    root = os.path.join(QgsApplication.qgisSettingsDirPath(), WORKSPACE_DIR_NAME, env_key)
     os.makedirs(root, exist_ok=True)
     return root
 
@@ -34,7 +38,7 @@ def map_workspace(env_key, map_id):
     base = os.path.join(workspace_root(env_key), map_id)
     paths = {
         'base': base,
-        'gpkg': os.path.join(base, 'records.gpkg'),
+        'gpkg': os.path.join(base, GPKG_FILE_NAME),
         'downloads': os.path.join(base, 'downloads'),
         'mbtiles': os.path.join(base, 'mbtiles'),
         'out': os.path.join(base, 'out'),

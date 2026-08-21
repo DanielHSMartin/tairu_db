@@ -34,13 +34,11 @@ try:
     from ..compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from .tairudb_writer import TairuDBWriter, MetaTile
     from .map_identity import map_uuid_for_output
-    from ..compat import _exec_loop
     from .elevation_tiles import ELEVATION_ZOOM
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile
     from tairu_core.map_identity import map_uuid_for_output
-    from compat import _exec_loop
     from tairu_core.elevation_tiles import ELEVATION_ZOOM
 
 # Debug mode - set to True for detailed logging, False for production
@@ -376,7 +374,7 @@ class TileRenderEngine:
             tick.timeout.connect(self._on_render_tick)
             tick.start()
             try:
-                _exec_loop(self._event_loop)
+                self._event_loop.exec()
             finally:
                 tick.stop()
                 self._event_loop = None

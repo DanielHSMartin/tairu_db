@@ -74,6 +74,9 @@ class TairuDBPlugin(object):
         self.iface.addPluginToMenu('TairuDB', self.action)
 
     def unload(self):
+        with contextlib.suppress(Exception):
+            from .tairu_ui.local_generate_wizard import close_open_wizards
+            close_open_wizards()
         if self.dock is not None:
             with contextlib.suppress(Exception):
                 self.dock.shutdown()

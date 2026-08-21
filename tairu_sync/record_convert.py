@@ -20,7 +20,13 @@ produce false diffs.
 import contextlib
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
+
+try:
+    from ..tairu_core.workspace import GPKG_FILE_NAME, WORKSPACE_DIR_NAME
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.workspace import GPKG_FILE_NAME, WORKSPACE_DIR_NAME
 
 from qgis.PyQt.QtCore import QDateTime, QVariant
 from qgis.core import (
@@ -79,6 +85,9 @@ FIELD_DEFS = [
 SYNC_HASH_FIELD = 'tairuSyncHash'
 SYNC_LAST_MODIFIED_FIELD = 'tairuSyncLastModified'
 SYNC_SNAPSHOT_PROPERTY = 'tairu/syncSnapshot'
+# Expedição a que pertence o tairuSyncHash gravado nas feições da camada. Ver
+# layer_origin_map_id.
+SYNC_MAP_ID_PROPERTY = 'tairu/syncMapId'
 _FIELD_QVARIANT_TYPES = {
     'string': QVariant.String,
     'integer': QVariant.Int,
@@ -417,6 +426,38 @@ def is_record_sync_layer(layer):
     except Exception:
         return False
     return fields.indexOf('recordId') >= 0 and fields.indexOf(SYNC_HASH_FIELD) >= 0
+
+
+def layer_origin_map_id(layer):
+    """Expedição de onde vieram os recordId/tairuSyncHash desta camada, ou ''.
+
+    O hash de sincronização é a fotografia do registro NA EXPEDIÇÃO DE ONDE ELE VEIO.
+    Enviar a camada para OUTRA expedição e comparar com esse hash responde à pergunta
+    errada: os registros saem todos como "inalterados" (prévia vazia, botão Enviar
+    desligado), quando na expedição de destino eles nem existem. Por isso build_push_plan
+    precisa saber a origem.
+
+    Duas fontes, nesta ordem:
+    1. a propriedade gravada no push (cobre a camada própria do usuário, que ganha os
+       campos de registro depois de um envio);
+    2. o caminho do GeoPackage do pull, {...}/tairu_workspace/{env}/{mapId}/records.gpkg
+       — vale para toda camada baixada, inclusive as de projetos anteriores a esta versão,
+       que não têm a propriedade.
+    """
+    if layer is None:
+        return ''
+    with contextlib.suppress(Exception):
+        stored = str(layer.customProperty(SYNC_MAP_ID_PROPERTY, '') or '').strip()
+        if stored:
+            return stored
+    with contextlib.suppress(Exception):
+        source = str(layer.source() or '').split('|', 1)[0]
+        parts = os.path.normpath(source).split(os.sep)
+        # .../tairu_workspace/{env}/{mapId}/records.gpkg -> parts[-2] é a expedição
+        if (len(parts) >= 4 and parts[-1] == GPKG_FILE_NAME
+                and parts[-4] == WORKSPACE_DIR_NAME):
+            return parts[-2]
+    return ''
 
 
 def layer_sync_snapshot(layer):

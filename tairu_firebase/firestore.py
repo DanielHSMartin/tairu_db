@@ -256,16 +256,25 @@ class FirestoreClient:
         return write
 
     def build_update_write(self, relative_path, py_fields, mask_fields,
-                           server_timestamp_field='serverTimestamp'):
-        """Write op patching only mask_fields of an existing document."""
+                           server_timestamp_field='serverTimestamp',
+                           require_existing=True):
+        """Write op patching only mask_fields of an existing document.
+
+        require_existing=False turns it into an upsert (cria se não existir). Usado na
+        cópia de registros para outra expedição, onde o plugin não tem como saber se a
+        cópia já está lá: create falharia no segundo envio ('documento já existe') e
+        update falharia no primeiro. As regras do servidor continuam decidindo — a
+        primeira gravação é avaliada como create, a seguinte como update.
+        """
         write = {
             'update': {
                 'name': self.full_name(relative_path),
                 'fields': dict_to_fields(py_fields),
             },
             'updateMask': {'fieldPaths': list(mask_fields)},
-            'currentDocument': {'exists': True},
         }
+        if require_existing:
+            write['currentDocument'] = {'exists': True}
         if server_timestamp_field:
             write['updateTransforms'] = [
                 {'fieldPath': server_timestamp_field, 'setToServerValue': 'REQUEST_TIME'}

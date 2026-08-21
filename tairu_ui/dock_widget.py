@@ -428,4 +428,4 @@ class TairuDockWidget(QgsDockWidget):
 
     def confirm(self, title, message):
         return QMessageBox.question(self, title, message) == (
-            QMessageBox.StandardButton.Yes if hasattr(QMessageBox, 'StandardButton') else QMessageBox.Yes)
+            QMessageBox.StandardButton.Yes)

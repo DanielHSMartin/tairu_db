@@ -53,17 +53,9 @@ except ImportError:
     from .tairu_core.vector_types import tairudb_type_for_fields
     from .tairu_core.map_identity import map_uuid_for_output
 
-# QGIS 4 (PyQt6) / QGIS 3 (PyQt5) compatibility constants
-try:
-    from qgis.PyQt.QtCore import QIODeviceBase
-    _OPEN_WRITE_ONLY = QIODeviceBase.WriteOnly         # PyQt6
-except ImportError:
-    _OPEN_WRITE_ONLY = QBuffer.WriteOnly               # PyQt5
-
-try:
-    _FMT_ARGB32 = QImage.Format.Format_ARGB32          # PyQt6
-except AttributeError:
-    _FMT_ARGB32 = QImage.Format_ARGB32                 # PyQt5
+# Enums Qt com escopo: uma grafia so, valida em PyQt5 e PyQt6 (ver compat.py).
+_OPEN_WRITE_ONLY = QBuffer.OpenModeFlag.WriteOnly
+_FMT_ARGB32 = QImage.Format.Format_ARGB32
 
 
 # Resolution table: zoom -> meters per pixel at equator

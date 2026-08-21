@@ -57,7 +57,9 @@ def _install_stubs():
           normalized_geometry_points=_dummy, record_to_attribute_map=_dummy,
           resolved_background_argb=_dummy, resolved_color_argb=_dummy,
           sync_record_hash=_dummy, SYNC_HASH_FIELD='tairuSyncHash',
-          SYNC_LAST_MODIFIED_FIELD='tairuSyncLastModified')
+          SYNC_LAST_MODIFIED_FIELD='tairuSyncLastModified',
+          layer_origin_map_id=lambda _layer: '',
+          SYNC_MAP_ID_PROPERTY='tairu/syncMapId')
     _stub('tairu_sync.tasks', run_task=_dummy)
 
 

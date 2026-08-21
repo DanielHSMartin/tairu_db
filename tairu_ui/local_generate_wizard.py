@@ -42,10 +42,11 @@ try:
         SMOOTHING_NONE, generate_contours,
     )
     from ..tairu_core.feedback import FeedbackAdapter
+    from ..tairu_core.layer_tree import layer_is_visible
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles, to_wgs84
     from ..tairu_core.tile_prefetch import prefetch_basemap_tiles
-    from ..tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
+    from ..tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave, run_or_defer
     from ..tairu_core.vector_export import export_vector_layers
     from ..tairu_core.elevation_tiles import (
         write_elevation_tiles, elevation_tiles_for_extent,
@@ -66,10 +67,11 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         SMOOTHING_NONE, generate_contours,
     )
     from tairu_core.feedback import FeedbackAdapter
+    from tairu_core.layer_tree import layer_is_visible
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles, to_wgs84
     from tairu_core.tile_prefetch import prefetch_basemap_tiles
-    from tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave
+    from tairu_core.reentrancy_guard import enter as gen_enter, leave as gen_leave, run_or_defer
     from tairu_core.vector_export import export_vector_layers
     from tairu_core.elevation_tiles import (
         write_elevation_tiles, elevation_tiles_for_extent,
@@ -127,13 +129,33 @@ def _show_wizard(wizard):
     wizard.setModal(False)
     _open_wizards.append(wizard)
 
+    # A closed wizard MUST be destroyed. It is parented to the dock/main window, so
+    # dropping the last Python reference does NOT delete it: the C++ widget survives
+    # hidden, forever, and its QgsMapLayerComboBox keeps firing layerChanged on every
+    # QgsProject.addMapLayer — i.e. every "Receber Registros" runs the slots of every
+    # wizard ever opened, inside QgsMapLayerModel's endInsertRows. That is the SIGSEGV
+    # reported on 2026-08-20 (and, after a plugin reload, those slots point into the
+    # unloaded module's code). deleteLater is deferred while a generation is pumping
+    # its nested event loop, which would otherwise process the delete mid-generation.
     def _forget(_result=0, w=wizard):
         if w in _open_wizards:
             _open_wizards.remove(w)
+        run_or_defer(w.deleteLater)
     wizard.finished.connect(_forget)
     wizard.show()
     wizard.raise_()
     wizard.activateWindow()
+
+
+def close_open_wizards():
+    """Close every open wizard (plugin unload/reload).
+
+    A wizard parented to the QGIS main window outlives the plugin module; after a
+    reload its layerChanged slots would point into the unloaded module's code.
+    """
+    for wizard in list(_open_wizards):
+        with contextlib.suppress(Exception):
+            wizard.close()
 
 
 def open_local_generate_wizard(iface):
@@ -262,11 +284,9 @@ class TairuDBGenerateWizard(QWizard):
         of the basemap correctly.
         """
         project = QgsProject.instance()
-        root = project.layerTreeRoot()
         layers = []
-        for layer in root.layerOrder():
-            node = root.findLayer(layer.id())
-            if node is None or not node.isVisible():
+        for layer in project.layerTreeRoot().layerOrder():
+            if not layer_is_visible(layer, project):
                 continue
             if layer.type() in (_RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE):
                 layers.append(layer)
@@ -326,7 +346,10 @@ class ExtentPage(QWizardPage):
         self.layer_radio.toggled.connect(self._sync_controls)
         self.draw_radio.toggled.connect(self._sync_controls)
         self.canvas_radio.toggled.connect(self._sync_controls)
-        self.layer_combo.layerChanged.connect(lambda _: self.completeChanged.emit())
+        # Deferred on purpose: layerChanged also fires from inside QgsMapLayerModel's
+        # endInsertRows when a layer is added to the project (a records pull), and
+        # emitting completeChanged there re-enters QWizard mid-model-mutation.
+        self.layer_combo.layerChanged.connect(lambda _: QTimer.singleShot(0, self.completeChanged))
 
     def _sync_controls(self):
         use_layer = self.layer_radio.isChecked()
@@ -514,6 +537,7 @@ class VectorLayersPage(QWizardPage):
 
         layout = QVBoxLayout(self)
         self._vector_checkboxes = {}
+        self.dropped_hidden = []
         self._scroll_content = QWidget()
         self._scroll_content.setObjectName('VectorScrollContent')
         self._scroll_inner = QVBoxLayout(self._scroll_content)
@@ -526,6 +550,11 @@ class VectorLayersPage(QWizardPage):
         self._vector_scroll.setStyleSheet(_VECTOR_LIST_STYLE)
         self._vector_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
         layout.addWidget(self._vector_scroll, 1)
+
+        self.hidden_label = set_muted(QLabel(''))
+        self.hidden_label.setWordWrap(True)
+        self.hidden_label.hide()
+        layout.addWidget(self.hidden_label)
 
     def initializePage(self):
         # initializePage runs on EVERY visit (QWizard re-inits when the user goes back
@@ -544,8 +573,14 @@ class VectorLayersPage(QWizardPage):
         self._vector_checkboxes.clear()
 
         project = QgsProject.instance()
+        hidden = 0
         for layer in project.mapLayers().values():
             if not isinstance(layer, QgsVectorLayer) or not layer.isValid():
+                continue
+            # Camada desmarcada no painel de camadas não é desenhada no mapa e não entra
+            # no .tairudb — não faz sentido oferecê-la aqui.
+            if not layer_is_visible(layer, project):
+                hidden += 1
                 continue
             cb = QCheckBox(layer.name())
             if layer.id() in previously_checked:
@@ -553,15 +588,37 @@ class VectorLayersPage(QWizardPage):
             self._vector_checkboxes[layer.id()] = cb
             self._scroll_inner.addWidget(cb)
         self._scroll_inner.addStretch(1)
+        # Sem esta linha, "cadê minha camada?" vira chamado de suporte.
+        if hidden:
+            plural = 's' if hidden > 1 else ''
+            self.hidden_label.setText(
+                f'{hidden} camada{plural} oculta{plural} no painel de camadas '
+                f'não {"são" if hidden > 1 else "é"} listada{plural}.')
+            self.hidden_label.show()
+        else:
+            self.hidden_label.hide()
 
     def selected_vector_layers(self):
+        """Camadas marcadas aqui E ainda visíveis no painel de camadas.
+
+        A visibilidade é re-checada porque o assistente não é modal: dá tempo de o usuário
+        desmarcar a camada no painel depois de tê-la marcado aqui. O que cai fica nomeado em
+        `dropped_hidden` — descartar em silêncio uma camada que o usuário marcou é o tipo de
+        coisa que vira "a exportação não funcionou".
+        """
         project = QgsProject.instance()
         layers = []
+        self.dropped_hidden = []
         for layer_id, cb in self._vector_checkboxes.items():
-            if cb.isChecked():
-                layer = project.mapLayer(layer_id)
-                if layer and layer.isValid():
-                    layers.append(layer)
+            if not cb.isChecked():
+                continue
+            layer = project.mapLayer(layer_id)
+            if layer is None or not layer.isValid():
+                continue
+            if not layer_is_visible(layer, project):
+                self.dropped_hidden.append(layer.name())
+                continue
+            layers.append(layer)
         return layers
 
 
@@ -631,10 +688,7 @@ class ContourPage(QWizardPage):
             f'background-color: rgba({r},{g},{b},{a}); border: 1px solid #666;')
 
     def _pick_color(self):
-        try:
-            opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
-        except AttributeError:
-            opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
+        opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
         color = QColorDialog.getColor(
             self._color, self, 'Cor das curvas de nível', options=opt)
         if color.isValid():
@@ -1174,6 +1228,9 @@ class RunPage(QWizardPage):
         output_file = dest.output_path()
         file_name = dest.file_name()
         vector_layers = wizard.vector_page.selected_vector_layers()
+        for nome in wizard.vector_page.dropped_hidden:
+            self._append(f'Camada "{nome}" foi desmarcada no painel de camadas '
+                         f'depois de escolhida — não será incluída.')
 
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
 

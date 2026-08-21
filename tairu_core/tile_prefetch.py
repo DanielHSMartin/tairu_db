@@ -93,11 +93,6 @@ def _download_all(urls, feedback, concurrency=8):
     # Import LOCAL a funcao, como os de cima: este modulo e importavel sem QGIS
     # de proposito (test_tile_prefetch.py exercita a montagem de URLs sozinha), e
     # um import de topo puxando compat->qgis quebra isso.
-    try:
-        from ..compat import _exec_loop
-    except ImportError:  # standalone usage with the plugin dir on sys.path
-        from compat import _exec_loop
-
     nam = QgsNetworkAccessManager.instance()
     total = len(urls)
     feedback.push_info(f"Baixando {total} tiles do mapa base…")
@@ -142,6 +137,6 @@ def _download_all(urls, feedback, concurrency=8):
 
     pump()
     if not all_dispatched_and_drained():
-        _exec_loop(loop)
+        loop.exec()
     tick.stop()
     return st['done']
