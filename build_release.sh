@@ -21,7 +21,10 @@ version=$(grep -E '^version=' "$SRC/metadata.txt" | head -1 | cut -d= -f2 | tr -
 [ -n "$version" ] || fail "version not found in metadata.txt"
 out="$SRC/../${PLUGIN}-${version}.zip"
 
-stage_parent=$(mktemp -d)
+# Template explicito: no macOS, `mktemp -d` SEM template ignora TMPDIR e usa
+# _CS_DARWIN_USER_TEMP_DIR (/var/folders/...), o que impede rodar o build com
+# uma area temporaria escolhida pelo chamador.
+stage_parent=$(mktemp -d "${TMPDIR:-/tmp}/${PLUGIN}_release.XXXXXX")
 stage="$stage_parent/$PLUGIN"
 trap 'rm -rf "$stage_parent"' EXIT
 mkdir -p "$stage"

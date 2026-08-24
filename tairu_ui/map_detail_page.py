@@ -88,9 +88,10 @@ class MapDetailPage(QWidget):
         push_layout.setContentsMargins(0, 0, 0, 0)
         push_layout.setSpacing(8)
 
-        self.push_records_btn = set_action_button(QPushButton('Enviar camada vetorial'))
+        self.push_records_btn = set_action_button(QPushButton('Enviar camadas vetoriais'))
         self.push_records_btn.setToolTip(
-            'Converte feições de uma camada vetorial em registros da expedição (com prévia).')
+            'Converte feições de camadas vetoriais em registros da expedição, em três '
+            'etapas: camadas, feições e grupo.')
         self.push_records_btn.clicked.connect(
             lambda: self._map and self.pushRecordsRequested.emit(self._map.map_id))
         push_layout.addWidget(self.push_records_btn)

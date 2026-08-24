@@ -100,9 +100,9 @@ class TestWizardVectorPage(unittest.TestCase):
         self.assertEqual(page.dropped_hidden, [visivel.name()])
 
 
-class TestPushDialogCombo(unittest.TestCase):
+class TestPushDialogLayerStep(unittest.TestCase):
 
-    def test_combo_only_offers_visible_layers(self):
+    def test_step_one_only_offers_visible_layers_and_pre_checks_them(self):
         from tairu_ui.push_dialog import PushDialog
 
         visivel, oculta, no_grupo = _build_project()
@@ -122,10 +122,43 @@ class TestPushDialogCombo(unittest.TestCase):
 
         dialog = PushDialog(_Dock(), _Map())
         try:
-            offered = {dialog.layer_combo.layer(i).id()
-                       for i in range(dialog.layer_combo.count())}
-            self.assertEqual(offered, {visivel.id()})
-            self.assertEqual(dialog.layer_combo.currentLayer().id(), visivel.id())
+            from tairu_ui.push_dialog import _CHECKED, _LAYER_NAME_COL, _LAYER_SEND_COL, _UNCHECKED
+
+            self.assertEqual(dialog._layer_ids, [visivel.id()])
+            self.assertEqual(dialog.layer_table.rowCount(), 1)
+            self.assertEqual(dialog.layer_table.item(0, _LAYER_NAME_COL).text(), 'visivel')
+            # dados da camada, não só o nome: geometria / feições / SRC / origem
+            self.assertEqual(
+                [dialog.layer_table.item(0, c).text()
+                 for c in range(_LAYER_NAME_COL, dialog.layer_table.columnCount())],
+                ['visivel', 'Ponto', '0', visivel.crs().authid() or '—', 'QGIS'])
+            # "todas já vêm selecionadas"
+            self.assertEqual(dialog.layer_table.item(0, _LAYER_SEND_COL).checkState(), _CHECKED)
+            self.assertEqual(dialog.selected_layers(), [visivel])
+            self.assertTrue(dialog.hidden_label.text(), 'camada oculta tem de ser dita')
+
+            # desmarcar a última camada desliga o Avançar
+            dialog.layer_table.item(0, _LAYER_SEND_COL).setCheckState(_UNCHECKED)
+            self.assertEqual(dialog.selected_layers(), [])
+            self.assertFalse(dialog.next_btn.isEnabled())
+
+            # etapa 3: grupo já marcado, e desmarcar desliga o campo de nome
+            self.assertTrue(dialog.group_check.isChecked())
+            self.assertTrue(dialog.group_name_edit.isEnabled())
+            self.assertIsNone(dialog.group_name_edit.graphicsEffect())
+
+            dialog.group_check.setChecked(False)
+            self.assertFalse(dialog.group_name_edit.isEnabled())
+            self.assertFalse(dialog.group_name_label.isEnabled())
+            # E TEM de parecer desligado: sem regra `:disabled` para QLineEdit no
+            # TAIRU_STYLE_SHEET, um setEnabled(False) sozinho fica idêntico a um
+            # campo ativo — foi exatamente o que o usuário viu.
+            self.assertIsNotNone(dialog.group_name_edit.graphicsEffect())
+            self.assertIsNotNone(dialog.group_name_label.graphicsEffect())
+
+            dialog.group_check.setChecked(True)
+            self.assertTrue(dialog.group_name_edit.isEnabled())
+            self.assertIsNone(dialog.group_name_edit.graphicsEffect())
         finally:
             dialog.deleteLater()
 

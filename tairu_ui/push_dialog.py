@@ -1,36 +1,34 @@
 # -*- coding: utf-8 -*-
 
-"""Push dialog: pick a vector layer, preview records, edit values, then send."""
+"""Push em três etapas: escolher camadas, conferir feições, agrupar e enviar."""
 
-from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QEventLoop, QTimer, Qt
+from qgis.PyQt.QtCore import QCoreApplication, QDateTime, QEventLoop, Qt
 from qgis.PyQt.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QComboBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QDateTimeEdit,
+    QCheckBox, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
+    QPushButton, QStackedWidget, QTableWidget, QTableWidgetItem,
+    QHeaderView, QDateTimeEdit, QWidget,
 )
-from qgis.core import QgsProject
-from qgis.gui import QgsMapLayerComboBox
+from qgis.core import QgsProject, QgsVectorLayer
 
 try:
-    from ..compat import _VECTOR_LAYER_FILTER
     from ..tairu_core.layer_tree import layer_is_visible
     from ..tairu_sync.record_convert import layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
-    from ..tairu_sync.push import build_push_plan, execute_push
+    from ..tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
     from ..tairu_core.vector_types import has_elevation_attribute
     from .style import (
-        apply_cell_combo_style, apply_combo_popup_style, apply_table_style, apply_tairu_style,
-        set_info_banner, set_muted, set_plain_button, set_primary_button,
+        apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
+        set_info_banner, set_muted, set_plain_button, set_primary_button, set_section_title,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
-    from compat import _VECTOR_LAYER_FILTER
     from tairu_core.layer_tree import layer_is_visible
     from tairu_sync.record_convert import layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
-    from tairu_sync.push import build_push_plan, execute_push
+    from tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
     from tairu_core.vector_types import has_elevation_attribute
     from tairu_ui.style import (
-        apply_cell_combo_style, apply_combo_popup_style, apply_table_style, apply_tairu_style,
-        set_info_banner, set_muted, set_plain_button, set_primary_button,
+        apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
+        set_info_banner, set_muted, set_plain_button, set_primary_button, set_section_title,
     )
 
 _ACTION_LABELS = {
@@ -71,28 +69,58 @@ _FIELD_LABELS.update({
     'geometryBounds': 'Limites',
     'geometryColorValue': 'Cor geometria',
     'geometryBackgroundColorValue': 'Fundo geometria',
+    'groupId': 'Grupo',
     'lastModified': 'Última alteração',
 })
-_HEADERS = ['Ação'] + [label for _key, label, _attr, _kind in _DATA_COLUMNS] + [
+# Enviar (caixa) | Camada | Ação | ...campos... | Geometria | Detalhes
+_SEND_COL = 0
+_LAYER_COL = 1
+_ACTION_COL = 2
+_FIRST_DATA_COL = 3
+_HEADERS = ['Enviar', 'Camada', 'Ação'] + [label for _key, label, _attr, _kind in _DATA_COLUMNS] + [
     'Geometria', 'Detalhes',
 ]
-_COLUMN_BY_KEY = {key: index + 1 for index, (key, _label, _attr, _kind) in enumerate(_DATA_COLUMNS)}
-_GEOMETRY_COL = len(_DATA_COLUMNS) + 1
-_DETAILS_COL = len(_DATA_COLUMNS) + 2
+_COLUMN_BY_KEY = {key: _FIRST_DATA_COL + index
+                  for index, (key, _label, _attr, _kind) in enumerate(_DATA_COLUMNS)}
+_GEOMETRY_COL = _FIRST_DATA_COL + len(_DATA_COLUMNS)
+_DETAILS_COL = _GEOMETRY_COL + 1
 _ROUNDTRIP_TEXT = (
-    'Esta camada veio do Tairu Maps: os atributos existentes serão preservados '
-    'e os registros ausentes aparecerão como exclusões na prévia.')
+    'Alguma camada escolhida veio do Tairu Maps: os atributos existentes serão '
+    'preservados e os registros ausentes aparecerão como exclusões na prévia.')
+_COPY_TEXT = (
+    'Alguma camada escolhida veio de OUTRA expedição: os registros serão criados '
+    'como novos em «{nome}», em seu nome. Nada é excluído lá, e reenviar a mesma '
+    'camada depois atualiza as cópias.')
 
 _MAX_PREVIEW_ROWS = 500
 # Rows between event-loop turns while filling the preview table (see _fill_table).
 _FILL_PUMP_EVERY = 50
 
 _ITEM_IS_EDITABLE = Qt.ItemFlag.ItemIsEditable
+_ITEM_IS_CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable
+_CHECKED = Qt.CheckState.Checked
+_UNCHECKED = Qt.CheckState.Unchecked
 _EDIT_TRIGGERS = (
     QTableWidget.EditTrigger.DoubleClicked |
     QTableWidget.EditTrigger.EditKeyPressed |
     QTableWidget.EditTrigger.AnyKeyPressed
 )
+
+# Etapa 1 — Enviar (caixa) | Camada | Geometria | Feições | SRC | Origem
+_LAYER_HEADERS = ['Enviar', 'Camada', 'Geometria', 'Feições', 'SRC', 'Origem']
+_LAYER_SEND_COL = 0
+_LAYER_NAME_COL = 1
+# QgsVectorLayer.geometryType() -> Qgis.GeometryType (Point/Line/Polygon/Unknown/Null).
+_LAYER_GEOMETRY_LABELS = {
+    0: 'Ponto', 1: 'Linha', 2: 'Polígono', 3: 'Desconhecida', 4: 'Sem geometria',
+}
+
+_STEP_LAYERS, _STEP_FEATURES, _STEP_GROUP = 0, 1, 2
+_STEP_TITLES = [
+    'Etapa 1 de 3 · Camadas',
+    'Etapa 2 de 3 · Feições',
+    'Etapa 3 de 3 · Grupo de registros',
+]
 
 
 class _PreviewAborted(Exception):
@@ -103,10 +131,9 @@ def open_push_dialog(dock, tmap):
     dialog = PushDialog(dock, tmap)
     dialog.exec()
     # The dialog is parented to the dock, so returning from exec() does NOT destroy it:
-    # every closed dialog stays alive hidden and its layer combo keeps answering
-    # layerChanged, re-running build_push_plan (a full scan of the layer) on every
-    # layer added to the project. Opening "Enviar Camada" N times made the next pull
-    # do N scans on the GUI thread — the freeze users reported.
+    # every closed dialog stays alive hidden and keeps listening to the project.
+    # Opening "Enviar Camadas" N times made the next pull do N scans on the GUI
+    # thread — the freeze users reported.
     dialog.deleteLater()
 
 
@@ -126,32 +153,165 @@ class PushDialog(QDialog):
         super().__init__(dock)
         self.dock = dock
         self.tmap = tmap
-        self.plan = None
+        # [(PushPlan, camada)] — um par por camada marcada na etapa 1.
+        self.entries = []
         self._row_items = []
+        self._empty_layers = []
+        self._group_name_touched = False
         self._hidden_unchanged_count = 0
         self._truncated_preview_count = 0
         self._preview_generation = 0
-        self._auto_preview_pending = False
         self.setWindowTitle(f'Enviar camadas vetoriais · {tmap.nome}')
         self.resize(1120, 640)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        form = QFormLayout()
-        self.layer_combo = QgsMapLayerComboBox()
-        self.layer_combo.setFilters(_VECTOR_LAYER_FILTER)
-        # Camada desmarcada no painel de camadas não é enviada. O diálogo é modal, então
-        # a lista não muda enquanto ele está aberto — basta calcular na abertura.
+        self.step_label = set_section_title(QLabel(_STEP_TITLES[_STEP_LAYERS]))
+        layout.addWidget(self.step_label)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_layers_page())
+        self.pages.addWidget(self._build_features_page())
+        self.pages.addWidget(self._build_group_page())
+        layout.addWidget(self.pages, 1)
+
+        buttons = QHBoxLayout()
+        self.back_btn = set_plain_button(QPushButton('Voltar'))
+        self.back_btn.clicked.connect(self._go_back)
+        buttons.addWidget(self.back_btn)
+        buttons.addStretch(1)
+        self.next_btn = set_primary_button(QPushButton('Avançar'))
+        self.next_btn.clicked.connect(self._go_next)
+        buttons.addWidget(self.next_btn)
+        cancel_btn = set_plain_button(QPushButton('Cancelar'))
+        cancel_btn.clicked.connect(self.reject)
+        buttons.addWidget(cancel_btn)
+        layout.addLayout(buttons)
+        apply_tairu_style(self)
+
+        self._fill_layer_table()
+        self._update_buttons()
+
+    # ----------------------------------------------------------- etapa 1
+
+    def _build_layers_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        hint = set_muted(QLabel(
+            'Marque as camadas vetoriais a enviar. Todas as camadas visíveis já '
+            'vêm marcadas.'))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # Mesma tabela da etapa de feições: a camada também tem dados que decidem
+        # a escolha (geometria, quantidade de feições, SRC, de onde ela veio).
+        self._layer_ids = []
+        self.layer_table = QTableWidget(0, len(_LAYER_HEADERS))
+        self.layer_table.setHorizontalHeaderLabels(_LAYER_HEADERS)
+        self.layer_table.setAlternatingRowColors(True)
+        self.layer_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.layer_table.verticalHeader().setVisible(False)
+        apply_table_style(self.layer_table)
+        self.layer_table.itemChanged.connect(self._update_buttons)
+        self.layer_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.layer_table, 1)
+
+        self.hidden_label = set_muted(QLabel(''))
+        self.hidden_label.setWordWrap(True)
+        self.hidden_label.hide()
+        layout.addWidget(self.hidden_label)
+        return page
+
+    def _fill_layer_table(self):
+        """Camadas vetoriais visíveis, todas marcadas.
+
+        O diálogo é modal, então a lista não muda enquanto ele está aberto — basta
+        montá-la na abertura. Camada desmarcada no painel de camadas não é
+        desenhada no mapa e não é oferecida aqui.
+        """
         project = QgsProject.instance()
-        hidden_layers = [lyr for lyr in project.mapLayers().values()
-                         if not layer_is_visible(lyr, project)]
-        self._hidden_layer_count = len(hidden_layers)
-        self.layer_combo.setExceptedLayerList(hidden_layers)
-        apply_combo_popup_style(self.layer_combo)
-        self.layer_combo.layerChanged.connect(self._on_layer_changed)
-        form.addRow('Camada:', self.layer_combo)
-        layout.addLayout(form)
+        hidden = 0
+        rows = []
+        self._layer_ids = []
+        for layer in project.layerTreeRoot().layerOrder():
+            if not isinstance(layer, QgsVectorLayer) or not layer.isValid():
+                continue
+            if not layer_is_visible(layer, project):
+                hidden += 1
+                continue
+            rows.append(layer)
+
+        self.layer_table.blockSignals(True)
+        self.layer_table.setRowCount(len(rows))
+        for row, layer in enumerate(rows):
+            self._layer_ids.append(layer.id())
+            send = QTableWidgetItem('')
+            send.setFlags((send.flags() & ~_ITEM_IS_EDITABLE) | _ITEM_IS_CHECKABLE)
+            send.setCheckState(_CHECKED)
+            self.layer_table.setItem(row, _LAYER_SEND_COL, send)
+            for col, text in enumerate(self._layer_row_values(layer), start=_LAYER_NAME_COL):
+                self.layer_table.setItem(row, col, self._readonly_item(text))
+        self.layer_table.blockSignals(False)
+        self.layer_table.resizeColumnsToContents()
+
+        if not rows and hidden:
+            self.hidden_label.setText(
+                'Nenhuma camada vetorial visível. Camadas desmarcadas no painel de '
+                'camadas não são enviadas — marque a camada no painel e abra esta '
+                'janela de novo.')
+            self.hidden_label.show()
+        elif not rows:
+            self.hidden_label.setText('Nenhuma camada vetorial neste projeto.')
+            self.hidden_label.show()
+        elif hidden:
+            plural = 's' if hidden > 1 else ''
+            self.hidden_label.setText(
+                f'{hidden} camada{plural} oculta{plural} no painel de camadas '
+                f'não {"são" if hidden > 1 else "é"} listada{plural}.')
+            self.hidden_label.show()
+
+    def _layer_row_values(self, layer):
+        """Camada | Geometria | Feições | SRC | Origem."""
+        try:
+            geometry = _LAYER_GEOMETRY_LABELS.get(int(layer.geometryType()), '—')
+        except (TypeError, ValueError):
+            geometry = '—'
+        # featureCount() devolve -1 quando o provedor não sabe contar sem varrer.
+        count = layer.featureCount()
+        count_text = str(count) if count is not None and count >= 0 else '—'
+        crs = layer.crs().authid() or '—'
+        return [layer.name(), geometry, count_text, crs, self._layer_origin_label(layer)]
+
+    def _layer_origin_label(self, layer):
+        if layer.fields().indexOf('recordId') < 0:
+            return 'QGIS'
+        origin = layer_origin_map_id(layer)
+        return 'Outra expedição' if origin and origin != self.tmap.map_id else 'Tairu Maps'
+
+    def selected_layers(self):
+        """Camadas marcadas aqui E ainda válidas no projeto, na ordem da tabela."""
+        project = QgsProject.instance()
+        layers = []
+        for row, layer_id in enumerate(self._layer_ids):
+            cell = self.layer_table.item(row, _LAYER_SEND_COL)
+            if cell is None or cell.checkState() != _CHECKED:
+                continue
+            layer = project.mapLayer(layer_id)
+            if layer is not None and layer.isValid():
+                layers.append(layer)
+        return layers
+
+    # ----------------------------------------------------------- etapa 2
+
+    def _build_features_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         self.roundtrip_label = set_info_banner(QLabel(_ROUNDTRIP_TEXT))
         self.roundtrip_label.setWordWrap(True)
@@ -170,51 +330,148 @@ class PushDialog(QDialog):
         # One stylesheet for every combo the preview puts in a cell (see the helper):
         # applying it per widget was most of the time the table took to appear.
         apply_cell_combo_style(self.table)
+        self.table.itemChanged.connect(self._on_table_item_changed)
         header = self.table.horizontalHeader()
         header.setStretchLastSection(True)
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive
-                                    if hasattr(QHeaderView, 'ResizeMode')
-                                    else QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         layout.addWidget(self.table, 1)
+        return page
 
-        buttons = QHBoxLayout()
-        buttons.addStretch(1)
-        self.send_btn = set_primary_button(QPushButton('Enviar'))
-        self.send_btn.setEnabled(False)
-        self.send_btn.clicked.connect(self._send)
-        buttons.addWidget(self.send_btn)
-        cancel_btn = set_plain_button(QPushButton('Cancelar'))
-        cancel_btn.clicked.connect(self.reject)
-        buttons.addWidget(cancel_btn)
-        layout.addLayout(buttons)
-        apply_tairu_style(self)
+    # ----------------------------------------------------------- etapa 3
 
-        self._on_layer_changed(self.layer_combo.currentLayer())
+    def _build_group_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-    # ------------------------------------------------------------- mapping
+        self.group_check = QCheckBox('Reunir os registros enviados em um grupo')
+        # Marcada por padrão: reunir o lote é o que quase todo envio quer, e o
+        # nome já vem preenchido. Desmarcar desliga o campo de nome.
+        self.group_check.setChecked(True)
+        self.group_check.toggled.connect(self._on_group_toggled)
+        layout.addWidget(self.group_check)
 
-    def _on_layer_changed(self, layer):
-        is_roundtrip = False
-        if layer is not None:
-            is_roundtrip = layer.fields().indexOf('recordId') >= 0
-        origin = layer_origin_map_id(layer) if is_roundtrip else ''
-        if origin and origin != self.tmap.map_id:
-            # O texto padrão prometeria exclusões que não vão acontecer: nada é apagado
-            # na expedição de destino, onde estes registros nem existem ainda.
-            self.roundtrip_label.setText(
-                f'Esta camada veio de OUTRA expedição: os registros serão criados como '
-                f'novos em «{self.tmap.nome}», em seu nome. Nada é excluído lá, e '
-                f'reenviar esta mesma camada depois atualiza as cópias.')
+        hint = set_muted(QLabel(
+            'O grupo aparece na aba Registros do aplicativo e pode ser renomeado '
+            'lá depois. Reenviar as mesmas camadas com o mesmo nome reaproveita o '
+            'grupo em vez de criar outro.'))
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        name_row = QHBoxLayout()
+        self.group_name_label = QLabel('Nome do grupo:')
+        name_row.addWidget(self.group_name_label)
+        self.group_name_edit = QLineEdit()
+        self.group_name_edit.setMaxLength(80)
+        self.group_name_edit.textChanged.connect(self._update_buttons)
+        # textEdited (não textChanged) só dispara com digitação: é o que separa
+        # "o usuário escolheu este nome" de "nós preenchemos o padrão".
+        self.group_name_edit.textEdited.connect(self._on_group_name_edited)
+        name_row.addWidget(self.group_name_edit, 1)
+        layout.addLayout(name_row)
+
+        self.group_summary_label = set_muted(QLabel(''))
+        self.group_summary_label.setWordWrap(True)
+        layout.addWidget(self.group_summary_label)
+        layout.addStretch(1)
+
+        # Os botões do rodapé ainda não existem neste ponto da construção: só o
+        # estado dos campos é ajustado aqui.
+        self._set_group_name_enabled(self.group_check.isChecked())
+        return page
+
+    def _on_group_name_edited(self, _text):
+        self._group_name_touched = True
+
+    def _set_group_name_enabled(self, enabled):
+        """Liga/desliga o campo de nome junto com a caixa de agrupar.
+
+        set_control_enabled, e não setEnabled: o TAIRU_STYLE_SHEET não tem regra
+        `:disabled` para QLineEdit/QLabel, então um setEnabled(False) sozinho fica
+        com a MESMA aparência de um campo ativo — desabilitado e sem parecer.
+        """
+        set_control_enabled(self.group_name_label, enabled)
+        set_control_enabled(self.group_name_edit, enabled)
+
+    def _on_group_toggled(self, checked):
+        self._set_group_name_enabled(checked)
+        self._refresh_group_summary()
+        self._update_buttons()
+
+    def _refresh_group_summary(self):
+        plans = [plan for plan, _layer in self.entries]
+        if not plans:
+            self.group_summary_label.setText('')
+            return
+        text = f'Serão enviados: {batch_summary(plans)}.'
+        unchanged = sum(plan.count('unchanged') for plan in plans)
+        if self.group_check.isChecked() and unchanged:
+            # O grupo não entra no tairuSyncHash, então entrar no grupo é, para
+            # estes registros, uma alteração — e dizer isso aqui evita a surpresa
+            # de ver "N inalterados" virar N gravações.
+            text += (f' Os {unchanged} registros inalterados também serão atualizados '
+                     f'para entrar no grupo.')
+        self.group_summary_label.setText(text)
+
+    def _default_group_name(self):
+        names = [plan.layer_name for plan, _layer in self.entries if plan.layer_name]
+        return names[0] if len(names) == 1 else 'Camadas do QGIS'
+
+    def selected_group(self):
+        """(group_id, nome) escolhido na etapa 3, ou None."""
+        if not self.group_check.isChecked():
+            return None
+        name = self.group_name_edit.text().strip()
+        if not name:
+            return None
+        return record_group_id(self.tmap.map_id, self.dock.tokens.uid, name), name
+
+    # ------------------------------------------------------- navegação
+
+    def _go_back(self):
+        if self.pages.currentIndex() > _STEP_LAYERS:
+            self._show_step(self.pages.currentIndex() - 1)
+
+    def _go_next(self):
+        step = self.pages.currentIndex()
+        if step == _STEP_LAYERS:
+            self._show_step(_STEP_FEATURES)
+            self._compute_preview()
+        elif step == _STEP_FEATURES:
+            if not self._apply_table_to_plan():
+                return
+            if not self._group_name_touched:
+                self.group_name_edit.setText(self._default_group_name())
+            self._refresh_group_summary()
+            self._show_step(_STEP_GROUP)
         else:
-            self.roundtrip_label.setText(_ROUNDTRIP_TEXT)
-        self.roundtrip_label.setVisible(is_roundtrip)
-        self._invalidate_plan()
-        self._schedule_preview()
+            self._send()
 
-    def _mapping(self):
+    def _show_step(self, step):
+        self.pages.setCurrentIndex(step)
+        self.step_label.setText(_STEP_TITLES[step])
+        self._update_buttons()
+
+    def _update_buttons(self, *_args):
+        step = self.pages.currentIndex()
+        self.back_btn.setEnabled(step > _STEP_LAYERS)
+        self.next_btn.setText('Enviar' if step == _STEP_GROUP else 'Avançar')
+        if step == _STEP_LAYERS:
+            self.next_btn.setEnabled(bool(self.selected_layers()))
+        elif step == _STEP_FEATURES:
+            self.next_btn.setEnabled(
+                any(plan.writable_items() for plan, _layer in self.entries))
+        else:
+            self.next_btn.setEnabled(
+                not self.group_check.isChecked()
+                or bool(self.group_name_edit.text().strip()))
+
+    # ------------------------------------------------------------- preview
+
+    def _mapping(self, layer):
         tipo = 'local'
         sub_tipo = None
-        layer = self.layer_combo.currentLayer()
         if layer is not None and has_elevation_attribute(layer.fields().names()):
             tipo = 'curvaNivel'
             sub_tipo = 'curvaNormal'
@@ -226,76 +483,80 @@ class PushDialog(QDialog):
             'situation': _default_situation(tipo),
         }
 
-    def _invalidate_plan(self, *_args):
-        self._preview_generation += 1
-        self.plan = None
-        self._row_items = []
-        self._hidden_unchanged_count = 0
-        self._truncated_preview_count = 0
-        self.table.setRowCount(0)
-        self.send_btn.setEnabled(False)
-
-    def _schedule_preview(self):
-        if self._auto_preview_pending:
-            return
-        self._auto_preview_pending = True
-        QTimer.singleShot(0, self._run_scheduled_preview)
-
-    def _run_scheduled_preview(self):
-        self._auto_preview_pending = False
-        self._compute_preview()
-
-    # ------------------------------------------------------------- preview
-
     def _compute_preview(self):
-        layer = self.layer_combo.currentLayer()
-        if layer is None:
-            if self._hidden_layer_count and not self.layer_combo.count():
-                self.summary_label.setText(
-                    'Nenhuma camada vetorial visível. Camadas desmarcadas no painel de '
-                    'camadas não são enviadas — marque a camada no painel e abra esta '
-                    'janela de novo.')
-            else:
-                self.summary_label.setText('Selecione uma camada vetorial.')
-            return
-        if layer.featureCount() == 0:
-            self.summary_label.setText('A camada selecionada não possui feições.')
-            return
-
         self._preview_generation += 1
         generation = self._preview_generation
-        mapping = self._mapping()
-        include_deletions = layer.fields().indexOf('recordId') >= 0
-        self.summary_label.setText('Calculando prévia…')
+        self.entries = []
+        self._row_items = []
+        self.table.setRowCount(0)
+        self._update_roundtrip_banner()
 
-        try:
-            self.plan = build_push_plan(
-                layer, mapping, self.tmap, self.dock.tokens.uid,
-                propagate_deletions=include_deletions,
-                progress=self._preview_progress(generation))
-        except _PreviewAborted:
-            return
-        except Exception as e:
-            self.summary_label.setText(f'Falha ao montar prévia: {e}')
-            return
-
-        if generation != self._preview_generation:
-            return
+        layers = self.selected_layers()
+        self._empty_layers = []
+        empty = self._empty_layers
+        for layer in layers:
+            if layer.featureCount() == 0:
+                empty.append(layer.name())
+                continue
+            include_deletions = layer.fields().indexOf('recordId') >= 0
+            try:
+                plan = build_push_plan(
+                    layer, self._mapping(layer), self.tmap, self.dock.tokens.uid,
+                    propagate_deletions=include_deletions,
+                    progress=self._preview_progress(generation, layer.name()))
+            except _PreviewAborted:
+                return
+            except Exception as e:
+                # Prévia incompleta não pode habilitar o Enviar: o que já foi
+                # calculado não é o que a tabela (vazia) está mostrando.
+                self.entries = []
+                self.summary_label.setText(f'Falha ao montar prévia de «{layer.name()}»: {e}')
+                self._update_buttons()
+                return
+            self.entries.append((plan, layer))
 
         try:
             self._fill_table(generation)
         except _PreviewAborted:
             return
+        self._refresh_summary()
+        self._update_buttons()
+
+    def _update_roundtrip_banner(self):
+        roundtrip = False
+        copied = False
+        for layer in self.selected_layers():
+            if layer.fields().indexOf('recordId') < 0:
+                continue
+            roundtrip = True
+            origin = layer_origin_map_id(layer)
+            if origin and origin != self.tmap.map_id:
+                copied = True
+        if copied:
+            # O texto padrão prometeria exclusões que não vão acontecer: nada é apagado
+            # na expedição de destino, onde estes registros nem existem ainda.
+            self.roundtrip_label.setText(_COPY_TEXT.format(nome=self.tmap.nome))
+        else:
+            self.roundtrip_label.setText(_ROUNDTRIP_TEXT)
+        self.roundtrip_label.setVisible(roundtrip)
+
+    def _refresh_summary(self):
         extras = []
         if self._hidden_unchanged_count:
             extras.append(f'{self._hidden_unchanged_count} inalterados ocultos')
         if self._truncated_preview_count:
-            extras.append(f'{self._truncated_preview_count} itens além do limite da tabela')
+            extras.append(f'{self._truncated_preview_count} itens além do limite da tabela '
+                          f'(enviados assim mesmo)')
+        for name in self._empty_layers:
+            extras.append(f'«{name}» não possui feições')
         suffix = f' {"; ".join(extras)}.' if extras else ''
-        self.summary_label.setText(f'Prévia: {self.plan.summary()}.{suffix}')
-        self.send_btn.setEnabled(bool(self.plan.writable_items()))
+        plans = [plan for plan, _layer in self.entries]
+        if not plans:
+            self.summary_label.setText(f'Nada a enviar.{suffix}')
+            return
+        self.summary_label.setText(f'Prévia: {batch_summary(plans)}.{suffix}')
 
-    def _preview_progress(self, generation):
+    def _preview_progress(self, generation, layer_name):
         """Keep the window painted while the plan is built.
 
         The scan is Python-heavy (~0.3 ms/feature measured on QGIS 3.40 LTR) and runs on
@@ -306,9 +567,10 @@ class PushDialog(QDialog):
         """
         def report(done, total, phase='Calculando prévia'):
             if total:
-                self.summary_label.setText(f'{phase}… {done} de {total} feições')
+                self.summary_label.setText(
+                    f'{phase} de «{layer_name}»… {done} de {total} feições')
             else:
-                self.summary_label.setText(f'{phase}… {done} feições')
+                self.summary_label.setText(f'{phase} de «{layer_name}»… {done} feições')
             self._pump(generation)
         return report
 
@@ -318,32 +580,38 @@ class PushDialog(QDialog):
             raise _PreviewAborted()
         QCoreApplication.processEvents(
             QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-        # A pull finishing mid-scan adds layers -> layerChanged -> _invalidate_plan,
-        # which bumps the generation and clears the table. Re-check after pumping,
-        # never after the fact.
+        # A pull finishing mid-scan adds layers; re-check after pumping, never
+        # after the fact.
         if generation != self._preview_generation:
             raise _PreviewAborted()
 
     def _fill_table(self, generation=None):
-        items = self.plan.items if self.plan else []
-        visible_items = [item for item in items if item.action != 'unchanged' or item.warning]
-        shown = visible_items[:_MAX_PREVIEW_ROWS]
-        self._row_items = shown
-        self._hidden_unchanged_count = len(items) - len(visible_items)
-        self._truncated_preview_count = max(0, len(visible_items) - len(shown))
+        items = [(item, plan) for plan, _layer in self.entries for item in plan.items]
+        visible = [(item, plan) for item, plan in items
+                   if item.action != 'unchanged' or item.warning]
+        shown = visible[:_MAX_PREVIEW_ROWS]
+        self._row_items = [item for item, _plan in shown]
+        self._hidden_unchanged_count = len(items) - len(visible)
+        self._truncated_preview_count = max(0, len(visible) - len(shown))
+        self.table.blockSignals(True)
         self.table.setRowCount(len(shown))
-        for row, item in enumerate(shown):
+        for row, (item, plan) in enumerate(shown):
             # Each row is ~4 cell widgets; 500 of them measured 1.5 s in one blocked
             # chunk. Same treatment as the scan: hand the loop back regularly.
             if generation is not None and row and row % _FILL_PUMP_EVERY == 0:
                 self.summary_label.setText(f'Montando prévia… {row} de {len(shown)} linhas')
                 self._pump(generation)
-            self.table.setItem(row, 0, self._readonly_item(_ACTION_LABELS.get(item.action, item.action)))
-            for col_offset, (key, _label, attr, kind) in enumerate(_DATA_COLUMNS, start=1):
+            self.table.setItem(row, _SEND_COL, self._send_item(item))
+            self.table.setItem(row, _LAYER_COL, self._readonly_item(plan.layer_name))
+            self.table.setItem(row, _ACTION_COL,
+                               self._readonly_item(_ACTION_LABELS.get(item.action, item.action)))
+            for col_offset, (key, _label, attr, kind) in enumerate(_DATA_COLUMNS,
+                                                                   start=_FIRST_DATA_COL):
                 self._set_data_cell(row, col_offset, item, key, attr, kind)
             geometry = _GEOMETRY_LABELS.get(item.record.geometry_type, item.record.geometry_type or '')
             self.table.setItem(row, _GEOMETRY_COL, self._readonly_item(geometry))
             self.table.setItem(row, _DETAILS_COL, self._readonly_item(self._details_text(item)))
+        self.table.blockSignals(False)
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(_COLUMN_BY_KEY['descricao'], 220)
         self.table.setColumnWidth(_DETAILS_COL, 220)
@@ -358,6 +626,36 @@ class PushDialog(QDialog):
         if item.warning:
             details = f'{details} ⚠ {item.warning}'.strip()
         return details
+
+    def _send_item(self, item):
+        """Caixa "Enviar" da linha, só para itens graváveis.
+
+        Item não gravável (inalterado, sem permissão) fica com um traço em vez de
+        uma caixa desmarcada: uma caixa desligada convida a ligá-la, e o estado
+        dela não diria a verdade — um inalterado ENTRA no envio se a etapa 3
+        escolher um grupo.
+        """
+        if item.action not in ('new', 'update', 'delete'):
+            cell = self._readonly_item('—')
+            cell.setToolTip('Este item não é enviado por si só.')
+            return cell
+        cell = QTableWidgetItem('')
+        cell.setFlags((cell.flags() & ~_ITEM_IS_EDITABLE) | _ITEM_IS_CHECKABLE)
+        cell.setCheckState(_CHECKED if item.send else _UNCHECKED)
+        return cell
+
+    def _on_table_item_changed(self, cell):
+        if cell.column() != _SEND_COL:
+            return
+        row = cell.row()
+        if row >= len(self._row_items):
+            return
+        item = self._row_items[row]
+        if item.action not in ('new', 'update', 'delete'):
+            return
+        item.send = cell.checkState() == _CHECKED
+        self._refresh_summary()
+        self._update_buttons()
 
     def _readonly_item(self, text):
         item = QTableWidgetItem('' if text is None else str(text))
@@ -548,10 +846,12 @@ class PushDialog(QDialog):
     # ---------------------------------------------------------------- send
 
     def _send(self):
-        if not self.plan:
+        if not self.entries:
             return
-        if not self._apply_table_to_plan():
-            return
-        layer = self.layer_combo.currentLayer()
+        group = self.selected_group()
+        if group is not None:
+            for plan, _layer in self.entries:
+                apply_group_to_plan(plan, group[0])
+        entries = list(self.entries)
         self.accept()
-        execute_push(self.dock, self.tmap, self.plan, layer)
+        execute_push(self.dock, self.tmap, entries, group=group)

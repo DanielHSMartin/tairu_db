@@ -328,6 +328,7 @@ class TairuRecord:
     last_modified: int = 0              # epoch millis
     style: str = None                   # styleJson (opaque; app-authored or QGIS-produced)
     attributes: str = None              # per-feature attributes JSON (for label-by-attribute)
+    group_id: str = ''                  # RecordGroup do app; '' = "Sem grupo"
 
     @classmethod
     def from_fields(cls, record_id, d):
@@ -396,6 +397,7 @@ class TairuRecord:
             last_modified=parse_millis(_f('lastModified', 0)),
             style=_f('style'),
             attributes=_f('attributes'),
+            group_id=_f('groupId', '') or '',
         )
         # Legacy records: geometry only in deprecated la/lo fields
         if not rec.geometry_points_json and (d.get('la') or d.get('lo')):
@@ -470,6 +472,10 @@ class TairuRecord:
             fields['style'] = self.style
         if self.attributes:
             fields['attributes'] = self.attributes
+        # Espelha Record.toFirestore(): a chave so existe quando ha grupo, e um
+        # groupId que nao resolve renderiza como "Sem grupo" (orfao inofensivo).
+        if self.group_id:
+            fields['groupId'] = self.group_id
         return fields
 
     @staticmethod

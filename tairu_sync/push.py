@@ -16,6 +16,7 @@ serialization); only coordinates and radius/colors/styling matter.
 import contextlib
 import json
 import math
+import uuid
 from dataclasses import dataclass, field
 
 from qgis.core import (
@@ -81,18 +82,25 @@ class PushItem:
     feature_id: int = None       # source QGIS fid (for recordId write-back)
     changed_fields: list = field(default_factory=list)
     warning: str = ''
+    # Desmarcado na tabela de previa: continua no plano (e no resumo), mas nao e
+    # gravado. Um item fora do plano se perderia tambem para a escrita de volta na
+    # camada e para o cache, entao o filtro mora aqui, em writable_items().
+    send: bool = True
 
 
 @dataclass
 class PushPlan:
     map_id: str
+    layer_name: str = ''
     items: list = field(default_factory=list)
     # Expedição de onde a camada veio, quando o envio é uma CÓPIA para outra (ver
     # layer_origin_map_id). Vazio no caso normal.
     copied_from_map_id: str = ''
 
     def count(self, action):
-        return sum(1 for i in self.items if i.action == action)
+        # Item desmarcado na previa sai de TODOS os contadores: para quem
+        # desmarcou, ele simplesmente nao faz parte deste envio.
+        return sum(1 for i in self.items if i.send and i.action == action)
 
     def summary(self):
         parts = [f'{self.count("new")} novos', f'{self.count("update")} atualizados',
@@ -108,7 +116,8 @@ class PushPlan:
         return ', '.join(parts)
 
     def writable_items(self):
-        return [i for i in self.items if i.action in ('new', 'update', 'delete')]
+        return [i for i in self.items
+                if i.send and i.action in ('new', 'update', 'delete')]
 
 
 @dataclass
@@ -310,6 +319,38 @@ def layer_render_session(layer):
         session.close()
 
 
+# Qgis.SymbolType.Fill e Qt.BrushStyle.NoBrush, escritos como inteiros para nao
+# depender de um nome de enum que mudou de lugar entre geracoes de QGIS/Qt.
+_SYMBOL_TYPE_FILL = 2
+_BRUSH_STYLE_NONE = 0
+
+
+def _paints_area_fill(symbol_layer):
+    """Se esta camada de simbolo realmente pinta o INTERIOR do poligono.
+
+    Uma camada de simbolo do tipo LINHA dentro de um simbolo de preenchimento
+    ("Contorno: linha simples", o jeito normal de desenhar um poligono so com
+    borda) devolve QColor invalido em fillColor() e strokeColor(), e a cor da
+    LINHA em color() — que e justamente o ultimo acessor da cadeia de fill. Era
+    assim que um poligono so-contorno virava registro com preenchimento OPACO na
+    cor da linha. Um preenchimento simples com "sem pincel" e a mesma historia.
+
+    Devolver None para o fundo deixa geometryBackgroundColorValue vazio, e o app
+    entao pinta o interior com a cor da linha a 30% de alfa (Record.
+    geometryBackgroundColor), que e o resultado correto.
+    """
+    layer_type = _call_or_missing(symbol_layer, 'type')
+    if layer_type is not _MISSING:
+        with contextlib.suppress(TypeError, ValueError):
+            if int(layer_type) != _SYMBOL_TYPE_FILL:
+                return False
+    brush = _call_or_missing(symbol_layer, 'brushStyle')
+    if brush is not _MISSING:
+        with contextlib.suppress(TypeError, ValueError):
+            return int(brush) != _BRUSH_STYLE_NONE
+    return True
+
+
 def _static_layer_argb(symbol_layer, accessors, opacity=1.0):
     for accessor in accessors:
         color = _call_or_missing(symbol_layer, accessor)
@@ -390,7 +431,8 @@ def _symbol_style_argbs(symbol, expr_context, feature, spec_key, inherited_opaci
             ('strokeColor', 'color'), layer_opacity)
 
         if spec_key == 'polygon':
-            bg_argb = _first_defined(bg_argb, fill_argb)
+            bg_argb = _first_defined(
+                bg_argb, fill_argb if _paints_area_fill(symbol_layer) else None)
             fg_argb = _first_defined(fg_argb, stroke_argb, fill_argb)
         elif spec_key == 'circle':
             fg_argb = _first_defined(fg_argb, fill_argb, stroke_argb)
@@ -1280,7 +1322,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
         layer.crs(), QgsCoordinateReferenceSystem('EPSG:4326'),
         QgsProject.instance().transformContext())
 
-    plan = PushPlan(map_id=tmap.map_id,
+    plan = PushPlan(map_id=tmap.map_id, layer_name=layer.name(),
                     copied_from_map_id=origin_map_id if copying_from_other_map else '')
     seen_ids = set()
     sync_snapshot = layer_sync_snapshot(layer)
@@ -1390,6 +1432,69 @@ def finalize_new_record(rec):
     return rec
 
 
+# RecordGroup.defaultColorValue (record_group_model.dart): cinza-azulado neutro,
+# o mesmo que o app usa para um grupo criado por importacao.
+_GROUP_DEFAULT_COLOR = 0xFF607D8B
+
+
+def _folded_group_name(name):
+    """Nome reduzido a chave de comparacao (espacos colapsados, caixa ignorada)."""
+    return ' '.join(str(name or '').split()).casefold()
+
+
+def record_group_id(map_id, uid, name):
+    """Id estavel do grupo para (expedicao, usuario, nome).
+
+    Deterministico de proposito: o plugin nao lista recordGroups, entao e isto que
+    faz reenviar as mesmas camadas com o mesmo nome cair no MESMO grupo em vez de
+    forjar um grupo novo a cada envio. O uid entra na semente porque o documento
+    passa a ser sempre um que ESTE usuario criou — e as regras so deixam atualizar
+    o grupo de outra pessoa se voce for dono/administrador da expedicao.
+    """
+    seed = f'https://tairumaps.app/recordGroup/{map_id}/{uid}/{_folded_group_name(name)}'
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+
+
+def build_group_write(fs, map_id, group_id, name, uid):
+    """Write op que cria (ou reaproveita) o RecordGroup dos registros enviados.
+
+    Upsert, nao create: com o id deterministico de record_group_id o segundo envio
+    encontra o documento ja la, e um create falharia o lote inteiro.
+    """
+    now = now_millis()
+    fields = {
+        'groupId': group_id,
+        'nome': name,
+        'colorValue': _GROUP_DEFAULT_COLOR,
+        'iconName': '',
+        'parentGroupId': '',
+        'isDeleted': False,
+        'lastModified': now,
+        'createdBy': uid,
+        'createdAt': now,
+    }
+    return fs.build_update_write(
+        f'maps/{map_id}/recordGroups/{group_id}', fields, list(fields.keys()),
+        require_existing=False)
+
+
+def apply_group_to_plan(plan, group_id):
+    """Aponta para `group_id` todo registro que o plano vai gravar.
+
+    Itens 'unchanged' viram 'update': o grupo NAO entra no tairuSyncHash (nao e
+    coluna da camada), entao sem esta promocao um reenvio de camada de ida-e-volta
+    deixaria de fora justamente os registros que o usuario ve marcados na previa.
+    """
+    for item in plan.items:
+        if item.action in ('delete', 'forbidden') or not item.send:
+            continue
+        item.record.group_id = group_id
+        if item.action == 'unchanged':
+            item.action = 'update'
+        if item.action == 'update' and 'groupId' not in item.changed_fields:
+            item.changed_fields.append('groupId')
+
+
 def build_writes(fs, plan, uid):
     """Firestore write ops for the approved plan.
 
@@ -1467,14 +1572,37 @@ def build_writes(fs, plan, uid):
     return writes
 
 
-def execute_push(dock, tmap, plan, source_layer):
-    """Commit the plan in batches; mirror approved attributes into the source layer."""
+def batch_summary(plans):
+    """Resumo unico para varias camadas (mesmos contadores de PushPlan.summary)."""
+    merged = PushPlan(map_id=plans[0].map_id if plans else '')
+    for plan in plans:
+        merged.items.extend(plan.items)
+    return merged.summary()
+
+
+def execute_push(dock, tmap, entries, group=None):
+    """Commit de todas as camadas selecionadas em um unico lote de envios.
+
+    entries: [(PushPlan, camada_de_origem), ...], um par por camada escolhida.
+    group: (group_id, nome) para reunir tudo em um RecordGroup, ou None.
+    """
     fs = dock.fs
     page = dock.detail_page
-    writes = build_writes(fs, plan, dock.tokens.uid)
-    if not writes:
+    uid = dock.tokens.uid
+    plans = [plan for plan, _layer in entries]
+
+    record_writes = []
+    for plan in plans:
+        record_writes.extend(build_writes(fs, plan, uid))
+    if not record_writes:
         dock.notify('Nada para enviar — tudo já está sincronizado.')
         return
+
+    # O grupo vai na frente: os lotes sao comitados em ordem, entao nenhum registro
+    # chega apontando para um grupo que ainda nao existe.
+    writes = record_writes
+    if group is not None:
+        writes = [build_group_write(fs, tmap.map_id, group[0], group[1], uid)] + record_writes
 
     page.set_busy(True, f'Enviando {len(writes)} alterações…')
 
@@ -1493,18 +1621,19 @@ def execute_push(dock, tmap, plan, source_layer):
         # pertence à expedição de onde veio, e gravar nela o carimbo desta faria o próximo
         # envio de volta para a origem virar outra "cópia" — trocando a autoria dos
         # registros originais pela de quem copiou.
-        if not plan.copied_from_map_id:
-            _write_back_records_to_source_layer(plan, source_layer)
+        for plan, source_layer in entries:
+            if not plan.copied_from_map_id:
+                _write_back_records_to_source_layer(plan, source_layer)
         with contextlib.suppress(Exception):
             cache = FirestoreCache(dock.env.key, dock.tokens.uid)
             cache.store_record_models(
-                plan.map_id,
-                [item.record for item in plan.writable_items()],
+                tmap.map_id,
+                [item.record for plan in plans for item in plan.writable_items()],
                 now_millis(),
             )
         page.set_busy(False)
         page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
-        dock.notify(f'{tmap.nome}: {plan.summary()} — enviado.')
+        dock.notify(f'{tmap.nome}: {batch_summary(plans)} — enviado.')
         try:
             try:
                 from .pull import start_pull
@@ -1543,6 +1672,11 @@ def _write_back_records_to_source_layer(plan, layer):
     changes = {}
     for item in plan.items:
         if item.action not in ('new', 'update') or item.feature_id is None:
+            continue
+        # Item desmarcado na previa nao foi gravado: carimbar recordId +
+        # tairuSyncHash nele faria o proximo envio classifica-lo como 'update' de
+        # um documento que nao existe, e o lote inteiro falharia.
+        if not item.send:
             continue
         attr_map = record_to_attribute_map(item.record)
         row_changes = {
