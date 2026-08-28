@@ -24,6 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
     QPlainTextEdit, QProgressBar, QFileDialog, QScrollArea,
     QCheckBox, QWidget, QColorDialog, QSlider, QMessageBox,
+    QTableWidget, QTableWidgetItem, QButtonGroup,
 )
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
@@ -36,8 +37,9 @@ from qgis.gui import QgsMapLayerComboBox
 
 try:
     from ..compat import (
-        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE,
     )
+    from ..compat import _CHECKED, _ITEM_IS_CHECKABLE, _ITEM_IS_EDITABLE, _ITEM_IS_ENABLED, _UNCHECKED
     from ..tairu_core.contour_generator import (
         ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
         SMOOTHING_NONE, generate_contours,
@@ -55,14 +57,15 @@ try:
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
     from .style import (
-        apply_combo_popup_style, apply_tairu_style, set_action_button,
+        apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_secondary_button, set_warning_banner, status_style, SCROLLBAR_STYLE,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
-        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE,
     )
+    from compat import _CHECKED, _ITEM_IS_CHECKABLE, _ITEM_IS_EDITABLE, _ITEM_IS_ENABLED, _UNCHECKED
     from tairu_core.contour_generator import (
         ContourError, SOURCE_INPE, SOURCE_COPERNICUS,
         SMOOTHING_NONE, generate_contours,
@@ -80,9 +83,9 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
     from tairu_ui.style import (
-        apply_combo_popup_style, apply_tairu_style, set_action_button,
+        apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_secondary_button, set_warning_banner, status_style, SCROLLBAR_STYLE,
     )
 
 _VECTOR_LIST_STYLE = """
@@ -278,21 +281,14 @@ class TairuDBGenerateWizard(QWizard):
                     set_plain_button(button)
 
     def visible_basemap_layers(self):
-        """Visible raster and vector-tile layers, in the project's draw order.
+        """As imagens marcadas na primeira tela, na ordem de desenho do projeto.
 
-        Vector-tile basemaps are rendered into the raster tiles just like raster
-        layers (regular vector layers are exported as features instead). Using
-        layerOrder() preserves the project hierarchy so overlays composite on top
-        of the basemap correctly.
+        Uma lista só, e é a que o usuário já preencheu ao escolher a área. Mapas
+        de fundo online (XYZ/WMS) não entram nela: eles não são escolha de
+        ninguém aqui, e antes disto uma camada dessas ligada no QGIS fazia a
+        geração baixar milhares de tiles da internet sem aviso.
         """
-        project = QgsProject.instance()
-        layers = []
-        for layer in project.layerTreeRoot().layerOrder():
-            if not layer_is_visible(layer, project):
-                continue
-            if layer.type() in (_RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE):
-                layers.append(layer)
-        return layers
+        return self.extent_page.checked_raster_layers()
 
     def _on_rejected(self):
         if self.feedback is not None:
@@ -309,142 +305,343 @@ class LocalGenerateWizard(TairuDBGenerateWizard):
 # ------------------------------------------------------------------ page 1
 
 
+def _km_size(bb):
+    """"4,2 × 3,1 km" a partir de uma envoltória em graus (EPSG:4326)."""
+    clat = math.radians((bb.yMinimum() + bb.yMaximum()) / 2)
+    w_km = abs(bb.xMaximum() - bb.xMinimum()) * 111.32 * math.cos(clat)
+    h_km = abs(bb.yMaximum() - bb.yMinimum()) * 110.574
+    return f'{w_km:.1f} × {h_km:.1f} km'.replace('.', ',')
+
+
+_ALIGN_LEFT = Qt.AlignmentFlag.AlignLeft
+_SOURCE_LABELS = {
+    'canvas': 'A área visível do mapa',
+    'draw': 'Um retângulo desenhado no mapa',
+    'layer': 'Cada polígono de uma camada',
+    'raster': 'Cada imagem carregada no projeto',
+}
+_IMAGE_HEADERS = ['Usar', 'Imagem', 'Área', 'Resolução', 'SRC']
+
+
+def _resolution_label(layer, bb_wgs84):
+    """Metros por pixel no chão, medidos da extensão em graus e do nº de pixels.
+
+    Não usa `rasterUnitsPerPixel`: numa camada geográfica ele vem em GRAUS, e
+    "8e-05 m/px" não diz nada a ninguém.
+    """
+    width = layer.width()
+    if not width:
+        return '—'
+    clat = math.radians((bb_wgs84.yMinimum() + bb_wgs84.yMaximum()) / 2)
+    metres = abs(bb_wgs84.xMaximum() - bb_wgs84.xMinimum()) * 111320.0 * math.cos(clat)
+    res = metres / width
+    if res < 10:
+        return f'{res:.2f} m/px'.replace('.', ',')
+    return f'{res:.0f} m/px'
+
+
+def _is_online(layer):
+    """A fonte busca pela rede — o que transforma "gerar" em "baixar".
+
+    Testa a URL na fonte, não o nome do provedor: XYZ, WMTS e tiles vetoriais
+    chegam todos pelo provedor `wms`/`vectortile`, e o mesmo provedor também
+    serve um .mbtiles local, que não baixa nada.
+    """
+    return 'http' in (layer.source() or '').lower()
+
+
+def _layer_origin(layer):
+    return 'internet' if _is_online(layer) else 'arquivo local'
+
+
+def _safe_measure(fn, *args):
+    """Uma dica que não pôde ser medida vira texto, não uma exceção no assistente."""
+    try:
+        return fn(*args)
+    except Exception as exc:
+        return f'Não foi possível medir a área: {exc}'
+
+
+def _regions_text(count, bb):
+    size = _km_size(bb)
+    # featureCount() responde -1 quando o provedor não sabe contar sem varrer.
+    if count is None or count < 0:
+        return f'Área total: {size}'
+    label = '1 região' if count == 1 else f'{count} regiões'
+    return f'{label} · {size}'
+
+
 class ExtentPage(QWizardPage):
 
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
         self.setTitle('Área de interesse')
-        self.setSubTitle('Escolha a área que será convertida em tiles raster.')
+        self.setSubTitle('Escolha a área que vai virar mapa.')
         self.drawn_rect = None
         self._picker = None
+        self._raster_rows = []          # [(layer_id, utilizável)] na ordem da tabela
 
         layout = QVBoxLayout(self)
-        self.layer_radio = QRadioButton('Usar polígono(s) de uma camada (uma região por feição)')
-        self.layer_radio.setChecked(True)
-        layout.addWidget(self.layer_radio)
+        # 12 entre OPÇÕES; dentro de cada opção, 2 entre o rádio e a caixa dele.
+        # Com um espaçamento só para os dois casos, a caixa da opção marcada
+        # ficava à mesma distância do próprio rádio e do rádio seguinte, e lia
+        # como um espaço solto entre as duas opções.
+        layout.setSpacing(12)
+        # Cada opção fica num recipiente próprio para colar a caixa no rádio, e
+        # isso tira os quatro do mesmo pai — sem grupo explícito eles deixam de
+        # ser exclusivos e dá para marcar dois ao mesmo tempo.
+        self._source_group = QButtonGroup(self)
 
+        # A área visível vem marcada por ser a única que funciona em QUALQUER
+        # projeto. Com "camada de polígonos" no lugar dela — o padrão anterior —
+        # o assistente abria com o Avançar desligado para quem não tem uma
+        # camada de polígonos, que é a maioria dos projetos.
+        self.canvas_radio = QRadioButton(_SOURCE_LABELS['canvas'])
+        self.canvas_radio.setChecked(True)
+        self._add_option(layout, self.canvas_radio)
+
+        self.draw_radio = QRadioButton(_SOURCE_LABELS['draw'])
+        self._draw_box = self._add_option(layout, self.draw_radio)
+        self.draw_btn = set_secondary_button(QPushButton('Desenhar no mapa'))
+        self.draw_btn.clicked.connect(self._start_picker)
+        self._draw_box.layout().addWidget(self.draw_btn, 0, _ALIGN_LEFT)
+
+        self.layer_radio = QRadioButton(_SOURCE_LABELS['layer'])
+        self._layer_box = self._add_option(layout, self.layer_radio)
         self.layer_combo = QgsMapLayerComboBox()
         self.layer_combo.setFilters(_POLYGON_LAYER_FILTER)
         apply_combo_popup_style(self.layer_combo)
-        layout.addWidget(self.layer_combo)
+        self._layer_box.layout().addWidget(self.layer_combo)
 
-        self.draw_radio = QRadioButton('Desenhar um retângulo no mapa')
-        layout.addWidget(self.draw_radio)
-
-        self.draw_btn = set_action_button(QPushButton('Desenhar no mapa…'))
-        self.draw_btn.setEnabled(False)
-        self.draw_btn.clicked.connect(self._start_picker)
-        layout.addWidget(self.draw_btn)
-
-        self.drawn_label = set_muted(QLabel(''))
-        layout.addWidget(self.drawn_label)
-
-        self.canvas_radio = QRadioButton('Usar área visível do mapa')
-        layout.addWidget(self.canvas_radio)
-
-        self.raster_radio = QRadioButton(
-            'Usar a extensão de imagens (uma região por imagem)')
-        layout.addWidget(self.raster_radio)
-
-        # Mesma lista com caixinhas da página de camadas vetoriais.
-        self._raster_checkboxes = {}
-        self._raster_content = QWidget()
-        self._raster_content.setObjectName('VectorScrollContent')
-        self._raster_inner = QVBoxLayout(self._raster_content)
-        self._raster_inner.setContentsMargins(0, 0, 0, 0)
-        self._raster_inner.setSpacing(2)
-        self._raster_scroll = QScrollArea()
-        self._raster_scroll.setWidgetResizable(True)
-        self._raster_scroll.setWidget(self._raster_content)
-        self._raster_scroll.setStyleSheet(_VECTOR_LIST_STYLE)
-        self._raster_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
-        # Os sinais só são ligados no fim deste __init__, então nada dispara
-        # _sync_controls durante a construção: o estado inicial vai na mão.
-        self._raster_scroll.setVisible(False)
-        layout.addWidget(self._raster_scroll, 1)
+        self.raster_radio = QRadioButton(_SOURCE_LABELS['raster'])
+        self._raster_box = self._add_option(layout, self.raster_radio, stretch=1)
+        self._raster_holder = self._raster_box.parentWidget()
+        self._raster_box.layout().addWidget(set_muted(QLabel(
+            'As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma '
+            'também define uma região.')))
+        self.raster_table = QTableWidget(0, len(_IMAGE_HEADERS))
+        self.raster_table.setHorizontalHeaderLabels(_IMAGE_HEADERS)
+        self.raster_table.setAlternatingRowColors(True)
+        self.raster_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.raster_table.verticalHeader().setVisible(False)
+        self.raster_table.horizontalHeader().setStretchLastSection(True)
+        # Sem altura mínima a tabela divide a sobra com o addStretch do fim do
+        # layout e abre com uma linha e meia à vista.
+        self.raster_table.setMinimumHeight(160)
+        apply_table_style(self.raster_table)
+        self.raster_table.itemChanged.connect(lambda _: self._sync_controls())
+        self._raster_box.layout().addWidget(self.raster_table, 1)
 
         layout.addStretch(1)
 
         self.layer_radio.toggled.connect(self._sync_controls)
-        self.draw_radio.toggled.connect(self._sync_controls)
         self.canvas_radio.toggled.connect(self._sync_controls)
         self.raster_radio.toggled.connect(self._sync_controls)
+        self.draw_radio.toggled.connect(self._sync_controls)
         # Deferred on purpose: layerChanged also fires from inside QgsMapLayerModel's
         # endInsertRows when a layer is added to the project (a records pull), and
         # emitting completeChanged there re-enters QWizard mid-model-mutation.
-        self.layer_combo.layerChanged.connect(lambda _: QTimer.singleShot(0, self.completeChanged))
+        self.layer_combo.layerChanged.connect(lambda _: QTimer.singleShot(0, self._sync_controls))
+        self._sync_controls()
+
+    # --------------------------------------------------------------- layout
+
+    def _add_option(self, layout, radio, stretch=0):
+        """Rádio + a caixa dele num só bloco, para que a caixa fique colada no rádio."""
+        holder = QWidget()
+        outer = QVBoxLayout(holder)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(6)
+        self._source_group.addButton(radio)
+        outer.addWidget(radio)
+        box = QWidget()
+        inner = QVBoxLayout(box)
+        # Folga em cima e embaixo: escondida a caixa, nada disto conta, então o
+        # espaçamento entre opções não marcadas continua sendo só o do layout.
+        inner.setContentsMargins(22, 2, 0, 6)
+        inner.setSpacing(6)
+        box.setVisible(False)
+        outer.addWidget(box, stretch)
+        # Sem esticar aqui: um recipiente com fator de esticamento absorve a
+        # sobra vertical mesmo com a caixa escondida, e o rádio dele descola dos
+        # de cima. Quem estica é o _sync_controls, e só na opção marcada.
+        layout.addWidget(holder)
+        self._page_layout = layout
+        return box
 
     def _sync_controls(self):
-        use_layer = self.layer_radio.isChecked()
-        use_draw = self.draw_radio.isChecked()
-        self.draw_btn.setEnabled(use_draw)
-        self.layer_combo.setEnabled(use_layer)
-        self._raster_scroll.setVisible(self.raster_radio.isChecked())
+        """Só a origem marcada aparece — nem controles, nem medida das outras."""
+        self._layer_box.setVisible(self.layer_radio.isChecked())
+        self._draw_box.setVisible(self.draw_radio.isChecked())
+        self._raster_box.setVisible(self.raster_radio.isChecked())
+        # A tabela cresce com a janela só quando está à vista.
+        self._page_layout.setStretchFactor(
+            self._raster_holder, 1 if self.raster_radio.isChecked() else 0)
+        self._refresh_labels()
         self.completeChanged.emit()
 
+    def _refresh_labels(self):
+        """Estado e medida no PRÓPRIO rótulo de cada opção.
+
+        Uma linha de texto sob a opção marcada abria um vão que lia como espaço
+        vazio entre ela e a seguinte — e a medida ficava fraca demais para
+        parecer conteúdo. No rótulo, o espaçamento entre opções é sempre o mesmo
+        e só um controle de verdade (botão, lista, tabela) ocupa altura.
+
+        Origem impossível fica DESABILITADA com o motivo no rótulo: sem ele, uma
+        opção que não responde ao clique parece defeito do plugin.
+        """
+        wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
+        ctx = QgsProject.instance().transformContext()
+        has_polygons = self.layer_combo.count() > 0
+        has_images = any(usable for _lid, usable in self._raster_rows)
+        set_control_enabled(self.layer_radio, has_polygons)
+        set_control_enabled(self.raster_radio, has_images)
+
+        # Uma origem que não existe mais neste projeto não pode seguir marcada.
+        if ((self.layer_radio.isChecked() and not has_polygons)
+                or (self.raster_radio.isChecked() and not has_images)):
+            self.canvas_radio.setChecked(True)   # reentra por toggled
+            return
+
+        self._set_label(self.canvas_radio, 'canvas',
+                        _safe_measure(self._canvas_hint_text, wgs84, ctx))
+        self._set_label(self.draw_radio, 'draw',
+                        _safe_measure(self._draw_hint_text, wgs84, ctx))
+        self._set_label(
+            self.layer_radio, 'layer',
+            _safe_measure(self._layer_hint_text, wgs84, ctx) if has_polygons
+            else 'nenhuma camada de polígonos neste projeto')
+        self._set_label(
+            self.raster_radio, 'raster',
+            _safe_measure(self._raster_hint_text, wgs84, ctx) if has_images
+            else 'nenhum arquivo de imagem neste projeto')
+
+    def _set_label(self, radio, key, suffix):
+        """O sufixo só entra na opção marcada — ou quando ela não pode ser marcada."""
+        base = _SOURCE_LABELS[key]
+        show = radio.isChecked() or not radio.isEnabled()
+        radio.setText(f'{base} — {suffix}' if show and suffix else base)
+
+    def _canvas_hint_text(self, wgs84, ctx):
+        canvas = self._wizard.iface.mapCanvas()
+        return _regions_text(1, to_wgs84(QgsGeometry.fromRect(canvas.extent()),
+                                         self._canvas_crs(), wgs84, ctx).boundingBox())
+
+    def _draw_hint_text(self, wgs84, ctx):
+        if self.drawn_rect is None or self.drawn_rect.isEmpty():
+            return 'nenhum definido ainda'
+        crs = QgsProject.instance().crs()
+        return _regions_text(1, to_wgs84(
+            QgsGeometry.fromRect(self.drawn_rect),
+            crs if crs.isValid() else self._canvas_crs(), wgs84, ctx).boundingBox())
+
+    def _layer_hint_text(self, wgs84, ctx):
+        layer = self.layer_combo.currentLayer()
+        if layer is None:
+            return 'nenhuma camada selecionada'
+        return _regions_text(layer.featureCount(), to_wgs84(
+            QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox())
+
+    def _raster_hint_text(self, wgs84, ctx):
+        layers = self.checked_raster_layers()
+        if not layers:
+            return 'nenhuma imagem marcada'
+        union = None
+        for layer in layers:
+            bb = to_wgs84(QgsGeometry.fromRect(layer.extent()),
+                          layer.crs(), wgs84, ctx).boundingBox()
+            if union is None:
+                union = bb
+            else:
+                union.combineExtentWith(bb)
+        return _regions_text(len(layers), union)
+
+    # ---------------------------------------------------- tabela de imagens
+
     def initializePage(self):
-        """(Re)monta a lista de imagens a cada visita — o projeto pode ter mudado.
+        """(Re)monta a tabela de imagens a cada visita — o projeto pode ter mudado.
 
         Vêm marcadas só as camadas de arquivo (provider `gdal`): um XYZ/WMS
         visível tem extensão mundial e viraria uma área do tamanho do planeta.
         Numa revisita vale o que o usuário tinha marcado, não o padrão.
         """
-        first_visit = not self._raster_checkboxes
-        previously_checked = {
-            lid for lid, cb in self._raster_checkboxes.items() if cb.isChecked()
-        }
-        while self._raster_inner.count():
-            item = self._raster_inner.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._raster_checkboxes.clear()
+        first_visit = not self._raster_rows
+        previously_checked = {lid for lid, _u in self._raster_rows
+                              if lid in self._checked_ids()}
 
         project = QgsProject.instance()
         wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
         ctx = project.transformContext()
-        for layer in project.layerTreeRoot().layerOrder():
-            if layer.type() != _RASTER_LAYER_TYPE or not layer.isValid():
-                continue
-            # Camada oculta não é renderizada: a sua extensão só geraria tiles vazios.
-            if not layer_is_visible(layer, project):
-                continue
-            cb = QCheckBox(layer.name())
+        # Só imagens de ARQUIVO (provider `gdal`). Um XYZ/WMS tem extensão
+        # mundial e não define região nenhuma; listá-lo aqui com uma caixinha
+        # fazia o usuário concluir que a caixinha decidia se o mapa de fundo
+        # entrava no arquivo — não decide (isso é a página Parâmetros), e o
+        # download acontecia mesmo com ela desmarcada.
+        layers = [layer for layer in project.layerTreeRoot().layerOrder()
+                  if layer.type() == _RASTER_LAYER_TYPE and layer.isValid()
+                  and layer.providerType() == 'gdal'
+                  # Camada oculta não é renderizada: a extensão dela só geraria tiles vazios.
+                  and layer_is_visible(layer, project)]
+
+        self._raster_rows = []
+        self.raster_table.blockSignals(True)
+        self.raster_table.setRowCount(len(layers))
+        for row, layer in enumerate(layers):
             try:
-                cb.setText(f'{layer.name()}   {self._extent_label(layer, wgs84, ctx)}')
-                cb.setChecked(layer.providerType() == 'gdal' if first_visit
-                              else layer.id() in previously_checked)
+                values = self._image_row_values(layer, wgs84, ctx)
+                usable, reason = True, None
             except ValueError as exc:
                 # Sem reprojeção não há área. Dizer o motivo AQUI, e não deixar
                 # falhar como "nenhum tile intersecta a área" três telas adiante.
-                cb.setText(f'{layer.name()}   — sem área utilizável')
-                cb.setToolTip(str(exc))
-                cb.setEnabled(False)
-            cb.toggled.connect(lambda _: self.completeChanged.emit())
-            self._raster_checkboxes[layer.id()] = cb
-            self._raster_inner.addWidget(cb)
-        self._raster_inner.addStretch(1)
-        self.completeChanged.emit()
+                values = [layer.name(), 'sem área utilizável', '—', layer.crs().authid() or '—']
+                usable, reason = False, str(exc)
+            use = QTableWidgetItem('')
+            flags = use.flags() & ~_ITEM_IS_EDITABLE
+            if usable:
+                use.setFlags(flags | _ITEM_IS_CHECKABLE)
+                use.setCheckState(_CHECKED if (
+                    first_visit or layer.id() in previously_checked) else _UNCHECKED)
+            else:
+                use.setFlags(flags & ~_ITEM_IS_ENABLED)
+                use.setToolTip(reason)
+            self.raster_table.setItem(row, 0, use)
+            for col, text in enumerate(values, start=1):
+                cell = QTableWidgetItem(text)
+                cell.setFlags(cell.flags() & ~_ITEM_IS_EDITABLE)
+                if reason:
+                    cell.setToolTip(reason)
+                self.raster_table.setItem(row, col, cell)
+            self._raster_rows.append((layer.id(), usable))
+        self.raster_table.blockSignals(False)
+        self.raster_table.resizeColumnsToContents()
+        self._sync_controls()
 
-    def _extent_label(self, layer, wgs84, ctx):
-        """"4,2 × 4,2 km" ao lado do nome — o tamanho é o que denuncia um basemap global."""
+    def _image_row_values(self, layer, wgs84, ctx):
+        """Nome, área, resolução no chão e SRC — o que decide se a imagem entra."""
         if layer.extent().isEmpty():
             raise ValueError('A camada não informa uma extensão.')
-        bb = to_wgs84(QgsGeometry.fromRect(layer.extent()),
-                      layer.crs(), wgs84, ctx).boundingBox()
-        clat = math.radians((bb.yMinimum() + bb.yMaximum()) / 2)
-        w_km = abs(bb.xMaximum() - bb.xMinimum()) * 111.32 * math.cos(clat)
-        h_km = abs(bb.yMaximum() - bb.yMinimum()) * 110.574
-        return f'{w_km:.1f} × {h_km:.1f} km'.replace('.', ',')
+        bb = to_wgs84(QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox()
+        return [layer.name(), _km_size(bb), _resolution_label(layer, bb), layer.crs().authid() or '—']
+
+    def _checked_ids(self):
+        checked = set()
+        for row, (layer_id, usable) in enumerate(self._raster_rows):
+            item = self.raster_table.item(row, 0)
+            if usable and item is not None and item.checkState() == _CHECKED:
+                checked.add(layer_id)
+        return checked
 
     def checked_raster_layers(self):
         """Marcadas aqui E ainda válidas e visíveis: o assistente não é modal,
         dá tempo de o usuário apagar ou ocultar a camada depois de marcá-la."""
         project = QgsProject.instance()
+        checked = self._checked_ids()
         layers = []
-        for layer_id, cb in self._raster_checkboxes.items():
-            if not cb.isChecked():
-                continue
+        # Na ordem das linhas, que é a ordem de desenho do projeto: é ela que
+        # decide o que compõe por cima de quê nos tiles.
+        for layer_id in [lid for lid, _u in self._raster_rows if lid in checked]:
             layer = project.mapLayer(layer_id)
             if layer is None or not layer.isValid():
                 continue
@@ -453,21 +650,33 @@ class ExtentPage(QWizardPage):
             layers.append(layer)
         return layers
 
+    # ------------------------------------------------- retângulo no canvas
+
     def _start_picker(self):
         canvas = self._wizard.iface.mapCanvas()
+        self.stop_picker()
         self._picker = ExtentPicker(canvas, self)
         self._picker.extentPicked.connect(self._on_extent_picked)
+        self._picker.canceled.connect(self._on_pick_canceled)
         self._wizard.hide()
         self._picker.start()
 
     def _on_extent_picked(self, rect):
         self.drawn_rect = rect
-        self.drawn_label.setText(
-            f'Retângulo: {rect.xMinimum():.5f}, {rect.yMinimum():.5f} — '
+        self.draw_btn.setText('Desenhar outro retângulo')
+        self.draw_btn.setToolTip(
+            f'{rect.xMinimum():.5f}, {rect.yMinimum():.5f} — '
             f'{rect.xMaximum():.5f}, {rect.yMaximum():.5f} (CRS do projeto)')
+        self._restore_wizard()
+
+    def _on_pick_canceled(self):
+        self._restore_wizard()
+
+    def _restore_wizard(self):
+        self._picker = None
         self._wizard.show()
         self._wizard.raise_()
-        self.completeChanged.emit()
+        self._sync_controls()
 
     def stop_picker(self):
         if self._picker is not None:
@@ -558,9 +767,16 @@ class ParamsPage(QWizardPage):
         super().__init__()
         self._wizard = wizard
         self.setTitle('Parâmetros')
-        self.setSubTitle('Configurações de resolução e formato do mapa base.')
+        self.setSubTitle('Resolução e formato dos tiles do mapa.')
 
         layout = QVBoxLayout(self)
+        # Uma linha, só quando existe o caso. O arquivo é montado das imagens
+        # marcadas na primeira tela; sem dizer isto, quem tem um XYZ ligado no
+        # QGIS geraria um mapa sem ele e sem entender o porquê.
+        self.online_note = set_muted(QLabel(''))
+        self.online_note.setWordWrap(True)
+        self.online_note.hide()
+        layout.addWidget(self.online_note)
         form = QFormLayout()
 
         self.resolution_combo = QComboBox()
@@ -615,7 +831,13 @@ class ParamsPage(QWizardPage):
         layout.addStretch(1)
 
     def initializePage(self):
-        pass
+        online = [layer.name() for layer in QgsProject.instance().layerTreeRoot().layerOrder()
+                  if layer.isValid() and _is_online(layer)
+                  and layer_is_visible(layer, QgsProject.instance())]
+        self.online_note.setText(
+            'Mapas de fundo online não entram no arquivo (' + ', '.join(online) + '). '
+            'O mapa é montado com as imagens marcadas na primeira tela.' if online else '')
+        self.online_note.setVisible(bool(online))
 
     def isComplete(self):
         return True
@@ -1154,8 +1376,8 @@ class EstimatePage(QWizardPage):
         if not wizard.visible_basemap_layers():
             self.report.setPlainText('')
             self.gate_label.setText(
-                'Nenhuma camada raster ou de tiles vetoriais visível no projeto — '
-                'adicione/habilite o mapa base que deseja exportar antes de continuar.')
+                'Nenhuma camada marcada para desenhar o mapa. Volte a Parâmetros e '
+                'marque ao menos uma, ou habilite no projeto a camada desejada.')
             self.completeChanged.emit()
             return
 

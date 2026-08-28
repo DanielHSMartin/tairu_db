@@ -46,6 +46,11 @@ _FMT_ARGB32 = QImage.Format.Format_ARGB32
 _FLAG_NO_THREADING = QgsProcessingAlgorithm.Flag.FlagNoThreading
 _DOCK_RIGHT_AREA = Qt.DockWidgetArea.RightDockWidgetArea
 _USER_ROLE = Qt.ItemDataRole.UserRole
+_ITEM_IS_EDITABLE = Qt.ItemFlag.ItemIsEditable
+_ITEM_IS_CHECKABLE = Qt.ItemFlag.ItemIsUserCheckable
+_ITEM_IS_ENABLED = Qt.ItemFlag.ItemIsEnabled
+_CHECKED = Qt.CheckState.Checked
+_UNCHECKED = Qt.CheckState.Unchecked
 
 try:
     _GPKG_CREATE_FILE = _QgsVectorFileWriter.ActionOnExistingFile.CreateOrOverwriteFile   # QGIS 4

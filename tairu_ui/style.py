@@ -251,6 +251,13 @@ QRadioButton {{
     spacing: 8px;
 }}
 
+/* Sem isto a regra acima pinta o texto desabilitado com a mesma cor do
+   habilitado: a opção não responde ao clique e parece defeito do plugin. */
+QCheckBox:disabled,
+QRadioButton:disabled {{
+    color: {OUTLINE};
+}}
+
 QListWidget {{
     background: transparent;
     border: none;

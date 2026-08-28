@@ -6,7 +6,7 @@ badge, tairudb file count and (best-effort) record count."""
 from qgis.PyQt.QtCore import QSize, Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QCheckBox,
+    QPushButton, QCheckBox, QFrame,
 )
 
 try:
@@ -14,7 +14,7 @@ try:
     from .style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
         SURFACE_CONTAINER, WARNING, WARNING_CONTAINER,
-        apply_tairu_style, badge_style, set_primary_button, set_title,
+        apply_tairu_style, badge_style, set_muted, set_primary_button, set_title,
         status_style,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
@@ -22,7 +22,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_ui.style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
         SURFACE_CONTAINER, WARNING, WARNING_CONTAINER,
-        apply_tairu_style, badge_style, set_primary_button, set_title,
+        apply_tairu_style, badge_style, set_muted, set_primary_button, set_title,
         status_style,
     )
 
@@ -56,6 +56,7 @@ class MapsPage(QWidget):
 
     mapOpened = pyqtSignal(str)      # map_id
     refreshRequested = pyqtSignal()
+    generateLocalRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -64,6 +65,24 @@ class MapsPage(QWidget):
         self._uid = None
 
         layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        layout.addWidget(set_title(QLabel('Gerar TairuDB')))
+        gen_desc = set_muted(QLabel(
+            'Cria um arquivo .tairudb no seu computador, sem enviar para uma expedição.'))
+        gen_desc.setWordWrap(True)
+        layout.addWidget(gen_desc)
+        self.generate_local_btn = set_primary_button(QPushButton('Gerar arquivo…'))
+        self.generate_local_btn.clicked.connect(self.generateLocalRequested.emit)
+        layout.addWidget(self.generate_local_btn)
+
+        layout.addSpacing(18)
+        separator = QFrame()
+        separator.setObjectName('TairuSeparator')
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+        layout.addSpacing(18)
 
         header = QHBoxLayout()
         title = set_title(QLabel('Minhas expedições'))

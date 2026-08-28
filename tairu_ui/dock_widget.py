@@ -8,7 +8,9 @@ and routes between LoginPage, MapsPage and MapDetailPage. All network work
 happens in FirebaseTask background tasks; this class only touches widgets.
 """
 
+import configparser
 import contextlib
+import os
 from qgis.PyQt.QtCore import QUrl
 from qgis.PyQt.QtGui import QDesktopServices
 from qgis.PyQt.QtWidgets import (
@@ -53,6 +55,21 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
 _VERSION_LABELS = {'offline': 'Offline', 'online': 'Online', 'realtime': 'Tempo Real'}
 
 
+def _plugin_version():
+    """Versão do metadata.txt — a mesma que o gerenciador de plugins mostra.
+
+    RawConfigParser de propósito: o changelog do metadata pode conter `%`, que a
+    interpolação padrão do configparser trata como escape e rejeita.
+    """
+    parser = configparser.RawConfigParser()
+    metadata = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'metadata.txt')
+    with contextlib.suppress(Exception):
+        parser.read(metadata, encoding='utf-8')
+        return parser.get('general', 'version', fallback='')
+    return ''
+
+
 class TairuDockWidget(QgsDockWidget):
 
     def __init__(self, iface, parent=None):
@@ -87,6 +104,8 @@ class TairuDockWidget(QgsDockWidget):
         footer = QHBoxLayout()
         self.account_label = set_muted(QLabel(''))
         footer.addWidget(self.account_label, 1)
+        version = _plugin_version()
+        footer.addWidget(set_muted(QLabel(f'v{version}' if version else '')))
         self.signout_btn = set_link_button(QPushButton('Sair'))
         self.signout_btn.clicked.connect(self.sign_out)
         self.signout_btn.hide()
@@ -103,6 +122,7 @@ class TairuDockWidget(QgsDockWidget):
 
         self.maps_page.refreshRequested.connect(self.refresh_maps)
         self.maps_page.mapOpened.connect(self.open_map)
+        self.maps_page.generateLocalRequested.connect(self._open_local_generate)
 
         self.detail_page.backRequested.connect(self.show_maps_page)
         self.detail_page.pullRecordsRequested.connect(self._pull_records)
