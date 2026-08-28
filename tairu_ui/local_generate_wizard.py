@@ -108,6 +108,10 @@ QCheckBox:hover {
 }
 """
 
+# Rótulo e valor da grade GRG numa fonte só: o log imprimia o valor cru do enum.
+_GRG_TYPES = [('Alfanumérica', 'alphanumeric'), ('Coordenada Geográfica', 'geographic')]
+_GRG_TYPE_LABELS = {valor: rotulo for rotulo, valor in _GRG_TYPES}
+
 _RESOLUTIONS = [
     ('Máxima (0,25 m/px)', 19),
     ('Altíssima (0,5 m/px)', 18), ('Alta (1 m/px)', 17), ('Médio Alta (2 m/px)', 16),
@@ -1072,8 +1076,8 @@ class GrgPage(QWizardPage):
         form = QFormLayout(self._grg_options_widget)
 
         self._grg_type_combo = QComboBox()
-        self._grg_type_combo.addItem('Alfanumérica', 'alphanumeric')
-        self._grg_type_combo.addItem('Coordenada Geográfica', 'geographic')
+        for rotulo, valor in _GRG_TYPES:
+            self._grg_type_combo.addItem(rotulo, valor)
         apply_combo_popup_style(self._grg_type_combo)
         form.addRow('Tipo:', self._grg_type_combo)
 
@@ -1107,9 +1111,9 @@ class GrgPage(QWizardPage):
         self._grg_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._grg_opacity_slider.setRange(0, 100)
         self._grg_opacity_slider.setValue(80)
-        self._grg_opacity_label = QLabel('80%%')
+        self._grg_opacity_label = QLabel('80%')
         self._grg_opacity_slider.valueChanged.connect(
-            lambda v: self._grg_opacity_label.setText(f'{v}%%'))
+            lambda v: self._grg_opacity_label.setText(f'{v}%'))
         width_lay.addWidget(self._grg_opacity_slider, 1)
         width_lay.addWidget(self._grg_opacity_label)
         form.addRow('Espessura:', width_row)
@@ -1683,7 +1687,7 @@ class RunPage(QWizardPage):
 
         if wizard.grg_page.grg_enabled():
             grid_type, grg_opts = wizard.grg_page.grg_options()
-            self._append(f'Gerando grade GRG ({grid_type})…')
+            self._append(f'Gerando grade GRG ({_GRG_TYPE_LABELS.get(grid_type, grid_type)})…')
             bounds = wizard.region_result.wgs84_extent
             ok = engine.writer.writeGrg(bounds, grid_type, grg_opts)
             if not ok:

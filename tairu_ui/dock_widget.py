@@ -104,8 +104,9 @@ class TairuDockWidget(QgsDockWidget):
         footer = QHBoxLayout()
         self.account_label = set_muted(QLabel(''))
         footer.addWidget(self.account_label, 1)
-        version = _plugin_version()
-        footer.addWidget(set_muted(QLabel(f'v{version}' if version else '')))
+        self.version_label = set_muted(QLabel(''))
+        self._refresh_version()
+        footer.addWidget(self.version_label)
         self.signout_btn = set_link_button(QPushButton('Sair'))
         self.signout_btn.clicked.connect(self.sign_out)
         self.signout_btn.hide()
@@ -311,6 +312,20 @@ class TairuDockWidget(QgsDockWidget):
             allow_remote_counts=False,
         )
         return True
+
+    def _refresh_version(self):
+        """Relê o metadata.txt em vez de confiar no valor lido na construção.
+
+        Lido uma única vez, o rótulo envelhecia: numa sessão do QGIS com o painel
+        aberto desde antes de o metadata mudar, ele seguia anunciando a versão
+        anterior — e é esse rodapé que as capturas de documentação usam.
+        """
+        version = _plugin_version()
+        self.version_label.setText(f'v{version}' if version else '')
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_version()
 
     def refresh_maps(self):
         fs, uid = self.fs, self.tokens.uid
