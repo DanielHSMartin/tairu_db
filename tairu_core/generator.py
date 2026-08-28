@@ -90,6 +90,7 @@ class EstimateResult:
 
 
 _ZOOM_TO_LABEL = {
+    19: "Máxima (0,25 m/px) — zoom 19",
     18: "Altíssima (0,5 m/px) — zoom 18",
     17: "Alta (1 m/px) — zoom 17",
     16: "Médio Alta (2 m/px) — zoom 16",

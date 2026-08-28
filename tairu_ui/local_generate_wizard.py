@@ -14,6 +14,7 @@ Processing algorithm and the raster cloud wizard).
 
 import contextlib
 import datetime
+import math
 import os
 import traceback
 
@@ -105,6 +106,7 @@ QCheckBox:hover {
 """
 
 _RESOLUTIONS = [
+    ('Máxima (0,25 m/px)', 19),
     ('Altíssima (0,5 m/px)', 18), ('Alta (1 m/px)', 17), ('Médio Alta (2 m/px)', 16),
     ('Média (4 m/px)', 15), ('Médio Baixa (8 m/px)', 14), ('Baixa (16 m/px)', 13),
     ('Muito Baixa (32 m/px)', 12),
@@ -341,11 +343,33 @@ class ExtentPage(QWizardPage):
         self.canvas_radio = QRadioButton('Usar área visível do mapa')
         layout.addWidget(self.canvas_radio)
 
+        self.raster_radio = QRadioButton(
+            'Usar a extensão de imagens (uma região por imagem)')
+        layout.addWidget(self.raster_radio)
+
+        # Mesma lista com caixinhas da página de camadas vetoriais.
+        self._raster_checkboxes = {}
+        self._raster_content = QWidget()
+        self._raster_content.setObjectName('VectorScrollContent')
+        self._raster_inner = QVBoxLayout(self._raster_content)
+        self._raster_inner.setContentsMargins(0, 0, 0, 0)
+        self._raster_inner.setSpacing(2)
+        self._raster_scroll = QScrollArea()
+        self._raster_scroll.setWidgetResizable(True)
+        self._raster_scroll.setWidget(self._raster_content)
+        self._raster_scroll.setStyleSheet(_VECTOR_LIST_STYLE)
+        self._raster_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
+        # Os sinais só são ligados no fim deste __init__, então nada dispara
+        # _sync_controls durante a construção: o estado inicial vai na mão.
+        self._raster_scroll.setVisible(False)
+        layout.addWidget(self._raster_scroll, 1)
+
         layout.addStretch(1)
 
         self.layer_radio.toggled.connect(self._sync_controls)
         self.draw_radio.toggled.connect(self._sync_controls)
         self.canvas_radio.toggled.connect(self._sync_controls)
+        self.raster_radio.toggled.connect(self._sync_controls)
         # Deferred on purpose: layerChanged also fires from inside QgsMapLayerModel's
         # endInsertRows when a layer is added to the project (a records pull), and
         # emitting completeChanged there re-enters QWizard mid-model-mutation.
@@ -356,7 +380,78 @@ class ExtentPage(QWizardPage):
         use_draw = self.draw_radio.isChecked()
         self.draw_btn.setEnabled(use_draw)
         self.layer_combo.setEnabled(use_layer)
+        self._raster_scroll.setVisible(self.raster_radio.isChecked())
         self.completeChanged.emit()
+
+    def initializePage(self):
+        """(Re)monta a lista de imagens a cada visita — o projeto pode ter mudado.
+
+        Vêm marcadas só as camadas de arquivo (provider `gdal`): um XYZ/WMS
+        visível tem extensão mundial e viraria uma área do tamanho do planeta.
+        Numa revisita vale o que o usuário tinha marcado, não o padrão.
+        """
+        first_visit = not self._raster_checkboxes
+        previously_checked = {
+            lid for lid, cb in self._raster_checkboxes.items() if cb.isChecked()
+        }
+        while self._raster_inner.count():
+            item = self._raster_inner.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._raster_checkboxes.clear()
+
+        project = QgsProject.instance()
+        wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
+        ctx = project.transformContext()
+        for layer in project.layerTreeRoot().layerOrder():
+            if layer.type() != _RASTER_LAYER_TYPE or not layer.isValid():
+                continue
+            # Camada oculta não é renderizada: a sua extensão só geraria tiles vazios.
+            if not layer_is_visible(layer, project):
+                continue
+            cb = QCheckBox(layer.name())
+            try:
+                cb.setText(f'{layer.name()}   {self._extent_label(layer, wgs84, ctx)}')
+                cb.setChecked(layer.providerType() == 'gdal' if first_visit
+                              else layer.id() in previously_checked)
+            except ValueError as exc:
+                # Sem reprojeção não há área. Dizer o motivo AQUI, e não deixar
+                # falhar como "nenhum tile intersecta a área" três telas adiante.
+                cb.setText(f'{layer.name()}   — sem área utilizável')
+                cb.setToolTip(str(exc))
+                cb.setEnabled(False)
+            cb.toggled.connect(lambda _: self.completeChanged.emit())
+            self._raster_checkboxes[layer.id()] = cb
+            self._raster_inner.addWidget(cb)
+        self._raster_inner.addStretch(1)
+        self.completeChanged.emit()
+
+    def _extent_label(self, layer, wgs84, ctx):
+        """"4,2 × 4,2 km" ao lado do nome — o tamanho é o que denuncia um basemap global."""
+        if layer.extent().isEmpty():
+            raise ValueError('A camada não informa uma extensão.')
+        bb = to_wgs84(QgsGeometry.fromRect(layer.extent()),
+                      layer.crs(), wgs84, ctx).boundingBox()
+        clat = math.radians((bb.yMinimum() + bb.yMaximum()) / 2)
+        w_km = abs(bb.xMaximum() - bb.xMinimum()) * 111.32 * math.cos(clat)
+        h_km = abs(bb.yMaximum() - bb.yMinimum()) * 110.574
+        return f'{w_km:.1f} × {h_km:.1f} km'.replace('.', ',')
+
+    def checked_raster_layers(self):
+        """Marcadas aqui E ainda válidas e visíveis: o assistente não é modal,
+        dá tempo de o usuário apagar ou ocultar a camada depois de marcá-la."""
+        project = QgsProject.instance()
+        layers = []
+        for layer_id, cb in self._raster_checkboxes.items():
+            if not cb.isChecked():
+                continue
+            layer = project.mapLayer(layer_id)
+            if layer is None or not layer.isValid():
+                continue
+            if not layer_is_visible(layer, project):
+                continue
+            layers.append(layer)
+        return layers
 
     def _start_picker(self):
         canvas = self._wizard.iface.mapCanvas()
@@ -384,6 +479,8 @@ class ExtentPage(QWizardPage):
             return self.drawn_rect is not None and not self.drawn_rect.isEmpty()
         if self.canvas_radio.isChecked():
             return True
+        if self.raster_radio.isChecked():
+            return bool(self.checked_raster_layers())
         return self.layer_combo.currentLayer() is not None
 
     def source_description(self):
@@ -397,6 +494,11 @@ class ExtentPage(QWizardPage):
                 usada = self._canvas_crs()
                 origem = 'canvas' if bruta.isValid() else 'projeto (canvas sem SRC)'
                 return f'área visível do mapa (CRS do {origem}: {usada.authid() or "?"})'
+            if self.raster_radio.isChecked():
+                imagens = self.checked_raster_layers()
+                nomes = ', '.join(f'"{lyr.name()}" (CRS {lyr.crs().authid() or "?"})'
+                                  for lyr in imagens)
+                return f'extensão de {len(imagens)} imagem(ns): {nomes}'
             layer = self.layer_combo.currentLayer()
             if layer is None:
                 return 'camada de polígonos (nenhuma selecionada)'
@@ -432,6 +534,12 @@ class ExtentPage(QWizardPage):
             polygons.append(to_wgs84(
                 QgsGeometry.fromRect(canvas.extent()),
                 self._canvas_crs(), wgs84, ctx))
+        elif self.raster_radio.isChecked():
+            # Uma região por imagem. Tiles repetidos entre imagens que se
+            # sobrepõem são unificados em `filtered_tiles`, não renderizados 2x.
+            for layer in self.checked_raster_layers():
+                polygons.append(to_wgs84(
+                    QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx))
         else:
             layer = self.layer_combo.currentLayer()
             for feature in layer.getFeatures():
@@ -458,6 +566,9 @@ class ParamsPage(QWizardPage):
         self.resolution_combo = QComboBox()
         for label, zoom in _RESOLUTIONS:
             self.resolution_combo.addItem(label, zoom)
+        # 0,25 m/px quadruplica tiles, tamanho e tempo de renderização: entra na
+        # lista, mas não como padrão. Mesma razão do índice fixo do combo de formato.
+        self.resolution_combo.setCurrentIndex(1)  # Altíssima (0,5 m/px)
         apply_combo_popup_style(self.resolution_combo)
         form.addRow('Resolução:', self.resolution_combo)
 
