@@ -1061,7 +1061,8 @@ def feature_export_style_json(layer, feature, spec_key, master_modulo, label_cfg
 # Tairu record/sync columns excluded from a pushed record's `attributes` (only
 # genuine user attributes feed label-by-attribute / data-driven styling).
 _NON_ATTRIBUTE_FIELDS = frozenset({
-    'recordId', 'tipoRegistro', 'subTipo', 'situation', 'endereco', 'owner',
+    'recordId', 'nome', 'descricao', 'tipoRegistro', 'subTipo', 'situation',
+    'endereco', 'owner', 'color', 'size',
     'plateTag', 'brand', 'model', 'year', 'valueEstimate', 'eventDateTime',
     'geometryColor', 'geometryBackgroundColor', 'geometrySize', 'circleRadius',
     'geometryColorValue', 'geometryBackgroundColorValue',
@@ -1223,10 +1224,11 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     if not is_contour:
         stroke = _feature_stroke_pattern(layer, feature)
         rec.style = build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg)
-        # Attributes only when a label references a non-name field — the data the
-        # app needs to resolve label-by-attribute; avoids bloating every record.
-        if label_cfg and label_cfg.get('field') not in (None, '', 'name'):
-            rec.attributes = _feature_attributes_json(feature)
+        # Every genuine user attribute of the source layer, always. They used to be
+        # sent only when a label referenced a non-name field (the label-by-attribute
+        # data), which meant the app showed an empty "Atributos" tab for practically
+        # every pushed layer — the columns existed in QGIS and simply never left it.
+        rec.attributes = _feature_attributes_json(feature)
     return rec, warning
 
 
@@ -1535,6 +1537,13 @@ def build_writes(fs, plan, uid):
             # (apply_pull skips isDeleted records), so the feature never reappears.
             mask = list(dict.fromkeys(
                 item.changed_fields + ['lastModified', 'lastModifiedBy', 'isDeleted']))
+            # `attributes` is neither a layer column nor part of the sync hash, so it
+            # never arrives through changed_fields — without this an existing record
+            # would never gain the attributes this push just read from the feature.
+            # Only ever ADD: a pulled layer carries no user columns, so an empty
+            # candidate means "not seen", never "clear what the app has".
+            if rec.attributes and 'attributes' not in mask:
+                mask.append('attributes')
             rec.last_modified = now_millis()
             rec.is_deleted = False
             # The plugin cannot read cloud geometryWkb on pull, so `geometry_wkb is
