@@ -115,10 +115,28 @@ def bounds_ring_string(polygon_geom_wgs84):
     return None
 
 
+def polygon_rings(polygon_geom_wgs84):
+    """Todos os aneis do poligono como [[(lon, lat), ...], ...].
+
+    Diferente de bounds_ring_string, que concatena as partes num anel so, aqui
+    cada parte e cada buraco continua sendo um anel proprio — e o que a mascara
+    do tile precisa para recortar um multipoligono ou uma ilha corretamente.
+    """
+    if polygon_geom_wgs84.isMultipart():
+        parts = polygon_geom_wgs84.asMultiPolygon() or []
+    else:
+        poly = polygon_geom_wgs84.asPolygon()
+        parts = [poly] if poly else []
+    return [[(pt.x(), pt.y()) for pt in ring]
+            for poly in parts for ring in poly if ring]
+
+
 @dataclass
 class RegionTilesResult:
     """Tiles intersecting each input polygon (region), plus aggregate info."""
     region_tiles: dict = field(default_factory=dict)   # region index -> list[(tx, ty)]
+    region_edge_tiles: dict = field(default_factory=dict)  # region index -> set[(tx, ty)] na borda
+    region_rings: dict = field(default_factory=dict)   # region index -> [[(lon, lat), ...], ...]
     filtered_tiles: list = field(default_factory=list)  # unique (tx, ty) across regions
     bounds_list: list = field(default_factory=list)     # one ring string per region
     wgs84_extent: QgsRectangle = field(default_factory=QgsRectangle)
@@ -168,6 +186,7 @@ def compute_region_tiles(polygons_wgs84, max_zoom, feedback):
         tile_y_max = min(int(n) - 1, lat2tiley(bbox.yMinimum(), n))  # y_min is south
 
         region_tiles = set()
+        edge_tiles = set()
         tile_count = 0
         total_tiles_to_check = (tile_x_max - tile_x_min + 1) * (tile_y_max - tile_y_min + 1)
 
@@ -184,6 +203,11 @@ def compute_region_tiles(polygons_wgs84, max_zoom, feedback):
                 tile_geom = QgsGeometry.fromRect(tile_bounds_wgs84(tx, ty, n))
                 if polygon_geom_wgs84.intersects(tile_geom):
                     region_tiles.add((tx, ty))
+                    # Tile de borda: entra no arquivo, mas com pedaco fora da
+                    # regiao. E ele que o gerador mascara — o de dentro sai
+                    # inteiro e sem recodificar.
+                    if not polygon_geom_wgs84.contains(tile_geom):
+                        edge_tiles.add((tx, ty))
 
         # Key by the DENSE valid-polygon position, not the enumerate idx: an empty
         # feature earlier in the list `continue`s without a region, so an enumerate
@@ -192,6 +216,8 @@ def compute_region_tiles(polygons_wgs84, max_zoom, feedback):
         # region's tiles. valid_polygons was just appended, so len-1 is this region's
         # index and matches bounds_list order. No-op when no feature was skipped.
         result.region_tiles[len(valid_polygons) - 1] = list(region_tiles)
+        result.region_edge_tiles[len(valid_polygons) - 1] = edge_tiles
+        result.region_rings[len(valid_polygons) - 1] = polygon_rings(polygon_geom_wgs84)
 
     # Calculate total tiles across all regions
     all_tiles = set()

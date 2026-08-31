@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
-from qgis.PyQt.QtCore import QSize, QBuffer, QByteArray, QCoreApplication, QEventLoop, QTimer
-from qgis.PyQt.QtGui import QImage
+from qgis.PyQt.QtCore import (
+    Qt, QSize, QBuffer, QByteArray, QCoreApplication, QEventLoop, QTimer)
+from qgis.PyQt.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath
 from qgis.core import (
     Qgis,
     QgsCoordinateReferenceSystem,
@@ -63,10 +64,127 @@ class GenerationSpec:
     tile_width: int = 256
     tile_height: int = 256
     filter_empty_tiles: bool = True
+    region_edge_tiles: dict = field(default_factory=dict)  # region index -> set[(tx, ty)]
+    region_rings: dict = field(default_factory=dict)       # region index -> [[(lon, lat), ...]]
+    clip_to_region: bool = True                            # recortar o tile de borda pelo poligono
     antialias: bool = True
     include_attribution: bool = False
     attribution_text: str = "© TairuDB contributors"
     name: Optional[str] = None         # metadata name; defaults to output file basename
+
+
+def encode_tile_bytes(image, fmt, quality=90):
+    """QByteArray com a imagem no formato pedido, ou None se nao salvar."""
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(_OPEN_WRITE_ONLY)
+    fmt = (fmt or 'PNG').upper()
+    if fmt == 'JPG':
+        ok = image.save(buffer, 'JPG', quality)
+    elif fmt == 'WEBP':
+        ok = image.save(buffer, 'WEBP', quality)
+    else:
+        ok = image.save(buffer, 'PNG')
+    buffer.close()
+    if not ok or data.isEmpty():
+        return None
+    return data
+
+
+@dataclass
+class TileSample:
+    """Medida real de alguns tiles: quanto pesam e quanto demoram."""
+    fmt_kb: float = 0.0      # media no formato escolhido
+    png_kb: float = 0.0      # media em PNG (borda e area sem imagem saem assim)
+    sd_kb: float = 0.0       # desvio entre os tiles medidos
+    secs: float = 0.0        # segundos por tile, uma thread
+    count: int = 0
+
+
+def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
+                      transform_context, dpi=96, tile_size=256,
+                      antialias=True, samples=6):
+    """Renderiza alguns tiles de verdade e mede peso e tempo.
+
+    A estimativa antiga multiplicava o numero de tiles por uma tabela fixa de
+    KB por formato, corrigida em linha reta pela qualidade. Sao dois chutes
+    sobre a mesma coisa: o peso de um tile depende do CONTEUDO (ortofoto em
+    zoom 19 nao pesa como satelite em zoom 15) e JPEG nao cresce em linha reta
+    com a qualidade — de 90 para 100 ele quase dobra. No RJ4 isso deu 246 MB
+    estimados contra 445 MB reais.
+
+    Medir custa poucos segundos e responde as duas perguntas com a imagem, o
+    zoom e a qualidade que o usuario escolheu de fato. Devolve None quando nao
+    da para medir (sem camadas, sem tiles, tudo vazio) — ai vale a tabela.
+    """
+    if not layers or not tiles:
+        return None
+
+    ordered = sorted(tiles)
+    step = max(1, len(ordered) // max(1, samples))
+    picked = ordered[::step][:samples]
+
+    wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
+    mercator = QgsCoordinateReferenceSystem("EPSG:3857")
+    to_mercator = QgsCoordinateTransform(wgs84, mercator, transform_context)
+    n = 2.0 ** max_zoom
+
+    fmt_sizes, png_sizes, times = [], [], []
+    for tx, ty in picked:
+        x1 = tx * 360.0 / n - 180.0
+        y1 = 180.0 / math.pi * (math.atan(math.sinh(math.pi * (1 - 2 * ty / n))))
+        x2 = (tx + 1) * 360.0 / n - 180.0
+        y2 = 180.0 / math.pi * (math.atan(math.sinh(math.pi * (1 - 2 * (ty + 1) / n))))
+        try:
+            p1 = to_mercator.transform(x1, y1)
+            p2 = to_mercator.transform(x2, y2)
+        except Exception:
+            continue
+
+        settings = QgsMapSettings()
+        settings.setLayers(layers)
+        settings.setOutputDpi(dpi)
+        settings.setOutputSize(QSize(tile_size, tile_size))
+        settings.setExtent(QgsRectangle(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
+                                        max(p1.x(), p2.x()), max(p1.y(), p2.y())))
+        settings.setDestinationCrs(mercator)
+        settings.setBackgroundColor(QColor(Qt.GlobalColor.transparent))
+        settings.setFlag(Qgis.MapSettingsFlag.Antialiasing, antialias)  # type: ignore
+        settings.setFlag(Qgis.MapSettingsFlag.RenderMapTile, True)  # type: ignore
+
+        started = time.time()
+        job = QgsMapRendererSequentialJob(settings)
+        job.start()
+        job.waitForFinished()
+        elapsed = time.time() - started
+        image = job.renderedImage()
+        # Tile sem NADA desenhado nao entra na media: ele nem chega ao arquivo
+        # (o filtro de vazios o descarta) e puxaria peso e tempo para baixo.
+        # Filtrar por tamanho em bytes, como antes, descartava tambem o tile
+        # legitimamente liso — foi assim que a media de PNG saiu zerada no
+        # primeiro teste.
+        if image.isNull() or is_blank(image):
+            continue
+
+        times.append(elapsed)
+        encoded = encode_tile_bytes(image, tile_format, jpg_quality)
+        as_png = encode_tile_bytes(image, 'PNG')
+        if encoded is not None:
+            fmt_sizes.append(encoded.size() / 1024.0)
+        if as_png is not None:
+            png_sizes.append(as_png.size() / 1024.0)
+
+    if not fmt_sizes:
+        return None
+    media = sum(fmt_sizes) / len(fmt_sizes)
+    variancia = sum((v - media) ** 2 for v in fmt_sizes) / len(fmt_sizes)
+    return TileSample(
+        fmt_kb=media,
+        png_kb=(sum(png_sizes) / len(png_sizes)) if png_sizes else 0.0,
+        sd_kb=math.sqrt(variancia),
+        secs=(sum(times) / len(times)) if times else 0.15,
+        count=len(fmt_sizes),
+    )
 
 
 @dataclass
@@ -87,6 +205,9 @@ class EstimateResult:
     max_zoom: int = 18
     threads_number: int = 4
     warnings: list = field(default_factory=list)
+    stored_tiles: int = 0     # linhas gravadas: um tile entra em CADA regiao que o contem
+    edge_tiles: int = 0       # dessas, as que saem em PNG por causa do recorte
+    measured_from: int = 0    # quantos tiles foram renderizados para medir
 
 
 _ZOOM_TO_LABEL = {
@@ -101,39 +222,162 @@ _ZOOM_TO_LABEL = {
 }
 
 
-def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number):
-    """Estimate tile count, file size and processing time without rendering."""
+def is_blank(image):
+    """True se o tile nao tem NADA desenhado (todo transparente)."""
+    if image.isNull() or not image.hasAlphaChannel():
+        return False
+    if image.format() not in (_FMT_ARGB32,
+                              QImage.Format.Format_ARGB32_Premultiplied):
+        image = image.convertToFormat(_FMT_ARGB32)
+    bits = image.constBits()
+    bits.setsize(image.sizeInBytes())
+    return max(bytes(bits)[3::4]) == 0
+
+
+def has_transparency(image):
+    """True se algum pixel do tile nao for totalmente opaco.
+
+    Le a faixa de alfa de uma vez (byte 3 de cada pixel em ARGB32 little-endian)
+    em vez de percorrer pixel a pixel em Python: sao 65 mil pixels por tile.
+    """
+    if image.isNull() or not image.hasAlphaChannel():
+        return False
+    # O renderizador entrega ARGB32_Premultiplied; o alfa esta no mesmo byte nos
+    # dois formatos, entao converter so gastaria uma copia de 256 KB por tile.
+    if image.format() not in (_FMT_ARGB32,
+                              QImage.Format.Format_ARGB32_Premultiplied):
+        image = image.convertToFormat(_FMT_ARGB32)
+    bits = image.constBits()
+    bits.setsize(image.sizeInBytes())
+    data = bytes(bits)
+    return min(data[3::4]) != 255
+
+
+def _tile_pixel(lon, lat, tx, ty, n, width, height):
+    """Ponto WGS84 -> pixel dentro do tile XYZ (tx, ty) de um zoom com n tiles por eixo."""
+    x = (lon + 180.0) / 360.0 * n
+    lat = max(-85.05112878, min(85.05112878, lat))
+    rad = math.radians(lat)
+    y = (1.0 - math.log(math.tan(rad) + 1.0 / math.cos(rad)) / math.pi) / 2.0 * n
+    return ((x - tx) * width, (y - ty) * height)
+
+
+def mask_tile_to_rings(tile_image, tx, ty, n, rings):
+    """Copia de `tile_image` com tudo que esta FORA de `rings` apagado.
+
+    So os tiles de borda passam por aqui: o interior sai inteiro, sem
+    recodificar. O resultado tem alfa, entao quem grava precisa usar PNG — JPG
+    nao guarda transparencia e devolveria a area recortada em preto.
+
+    Aneis vem de tile_math.polygon_rings: cada parte de um multipoligono e cada
+    buraco e um anel proprio, e a regra par-impar recorta os buracos.
+    """
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    width, height = tile_image.width(), tile_image.height()
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        points = [_tile_pixel(lon, lat, tx, ty, n, width, height) for lon, lat in ring]
+        path.moveTo(points[0][0], points[0][1])
+        for px, py in points[1:]:
+            path.lineTo(px, py)
+        path.closeSubpath()
+    if path.isEmpty():
+        return None
+
+    # Mascara de alfa desenhada a parte, e nao setClipPath: recorte por clip no
+    # Qt e serrilhado. Composicao com uma IMAGEM do tamanho do tile, e nao com a
+    # forma: DestinationIn so afeta o que o desenho cobre, entao desenhar a
+    # figura direto deixaria o lado de fora intacto — foi exatamente o que o
+    # teste pegou.
+    stencil = QImage(tile_image.size(), _FMT_ARGB32)
+    stencil.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(stencil)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0)))
+        painter.drawPath(path)
+    finally:
+        painter.end()
+
+    masked = tile_image.copy()
+    painter = QPainter(masked)
+    try:
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        painter.drawImage(0, 0, stencil)
+    finally:
+        painter.end()
+    return masked
+
+
+def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
+             layers=None, transform_context=None, sample=None, dpi=96, tile_size=256):
+    """Estimate tile count, file size and processing time without rendering.
+
+    Com `layers`, alguns tiles sao renderizados de verdade para medir peso e
+    tempo (ver sample_tile_sizes); sem eles, cai na tabela de KB por formato,
+    que e so uma ordem de grandeza.
+    """
     est = EstimateResult()
     est.total_tiles = region_result.total_tiles
     est.region_tile_counts = {rid: len(tiles) for rid, tiles in region_result.region_tiles.items()}
+    # Um tile que cai em duas regioes e GRAVADO nas duas: o arquivo tem uma
+    # linha por regiao, nao uma por tile. No RJ4 foram 10.191 linhas para 7.918
+    # tiles distintos — 29% a mais de arquivo que a contagem de tiles sugere.
+    est.stored_tiles = sum(est.region_tile_counts.values()) or est.total_tiles
+    est.edge_tiles = sum(
+        len(t) for t in getattr(region_result, 'region_edge_tiles', {}).values())
     est.max_zoom = max_zoom
     est.threads_number = threads_number
     est.quality = jpg_quality
 
-    # Average tile sizes in KB by format (typical QGIS raster rendering)
-    size_kb = {'PNG': 70, 'JPG': 28, 'WEBP': 20}
-    min_kb = {'PNG': 20, 'JPG': 8, 'WEBP': 6}
-    max_kb = {'PNG': 180, 'JPG': 70, 'WEBP': 50}
-
     fmt = tile_format.upper()
     est.fmt = fmt
-    # Scale JPG/WebP estimate by quality relative to baseline of 90
-    if fmt in ('JPG', 'WEBP') and jpg_quality != 90:
-        q = jpg_quality / 90.0
-        est.avg_kb = max(1, size_kb[fmt] * q)
-        lo_kb = max(1, min_kb[fmt] * q)
-        hi_kb = max(1, max_kb[fmt] * q)
+
+    if sample is None and layers:
+        sample = sample_tile_sizes(
+            layers, region_result.filtered_tiles, max_zoom, fmt, jpg_quality,
+            transform_context, dpi=dpi, tile_size=tile_size)
+
+    if sample is not None and sample.count > 0:
+        est.measured_from = sample.count
+        # O tile de borda sai em PNG (o recorte e alfa); o resto, no formato
+        # escolhido. As duas medidas vem da mesma renderizacao.
+        png_share = (est.edge_tiles / est.stored_tiles) if est.stored_tiles else 0.0
+        png_kb = sample.png_kb or sample.fmt_kb
+        est.avg_kb = sample.fmt_kb * (1 - png_share) + png_kb * png_share
+        # A faixa e a incerteza da MEDIA (erro padrao), nao o maior e o menor
+        # tile medido: somando dez mil tiles, o total se concentra muito mais
+        # que um tile sozinho. Minimo de 10% porque seis amostras nunca
+        # garantem que a area inteira e como elas.
+        erro = sample.sd_kb / math.sqrt(sample.count)
+        rel = min(0.5, max(0.10, 2 * erro / max(0.001, sample.fmt_kb)))
+        lo_kb = est.avg_kb * (1 - rel)
+        hi_kb = est.avg_kb * (1 + rel)
+        secs_per_tile = sample.secs
     else:
-        est.avg_kb = size_kb.get(fmt, 28)
-        lo_kb = min_kb.get(fmt, 8)
-        hi_kb = max_kb.get(fmt, 70)
+        # Sem medicao: tabela por formato, so como ordem de grandeza. A
+        # correcao por qualidade NAO e linear — JPEG de 90 para 100 quase dobra.
+        size_kb = {'PNG': 70, 'JPG': 28, 'WEBP': 20}
+        min_kb = {'PNG': 20, 'JPG': 8, 'WEBP': 6}
+        max_kb = {'PNG': 180, 'JPG': 70, 'WEBP': 50}
+        factor = _quality_factor(jpg_quality) if fmt in ('JPG', 'WEBP') else 1.0
+        est.avg_kb = max(1.0, size_kb.get(fmt, 28) * factor)
+        lo_kb = max(1.0, min_kb.get(fmt, 8) * factor)
+        hi_kb = max(1.0, max_kb.get(fmt, 70) * factor)
+        secs_per_tile = 0.15
 
-    est.avg_mb = (est.total_tiles * est.avg_kb) / 1024
-    est.lo_mb = (est.total_tiles * lo_kb) / 1024
-    est.hi_mb = (est.total_tiles * hi_kb) / 1024
+    # Sobrecarga do SQLite (paginas, indice): 1,8% no RJ4 e 2,8% no RJ2.
+    overhead = 1.03
+    est.avg_mb = est.stored_tiles * est.avg_kb / 1024 * overhead
+    est.lo_mb = est.stored_tiles * lo_kb / 1024 * overhead
+    est.hi_mb = est.stored_tiles * hi_kb / 1024 * overhead
 
-    # Rendering time estimate: ~0.15 s/tile single-thread
-    est.secs = est.total_tiles * 0.15 / max(1, threads_number)
+    # O tempo e por tile RENDERIZADO: o mesmo tile gravado em duas regioes so
+    # desenha uma vez.
+    est.secs = est.total_tiles * secs_per_tile / max(1, threads_number)
     if est.secs < 60:
         est.time_str = f"~{est.secs:.0f} seg"
     elif est.secs < 3600:
@@ -160,6 +404,28 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number):
         est.warnings.append("Estimativa acima de 500 MB. Verifique o espaço no dispositivo.")
 
     return est
+
+
+_QUALITY_CURVE = (
+    (30, 0.28), (50, 0.42), (60, 0.50), (70, 0.60), (75, 0.66),
+    (80, 0.75), (85, 0.85), (90, 1.00), (95, 1.35), (100, 2.20),
+)
+
+
+def _quality_factor(quality):
+    """Peso do JPEG/WebP em relacao a qualidade 90, interpolado.
+
+    A conta antiga era `qualidade / 90`, que da 1,11 para qualidade 100 — na
+    pratica o arquivo quase DOBRA nesse trecho. Era metade do erro da
+    estimativa do RJ4.
+    """
+    q = max(1, min(100, int(quality)))
+    if q <= _QUALITY_CURVE[0][0]:
+        return _QUALITY_CURVE[0][1]
+    for (q0, f0), (q1, f1) in zip(_QUALITY_CURVE, _QUALITY_CURVE[1:]):
+        if q <= q1:
+            return f0 + (f1 - f0) * (q - q0) / (q1 - q0)
+    return _QUALITY_CURVE[-1][1]
 
 
 def _fmt_size(mb):
@@ -213,18 +479,33 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
     line(f"  Total de tiles : {est.total_tiles:,}".replace(',', '.'))
     for rid, count in sorted(est.region_tile_counts.items()):
         line(f"    Região {rid + 1}: {count:,} tiles".replace(',', '.'))
+    if est.stored_tiles > est.total_tiles:
+        # Regiões que se sobrepõem gravam o mesmo tile em cada uma delas.
+        line(f"  Gravados       : {est.stored_tiles:,} "
+             "(tile em mais de uma região entra em cada)".replace(',', '.'))
+    if est.edge_tiles:
+        line(f"  Em PNG (borda) : {est.edge_tiles:,}".replace(',', '.'))
     line()
+    total_mb = est.avg_mb + (elevation_mb if elevation_enabled else 0.0)
     line("TAMANHO ESTIMADO")
     line(sep)
-    line(f"  Estimativa : {_fmt_size(est.avg_mb)}  (~{est.avg_kb:.0f} KB/tile)")
+    line(f"  Estimativa : {_fmt_size(total_mb)}  (~{est.avg_kb:.0f} KB/tile)")
     line(f"  Intervalo  : {_fmt_size(est.lo_mb)} – {_fmt_size(est.hi_mb)}")
+    if est.measured_from:
+        line(f"  Medido em {est.measured_from} tile(s) renderizados de verdade.")
+    else:
+        line("  Sem medição: tabela por formato, apenas ordem de grandeza.")
     line()
     line("TEMPO ESTIMADO")
     line(sep)
     line(f"  {est.threads_number} "
          f"thread{'s' if est.threads_number != 1 else ''} "
          f"paralela{'s' if est.threads_number != 1 else ''} : {est.time_str}")
-    line("  (~0,15 s/tile em hardware típico)")
+    if est.measured_from:
+        por_tile = f"{est.secs * est.threads_number / max(1, est.total_tiles):.2f}".replace('.', ',')
+        line(f"  ({por_tile} s/tile medidos nesta máquina)")
+    else:
+        line("  (~0,15 s/tile em hardware típico)")
     if num_vector_layers > 0:
         line()
         line("CAMADAS VETORIAIS")
@@ -637,6 +918,13 @@ class TileRenderEngine:
                 map_settings.setOutputSize(QSize(actual_tile_width, actual_tile_height))
                 map_settings.setExtent(meta_tile.extent)
                 map_settings.setDestinationCrs(self.mercator_crs)
+                # Fundo TRANSPARENTE, nao o branco opaco que QgsMapSettings traz de
+                # fabrica: onde a imagem de origem nao cobre — borda da area, buraco
+                # de nodata, tile XYZ que nao chegou a tempo — o tile saia branco
+                # solido, e branco TAPA o mapa de fundo do app em vez de deixar ver
+                # por baixo. Quem nao tem alfa e o JPG, e isso e resolvido na hora de
+                # salvar: tile com transparencia sai em PNG.
+                map_settings.setBackgroundColor(QColor(Qt.GlobalColor.transparent))
                 map_settings.setFlag(Qgis.MapSettingsFlag.Antialiasing, spec.antialias)  # type: ignore
 
                 # Additional map settings for better rendering
@@ -842,33 +1130,47 @@ class TileRenderEngine:
 
         return True
 
+    def _format_for(self, tile_image):
+        """Formato de gravacao deste tile.
+
+        Tile com qualquer transparencia sai em PNG, mesmo num arquivo JPG: o
+        recorte da borda e a area sem imagem de origem SAO alfa, e salvar isso em
+        JPEG devolveria preto. O resto sai no formato escolhido — no arquivo RJ2
+        isso foi 22 tiles de 700, uns 800 KB num arquivo de 24 MB.
+        """
+        if has_transparency(tile_image):
+            return "PNG"
+        return self.spec.tile_format
+
+    def _encode_tile(self, tile_image, fmt=None):
+        """Tile codificado em `fmt` (ou no formato escolhido). None se falhar."""
+        spec = self.spec
+        tile_data = QByteArray()
+        buffer = QBuffer(tile_data)
+        buffer.open(_OPEN_WRITE_ONLY)
+        fmt = fmt or spec.tile_format
+
+        success = False
+        if fmt == "PNG":
+            success = tile_image.save(buffer, "PNG")
+        elif fmt == "JPG":
+            success = tile_image.save(buffer, "JPG", spec.jpg_quality)
+        elif fmt == "WEBP":
+            if b'WEBP' in QImage.supportedImageFormats():
+                success = tile_image.save(buffer, "WEBP", spec.jpg_quality)
+            else:
+                success = tile_image.save(buffer, "PNG")
+                self.feedback.push_info("WebP não suportado, usando PNG em vez disso")
+        buffer.close()
+
+        if not success or tile_data.isEmpty():
+            return None
+        return tile_data
+
     def convert_and_save_tile(self, tile_image, meta_tile, tile_x, tile_y, max_tile_index):
         """Convert tile image to specified format and save to database"""
         spec = self.spec
         try:
-            quality = spec.jpg_quality
-            tile_data = QByteArray()
-            buffer = QBuffer(tile_data)
-            buffer.open(_OPEN_WRITE_ONLY)
-
-            success = False
-            if spec.tile_format == "PNG":
-                success = tile_image.save(buffer, "PNG")
-            elif spec.tile_format == "JPG":
-                success = tile_image.save(buffer, "JPG", quality)
-            elif spec.tile_format == "WEBP":
-                formats = QImage.supportedImageFormats()
-                webp_format = b'WEBP'
-                if webp_format in formats:
-                    success = tile_image.save(buffer, "WEBP", quality)
-                else:
-                    # Fallback to PNG if WebP is not supported
-                    success = tile_image.save(buffer, "PNG")
-                    self.feedback.push_info("WebP não suportado, usando PNG em vez disso")
-
-            if not success or tile_data.isEmpty():
-                return False
-
             # Convert to TMS Y coordinate
             tms_y = max_tile_index - 1 - tile_y
 
@@ -885,7 +1187,31 @@ class TileRenderEngine:
             if not containing_regions:
                 self.feedback.push_info(f"Aviso: Tile {tile_x},{tile_y} não foi encontrado em nenhuma região")
 
+            interior_data = None
             for region_id in containing_regions:
+                tile_data = None
+                # Tile de borda: recorta pelo poligono da regiao, para o arquivo
+                # nao carregar imagem alem da area pedida. O app nativo fazia
+                # isso na importacao e a web nao fazia nunca — daqui em diante o
+                # arquivo ja chega recortado para os dois.
+                if (spec.clip_to_region
+                        and tile_coord in spec.region_edge_tiles.get(region_id, ())):
+                    rings = spec.region_rings.get(region_id)
+                    if rings:
+                        masked = mask_tile_to_rings(
+                            tile_image, tile_x, tile_y, max_tile_index, rings)
+                        if masked is not None:
+                            tile_data = self._encode_tile(
+                                masked, self._format_for(masked))
+
+                if tile_data is None:
+                    if interior_data is None:
+                        interior_data = self._encode_tile(
+                            tile_image, self._format_for(tile_image))
+                        if interior_data is None:
+                            return False
+                    tile_data = interior_data
+
                 if self.writer and self.writer.saveTile(meta_tile.zoom, tile_x, tms_y, tile_data, region_id):
                     saved_to_regions += 1
                 else:

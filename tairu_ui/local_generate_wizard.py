@@ -1431,10 +1431,15 @@ class EstimatePage(QWizardPage):
         vector_feature_count = sum(
             lyr.featureCount() for lyr in vector_layers if lyr.isValid())
 
+        # Com as camadas, a estimativa RENDERIZA alguns tiles para medir peso e
+        # tempo em vez de multiplicar por uma tabela fixa: são poucos segundos
+        # aqui contra um erro de 80% no tamanho anunciado.
         wizard.estimate_result = estimate(
             wizard.region_result, wizard.params_page.max_zoom(),
             wizard.params_page.tile_format(), wizard.params_page.quality_spin.value(),
-            threads_number=min(os.cpu_count() or 4, 4))
+            threads_number=min(os.cpu_count() or 4, 4),
+            layers=wizard.visible_basemap_layers(),
+            transform_context=QgsProject.instance().transformContext())
 
         lines = []
 
@@ -1576,6 +1581,8 @@ class RunPage(QWizardPage):
             output_file=output_file,
             layers=wizard.visible_basemap_layers(),
             region_tiles=wizard.region_result.region_tiles,
+            region_edge_tiles=wizard.region_result.region_edge_tiles,
+            region_rings=wizard.region_result.region_rings,
             filtered_tiles=wizard.region_result.filtered_tiles,
             bounds_list=wizard.region_result.bounds_list,
             wgs84_extent=wizard.region_result.wgs84_extent,

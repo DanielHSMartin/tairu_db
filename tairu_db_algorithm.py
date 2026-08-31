@@ -334,6 +334,8 @@ def TairuDBAlgorithm():
                     self.tile_format,
                     self.jpg_quality,
                     self.threads_number,
+                    layers=self.layers,
+                    transform_context=self.transform_context,
                 )
                 format_estimate_report(est, fb, num_vector_layers, vector_feature_count)
                 feedback.setProgress(100)
@@ -349,6 +351,8 @@ def TairuDBAlgorithm():
                 output_file=output_file,
                 layers=self.layers,
                 region_tiles=self.region_result.region_tiles,
+                region_edge_tiles=self.region_result.region_edge_tiles,
+                region_rings=self.region_result.region_rings,
                 filtered_tiles=self.region_result.filtered_tiles,
                 bounds_list=self.region_result.bounds_list,
                 wgs84_extent=self.region_result.wgs84_extent,
