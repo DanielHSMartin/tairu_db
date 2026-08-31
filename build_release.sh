@@ -97,7 +97,13 @@ fi
 # B105 (hardcoded password) is Bandit-LOW and blocks publication, so a severity
 # filter hides exactly the findings that get a plugin rejected. That mistake
 # shipped a blocked upload once — do not reintroduce it.
-# B110/B112 (try/except/pass) are Warning-level there and are NOT checked here.
+# B110/B112 (try/except/pass, try/except/continue) NAO sao bloqueantes la, mas
+# entram no relatorio de seguranca do envio — e um B112 nosso apareceu no
+# relatorio do servidor em 2026-08-31 depois de passar limpo por aqui, porque
+# este gate so olhava a lista bloqueante. Agora sao duas passagens: a lista
+# bloqueante (mensagem explicita de recusa) e TODAS as regras, que tambem
+# recusa. Um achado legitimo se resolve corrigindo o codigo ou com um `# nosec`
+# comentado — nunca afrouxando este gate.
 blockers="B102,B105,B106,B107,B304,B305,B307,B506,B602,B613"
 if "$PYTHON" -m bandit --version >/dev/null 2>&1; then
   # `|| true` on BOTH: bandit exits 1 when it finds something, and with
@@ -115,7 +121,21 @@ for r in json.load(sys.stdin)["results"]:
 ' || true
     fail "bandit found $hits BLOCKING finding(s) — plugins.qgis.org would refuse this upload"
   fi
-  echo "bandit OK (0 blocking findings)"
+  # Segunda passagem: bandit inteiro, sem filtro de regra nem de severidade.
+  report_all=$("$PYTHON" -m bandit -r "$stage" -f json 2>/dev/null || true)
+  hits_all=$(printf '%s' "$report_all" \
+    | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin)["results"]))' || echo 0)
+  if [ "${hits_all:-0}" != "0" ]; then
+    printf '%s' "$report_all" | "$PYTHON" -c '
+import json, sys
+for r in json.load(sys.stdin)["results"]:
+    print("  {} ({}) {}:{}  {}".format(
+        r["test_id"], r["issue_severity"], r["filename"], r["line_number"],
+        r["issue_text"]))
+' || true
+    fail "bandit found $hits_all finding(s) — o relatorio de seguranca do plugins.qgis.org mostraria todas"
+  fi
+  echo "bandit OK (0 findings, todas as regras)"
 else
   echo "WARNING: bandit not installed (pip install bandit) — blocking-rule scan skipped"
 fi

@@ -25,6 +25,7 @@ from qgis.PyQt.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath
 from qgis.core import (
     Qgis,
     QgsCoordinateReferenceSystem,
+    QgsMessageLog,
     QgsCoordinateTransform,
     QgsMapRendererSequentialJob,
     QgsMapSettings,
@@ -138,7 +139,14 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
         try:
             p1 = to_mercator.transform(x1, y1)
             p2 = to_mercator.transform(x2, y2)
-        except Exception:
+        except Exception as erro:
+            # Nunca um `continue` mudo: o motivo do descarte vai para o log do
+            # QGIS. Alem de ser a coisa certa, try/except/continue e acusado
+            # pelo bandit do plugins.qgis.org (B112) e entra no relatorio de
+            # seguranca do envio.
+            QgsMessageLog.logMessage(
+                f'Amostragem: tile {tx},{ty} nao reprojetou ({erro})',
+                'TairuDB', Qgis.MessageLevel.Warning)
             continue
 
         settings = QgsMapSettings()

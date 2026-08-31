@@ -193,12 +193,16 @@ def run_real_scanner(scanner_path, zip_path):
         def __init__(self, cat, code):
             self.check_category, self.check_code = cat, code
 
-    # Regras bloqueantes documentadas; e o modo sem regra alguma, em que o
-    # servidor cai para `bandit -ll` (todos os testes padrao) e flake8 sem filtro.
+    # Regras bloqueantes documentadas, MAIS as de aviso que o servidor
+    # comprovadamente roda: o relatorio do plugins.qgis.org acusou um B112
+    # (try/except/continue) em 2026-08-31 num zip que passou limpo aqui. O
+    # conjunto ativo e configuracao do admin e nao da para ler daqui, entao a
+    # rede de seguranca de verdade e o bandit sem filtro nenhum no
+    # build_release.sh; estas duas entram por serem fato observado.
     modes = {
         "regras configuradas": (
             [Rule("bandit", c) for c in
-             "B102 B105 B106 B107 B304 B305 B307 B506 B602 B613".split()]
+             "B102 B105 B106 B107 B110 B112 B304 B305 B307 B506 B602 B613".split()]
             + [Rule("file_analysis", c) for c in
                ("FILE_HIDDEN", "FILE_SUSPICIOUS", "FILE_EXECUTABLE")]),
         "sem regras (fallback -ll)": [],
