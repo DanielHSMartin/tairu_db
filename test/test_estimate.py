@@ -109,5 +109,37 @@ class EstimateTest(unittest.TestCase):
         self.assertGreater(est.avg_mb, 0)
 
 
+class BlankSampleTest(unittest.TestCase):
+    """Amostra renderizada que saiu SEM imagem nenhuma.
+
+    `sample_tile_sizes` devolvia None tanto quando não havia o que medir quanto
+    quando tudo o que mediu saiu vazio. Os dois caíam na tabela de KB por
+    formato e anunciavam um tamanho plausível — para um arquivo que sairia sem
+    mapa. O usuário só descobria depois de esperar a geração inteira.
+    """
+
+    def setUp(self):
+        if QgsRectangle is None:
+            raise unittest.SkipTest('QGIS Python bindings not available')
+
+    def test_amostra_toda_vazia_vira_aviso(self):
+        est = estimate(_region_result([10]), 18, 'JPG', 90, 4,
+                       sample=TileSample(blank=6))
+        self.assertEqual(est.blank_samples, 6)
+        self.assertEqual(est.measured_from, 0)
+        self.assertTrue(any('sem imagem nenhuma' in w for w in est.warnings), est.warnings)
+
+    def test_sem_medicao_alguma_nao_inventa_aviso(self):
+        est = estimate(_region_result([10]), 18, 'JPG', 90, 4)
+        self.assertEqual(est.blank_samples, 0)
+        self.assertEqual(est.warnings, [])
+
+    def test_medida_valida_nao_vira_aviso(self):
+        est = estimate(_region_result([10]), 18, 'JPG', 90, 4,
+                       sample=TileSample(fmt_kb=40, png_kb=90, sd_kb=4, secs=0.2, count=6))
+        self.assertEqual(est.measured_from, 6)
+        self.assertEqual(est.warnings, [])
+
+
 if __name__ == '__main__':
     unittest.main()

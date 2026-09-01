@@ -295,5 +295,80 @@ class ConvertAndSaveTileTest(unittest.TestCase):
         self.assertTrue(engine.writer.saved[0].startswith(b'\x89PNG'))
 
 
+class BlankTileTest(unittest.TestCase):
+    """O tile descartado por estar vazio — e o que NÃO pode ser confundido com ele.
+
+    A detecção era uma amostra de cinco pixels decidida por igualdade entre
+    eles: tile de cor uniforme sem canal alfa caía no `return True` do fim e ia
+    inteiro para o lixo, e uma estrada fina que não passasse pelos cinco pontos
+    levava o tile junto. Desde que o fundo virou transparente (2.0.20) o
+    descarte também deixou de ser raro — tudo o que a origem não cobre é vazio —
+    e ele era contado junto dos renderizados, então um arquivo oco terminava
+    anunciando sucesso completo.
+    """
+
+    ZOOM = 18
+
+    def setUp(self):
+        if QImage is None:
+            raise unittest.SkipTest('QGIS Python bindings not available')
+        self.engine = TileRenderEngine(
+            GenerationSpec(
+                output_file='', layers=[], region_tiles={}, filtered_tiles=[],
+                bounds_list=[], wgs84_extent=QgsRectangle(), max_zoom=self.ZOOM,
+                transform_context=QgsCoordinateTransformContext()),
+            _SilentFeedback())
+
+    def test_tile_todo_transparente_e_vazio(self):
+        img = QImage(256, 256, QImage.Format.Format_ARGB32)
+        img.fill(QColor(0, 0, 0, 0))
+        self.assertTrue(self.engine.is_tile_empty(img))
+
+    def test_tile_de_cor_uniforme_sem_alfa_nao_e_vazio(self):
+        img = QImage(256, 256, QImage.Format.Format_RGB32)
+        img.fill(QColor(120, 140, 90))
+        self.assertFalse(self.engine.is_tile_empty(img))
+
+    def test_um_pixel_fora_da_amostragem_ja_salva_o_tile(self):
+        img = QImage(256, 256, QImage.Format.Format_ARGB32)
+        img.fill(QColor(0, 0, 0, 0))
+        img.setPixelColor(37, 211, QColor(255, 255, 255, 255))  # nenhum dos 5 pontos
+        self.assertFalse(self.engine.is_tile_empty(img))
+
+    def test_vazios_sao_contados_e_ditos_no_relatorio(self):
+        registro = []
+
+        class _Feedback(_SilentFeedback):
+            def push_info(self, text):
+                registro.append(text)
+
+            def report_error(self, text, fatal=False):
+                registro.append(text)
+
+        self.engine.feedback = _Feedback()
+        self.engine.spec.filtered_tiles = [(1, 1), (1, 2), (1, 3), (1, 4)]
+        self.engine.processed_tiles = 4
+        self.engine.skipped_blank_tiles = 3
+        self.engine._report_summary()
+        self.assertTrue(any('3 de 4' in t for t in registro), registro)
+
+    def test_arquivo_inteiro_vazio_nao_anuncia_sucesso(self):
+        registro = []
+
+        class _Feedback(_SilentFeedback):
+            def push_info(self, text):
+                registro.append(text)
+
+            def report_error(self, text, fatal=False):
+                registro.append('ERRO: ' + text)
+
+        self.engine.feedback = _Feedback()
+        self.engine.spec.filtered_tiles = [(1, 1), (1, 2)]
+        self.engine.processed_tiles = 2
+        self.engine.skipped_blank_tiles = 2
+        self.engine._report_summary()
+        self.assertTrue(any(t.startswith('ERRO:') and 'sem mapa' in t for t in registro), registro)
+
+
 if __name__ == '__main__':
     unittest.main()

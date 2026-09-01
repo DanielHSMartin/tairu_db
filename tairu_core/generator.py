@@ -100,6 +100,7 @@ class TileSample:
     sd_kb: float = 0.0       # desvio entre os tiles medidos
     secs: float = 0.0        # segundos por tile, uma thread
     count: int = 0
+    blank: int = 0           # amostras que sairam SEM imagem nenhuma
 
 
 def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
@@ -131,6 +132,7 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
     n = 2.0 ** max_zoom
 
     fmt_sizes, png_sizes, times = [], [], []
+    vazios = 0
     for tx, ty in picked:
         x1 = tx * 360.0 / n - 180.0
         y1 = 180.0 / math.pi * (math.atan(math.sinh(math.pi * (1 - 2 * ty / n))))
@@ -172,6 +174,7 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
         # legitimamente liso — foi assim que a media de PNG saiu zerada no
         # primeiro teste.
         if image.isNull() or is_blank(image):
+            vazios += 1
             continue
 
         times.append(elapsed)
@@ -183,7 +186,11 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
             png_sizes.append(as_png.size() / 1024.0)
 
     if not fmt_sizes:
-        return None
+        # Devolvido mesmo assim quando houve tile e ele saiu VAZIO: sem isto o
+        # caso "nenhuma camada cobre a area" era indistinguivel de "nao deu para
+        # medir", caia na tabela de KB e anunciava um tamanho plausivel para um
+        # arquivo que sairia oco.
+        return TileSample(blank=vazios) if vazios else None
     media = sum(fmt_sizes) / len(fmt_sizes)
     variancia = sum((v - media) ** 2 for v in fmt_sizes) / len(fmt_sizes)
     return TileSample(
@@ -216,6 +223,7 @@ class EstimateResult:
     stored_tiles: int = 0     # linhas gravadas: um tile entra em CADA regiao que o contem
     edge_tiles: int = 0       # dessas, as que saem em PNG por causa do recorte
     measured_from: int = 0    # quantos tiles foram renderizados para medir
+    blank_samples: int = 0    # amostras que sairam sem imagem nenhuma
 
 
 _ZOOM_TO_LABEL = {
@@ -348,6 +356,12 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
         sample = sample_tile_sizes(
             layers, region_result.filtered_tiles, max_zoom, fmt, jpg_quality,
             transform_context, dpi=dpi, tile_size=tile_size)
+
+    est.blank_samples = sample.blank if sample is not None else 0
+    if est.blank_samples and (sample is None or sample.count == 0):
+        est.warnings.append(
+            'Os tiles de amostra saíram sem imagem nenhuma: a camada escolhida não '
+            'cobre a área (ou não chegou a baixar). O arquivo sairia sem mapa.')
 
     if sample is not None and sample.count > 0:
         est.measured_from = sample.count
@@ -580,6 +594,7 @@ class TileRenderEngine:
         self.processed_tiles = 0
         self.failed_tiles = 0
         self.retried_tiles = 0
+        self.skipped_blank_tiles = 0
         self.meta_tiles = []
         self.renderer_jobs = {}
         self.max_retries = 3
@@ -626,6 +641,7 @@ class TileRenderEngine:
 
         self.meta_tiles = []
         self.processed_tiles = 0
+        self.skipped_blank_tiles = 0
 
         z = spec.max_zoom
         n = 2.0 ** spec.max_zoom
@@ -755,6 +771,22 @@ class TileRenderEngine:
     def _report_summary(self):
         self.feedback.set_progress(100)
         total_expected = len(self.spec.filtered_tiles)
+
+        # Tile sem imagem nenhuma não é gravado. Até aqui isso era mudo e ainda
+        # entrava na conta dos renderizados: desde que o fundo virou
+        # transparente (2.0.20), TUDO o que a fonte não cobre — e todo tile de
+        # mapa de fundo que não baixou — vira tile vazio, então um arquivo quase
+        # oco terminava anunciando sucesso completo.
+        vazios = self.skipped_blank_tiles
+        if vazios >= total_expected > 0:
+            self.feedback.report_error(
+                f'Nenhum dos {total_expected} tiles recebeu imagem: o arquivo saiu sem '
+                f'mapa. Verifique se a camada escolhida cobre a área e, se ela vem da '
+                f'internet, se o download funcionou.')
+        elif vazios:
+            self.feedback.push_info(
+                f'{vazios} de {total_expected} tiles ficaram sem imagem nenhuma e não '
+                f'foram gravados; nessas partes o app mostra o próprio mapa de fundo.')
 
         # Clean, one-line summary on success; detail only when tiles actually failed.
         if self.failed_tiles == 0:
@@ -1085,6 +1117,9 @@ class TileRenderEngine:
 
                 # Improved empty tile detection
                 if spec.filter_empty_tiles and self.is_tile_empty(tile_image):
+                    # Contado à parte: some no relatório senão, e um arquivo que
+                    # saiu quase todo vazio anuncia sucesso completo.
+                    self.skipped_blank_tiles += 1
                     self.processed_tiles += 1
                     continue
 
@@ -1102,41 +1137,16 @@ class TileRenderEngine:
                     self.failed_tiles += 1
 
     def is_tile_empty(self, tile_image):
-        """Improved empty tile detection with better sampling"""
-        if tile_image.isNull():
-            return True
+        """Tile sem NADA desenhado — o único que pode ser descartado.
 
-        # Sample more points for better accuracy
-        sample_points = [
-            (0, 0), (tile_image.width()//4, tile_image.height()//4),
-            (tile_image.width()//2, tile_image.height()//2),
-            (3*tile_image.width()//4, 3*tile_image.height()//4),
-            (tile_image.width()-1, tile_image.height()-1)
-        ]
-
-        first_pixel = None
-        for x, y in sample_points:
-            if x < tile_image.width() and y < tile_image.height():
-                pixel = tile_image.pixel(x, y)
-                if first_pixel is None:
-                    first_pixel = pixel
-                elif pixel != first_pixel:
-                    return False  # Found different pixels, not empty
-
-        # Additional check with alpha channel
-        if tile_image.hasAlphaChannel():
-            if tile_image.format() != _FMT_ARGB32:
-                tile_image = tile_image.convertToFormat(_FMT_ARGB32)
-
-            # Check if all pixels are transparent
-            for x, y in sample_points:
-                if x < tile_image.width() and y < tile_image.height():
-                    pixel = tile_image.pixel(x, y)
-                    alpha = (pixel >> 24) & 0xFF
-                    if alpha > 0:  # Not fully transparent
-                        return False
-
-        return True
+        Era uma amostra de CINCO pixels, e ela decidia por igualdade entre eles:
+        um tile de cor uniforme SEM canal alfa caía no `return True` do fim e era
+        jogado fora inteiro, e uma estrada fina que não passasse por nenhum dos
+        cinco pontos levava o tile junto. `is_blank` lê a faixa de alfa de uma
+        vez (a mesma leitura que `has_transparency` já faz em cada tile gravado),
+        então é exato e não custa mais nada.
+        """
+        return tile_image.isNull() or is_blank(tile_image)
 
     def _format_for(self, tile_image):
         """Formato de gravacao deste tile.

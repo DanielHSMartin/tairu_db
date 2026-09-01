@@ -37,7 +37,7 @@ from qgis.gui import QgsMapLayerComboBox
 
 try:
     from ..compat import (
-        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE,
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
     )
     from ..compat import _CHECKED, _ITEM_IS_CHECKABLE, _ITEM_IS_EDITABLE, _ITEM_IS_ENABLED, _UNCHECKED
     from ..tairu_core.contour_generator import (
@@ -63,7 +63,7 @@ try:
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
-        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE,
+        _POLYGON_LAYER_FILTER, _RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE,
     )
     from compat import _CHECKED, _ITEM_IS_CHECKABLE, _ITEM_IS_EDITABLE, _ITEM_IS_ENABLED, _UNCHECKED
     from tairu_core.contour_generator import (
@@ -285,14 +285,18 @@ class TairuDBGenerateWizard(QWizard):
                     set_plain_button(button)
 
     def visible_basemap_layers(self):
-        """As imagens marcadas na primeira tela, na ordem de desenho do projeto.
+        """O que desenha o mapa: as imagens marcadas na primeira tela mais o mapa
+        de fundo do projeto, se marcado em Parâmetros — na ordem de desenho.
 
-        Uma lista só, e é a que o usuário já preencheu ao escolher a área. Mapas
-        de fundo online (XYZ/WMS) não entram nela: eles não são escolha de
-        ninguém aqui, e antes disto uma camada dessas ligada no QGIS fazia a
-        geração baixar milhares de tiles da internet sem aviso.
+        As duas escolhas são explícitas, de propósito: uma camada online ligada
+        no QGIS já entrou sozinha na geração e baixou milhares de tiles sem
+        aviso. Deixá-la de fora SEM ter como entrar, porém, travava na Estimativa
+        todo projeto que usa só um satélite online — que é a maioria deles.
         """
-        return self.extent_page.checked_raster_layers()
+        chosen = {lyr.id() for lyr in self.extent_page.checked_raster_layers()}
+        chosen |= {lyr.id() for lyr in self.params_page.extra_basemap_layers()}
+        return [lyr for lyr in QgsProject.instance().layerTreeRoot().layerOrder()
+                if lyr.id() in chosen]
 
     def _on_rejected(self):
         if self.feedback is not None:
@@ -358,6 +362,42 @@ def _layer_origin(layer):
     return 'internet' if _is_online(layer) else 'arquivo local'
 
 
+def _hidden_basemap_names(project):
+    """Nomes de imagens/mapas de fundo que só não entram por estarem OCULTOS.
+
+    Sem isto, um projeto com a ortofoto desmarcada no painel de camadas diz
+    "nenhum arquivo de imagem neste projeto" — que é falso, e manda o usuário
+    procurar o defeito no plugin em vez de na caixinha do painel.
+    """
+    nomes = []
+    for layer in project.layerTreeRoot().layerOrder():
+        if not layer.isValid() or layer_is_visible(layer, project):
+            continue
+        if layer.type() in (_RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE):
+            nomes.append(layer.name())
+    return nomes
+
+
+def _project_basemap_layers(project):
+    """O mapa de fundo do projeto: o que desenha fundo e NÃO está na tabela de
+    imagens da primeira tela (XYZ, WMTS, WMS, mbtiles, tiles vetoriais).
+
+    A tabela da primeira tela lista só imagens de arquivo (provider `gdal`),
+    porque lá cada uma também define uma região; estas aqui não definem região
+    nenhuma (a extensão é mundial), então são uma escolha à parte.
+    """
+    layers = []
+    for layer in project.layerTreeRoot().layerOrder():
+        if not layer.isValid() or not layer_is_visible(layer, project):
+            continue
+        tipo = layer.type()
+        if tipo == _VECTOR_TILE_LAYER_TYPE:
+            layers.append(layer)
+        elif tipo == _RASTER_LAYER_TYPE and layer.providerType() != 'gdal':
+            layers.append(layer)
+    return layers
+
+
 def _safe_measure(fn, *args):
     """Uma dica que não pôde ser medida vira texto, não uma exceção no assistente."""
     try:
@@ -384,6 +424,7 @@ class ExtentPage(QWizardPage):
         self.setSubTitle('Escolha a área que vai virar mapa.')
         self.drawn_rect = None
         self._picker = None
+        self.hidden_images = []
         self._raster_rows = []          # [(layer_id, utilizável)] na ordem da tabela
 
         layout = QVBoxLayout(self)
@@ -436,6 +477,14 @@ class ExtentPage(QWizardPage):
         apply_table_style(self.raster_table)
         self.raster_table.itemChanged.connect(lambda _: self._sync_controls())
         self._raster_box.layout().addWidget(self.raster_table, 1)
+
+        # Fora da caixa da opção, de propósito: a caixa fica escondida enquanto a
+        # opção não está marcada — e ela nem pode ser marcada quando TODAS as
+        # imagens estão ocultas, que é exatamente quando este aviso importa.
+        self.hidden_images_label = set_muted(QLabel(''))
+        self.hidden_images_label.setWordWrap(True)
+        self.hidden_images_label.hide()
+        layout.addWidget(self.hidden_images_label)
 
         layout.addStretch(1)
 
@@ -499,7 +548,7 @@ class ExtentPage(QWizardPage):
         wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
         ctx = QgsProject.instance().transformContext()
         has_polygons = self.layer_combo.count() > 0
-        has_images = any(usable for _lid, usable in self._raster_rows)
+        has_images = self.has_usable_images()
         set_control_enabled(self.layer_radio, has_polygons)
         set_control_enabled(self.raster_radio, has_images)
 
@@ -520,7 +569,9 @@ class ExtentPage(QWizardPage):
         self._set_label(
             self.raster_radio, 'raster',
             _safe_measure(self._raster_hint_text, wgs84, ctx) if has_images
-            else 'nenhum arquivo de imagem neste projeto')
+            else ('nenhuma imagem visível — as do projeto estão ocultas no painel'
+                  if self.hidden_images
+                  else 'nenhum arquivo de imagem neste projeto'))
 
     def _set_label(self, radio, key, suffix):
         """O sufixo só entra na opção marcada — ou quando ela não pode ser marcada."""
@@ -589,6 +640,20 @@ class ExtentPage(QWizardPage):
                   # Camada oculta não é renderizada: a extensão dela só geraria tiles vazios.
                   and layer_is_visible(layer, project)]
 
+        # Guardado em atributo, não lido de volta do rótulo: `isVisible()` é
+        # False enquanto a página não foi mostrada, e initializePage roda antes.
+        self.hidden_images = _hidden_basemap_names(project)
+        if self.hidden_images:
+            uma = len(self.hidden_images) == 1
+            self.hidden_images_label.setText(
+                ('1 imagem oculta no painel de camadas não entra no mapa'
+                 if uma else
+                 f'{len(self.hidden_images)} imagens ocultas no painel de camadas '
+                 f'não entram no mapa')
+                + f' ({", ".join(self.hidden_images)}). '
+                + 'Marque a camada no painel do QGIS para poder usá-la aqui.')
+        self.hidden_images_label.setVisible(bool(self.hidden_images))
+
         self._raster_rows = []
         self.raster_table.blockSignals(True)
         self.raster_table.setRowCount(len(layers))
@@ -628,6 +693,10 @@ class ExtentPage(QWizardPage):
             raise ValueError('A camada não informa uma extensão.')
         bb = to_wgs84(QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox()
         return [layer.name(), _km_size(bb), _resolution_label(layer, bb), layer.crs().authid() or '—']
+
+    def has_usable_images(self):
+        """Existe imagem de arquivo que possa desenhar o mapa neste projeto."""
+        return any(usable for _lid, usable in self._raster_rows)
 
     def _checked_ids(self):
         checked = set()
@@ -773,10 +842,17 @@ class ParamsPage(QWizardPage):
         self.setTitle('Parâmetros')
         self.setSubTitle('Resolução e formato dos tiles do mapa.')
 
+        self._basemap_ids = []
+        self._first_visit = True
+
         layout = QVBoxLayout(self)
-        # Uma linha, só quando existe o caso. O arquivo é montado das imagens
-        # marcadas na primeira tela; sem dizer isto, quem tem um XYZ ligado no
-        # QGIS geraria um mapa sem ele e sem entender o porquê.
+        # O mapa de fundo do projeto entra por escolha explícita — e só aqui
+        # existe essa escolha. Um XYZ ligado no QGIS já entrou sozinho na
+        # geração e baixou milhares de tiles sem aviso; tirá-lo sem oferecer a
+        # caixa deixou sem saída quem não tem nenhuma imagem em disco.
+        self.basemap_check = QCheckBox('Incluir o mapa de fundo do projeto')
+        self.basemap_check.hide()
+        layout.addWidget(self.basemap_check)
         self.online_note = set_muted(QLabel(''))
         self.online_note.setWordWrap(True)
         self.online_note.hide()
@@ -835,13 +911,37 @@ class ParamsPage(QWizardPage):
         layout.addStretch(1)
 
     def initializePage(self):
-        online = [layer.name() for layer in QgsProject.instance().layerTreeRoot().layerOrder()
-                  if layer.isValid() and _is_online(layer)
-                  and layer_is_visible(layer, QgsProject.instance())]
+        camadas = _project_basemap_layers(QgsProject.instance())
+        # Guardadas por id, nunca por objeto: o assistente não é modal e uma
+        # camada removida no meio deixa um ponteiro morto que derruba o QGIS.
+        self._basemap_ids = [layer.id() for layer in camadas]
+        self.basemap_check.setVisible(bool(camadas))
+        self.online_note.setVisible(bool(camadas))
+        if not camadas:
+            return
+        nomes = ', '.join(layer.name() for layer in camadas)
+        online = [layer.name() for layer in camadas if _is_online(layer)]
+        self.basemap_check.setText(f'Incluir o mapa de fundo do projeto ({nomes})')
         self.online_note.setText(
-            'Mapas de fundo online não entram no arquivo (' + ', '.join(online) + '). '
-            'O mapa é montado com as imagens marcadas na primeira tela.' if online else '')
-        self.online_note.setVisible(bool(online))
+            'Marcar isto BAIXA os tiles de ' + ', '.join(online) + ' durante a geração; '
+            'a Estimativa mostra quantos antes de começar.' if online else
+            'O restante do mapa vem das imagens marcadas na primeira tela.')
+        if self._first_visit:
+            self._first_visit = False
+            # Marcado só quando não há imagem de arquivo: aí ele é a ÚNICA coisa
+            # capaz de desenhar o mapa, e deixá-lo desmarcado é um beco sem saída.
+            # Havendo imagens em disco, quem manda são elas — foi por entrar por
+            # cima delas que o fundo online virou download surpresa.
+            self.basemap_check.setChecked(
+                not self._wizard.extent_page.has_usable_images())
+
+    def extra_basemap_layers(self):
+        """O mapa de fundo marcado aqui, ainda válido e visível no projeto."""
+        if not self.basemap_check.isChecked():
+            return []
+        escolhidos = set(self._basemap_ids)
+        return [lyr for lyr in _project_basemap_layers(QgsProject.instance())
+                if lyr.id() in escolhidos]
 
     def isComplete(self):
         return True
@@ -1372,6 +1472,7 @@ class EstimatePage(QWizardPage):
         self._ok = False
         self.report.setPlainText('Calculando tiles da área selecionada…')
         self.gate_label.setText('')
+        self.warn_label.setText('')   # senão o aviso da simulação anterior ressuscita
         self.warn_label.hide()
         QTimer.singleShot(50, self._compute)
 
@@ -1379,9 +1480,14 @@ class EstimatePage(QWizardPage):
         wizard = self._wizard
         if not wizard.visible_basemap_layers():
             self.report.setPlainText('')
+            ocultas = _hidden_basemap_names(QgsProject.instance())
+            extra = (' Há camada de imagem oculta no painel do QGIS ('
+                     + ', '.join(ocultas) + '): marque-a lá para poder usá-la.'
+                     ) if ocultas else ''
             self.gate_label.setText(
-                'Nenhuma camada marcada para desenhar o mapa. Volte a Parâmetros e '
-                'marque ao menos uma, ou habilite no projeto a camada desejada.')
+                'Nenhuma camada marcada para desenhar o mapa. Marque uma imagem em '
+                '"Área de interesse" ou o mapa de fundo do projeto em "Parâmetros".'
+                + extra)
             self.completeChanged.emit()
             return
 
@@ -1495,6 +1601,18 @@ class EstimatePage(QWizardPage):
             self._ok = True
         else:
             self._ok = True
+
+        # A amostragem renderizou tiles e TODOS saíram vazios: a camada não cobre
+        # a área. Sem isto o relatório mostrava um tamanho plausível (tabela por
+        # formato) para um arquivo que sairia sem mapa nenhum — e o usuário só
+        # descobria depois de esperar a geração inteira.
+        est = wizard.estimate_result
+        if est.blank_samples and not est.measured_from:
+            self.warn_label.setText(
+                ('⚠ Os tiles de amostra saíram sem imagem nenhuma: a camada marcada não '
+                 'cobre esta área (ou não chegou a baixar). Gerar agora produz um arquivo '
+                 'sem mapa.\n' + self.warn_label.text()).strip())
+            self.warn_label.show()
         self.completeChanged.emit()
 
     def isComplete(self):
@@ -1596,6 +1714,10 @@ class RunPage(QWizardPage):
 
         self._append(f'Gerando {file_name} '
                      f'({len(spec.filtered_tiles)} tiles, zoom {spec.max_zoom})…')
+        # Qual camada desenhou o mapa é a primeira pergunta quando o arquivo sai
+        # branco ou sem o fundo esperado — e não estava em lugar nenhum do log.
+        self._append('Mapa desenhado com: ' + ', '.join(
+            f'{lyr.name()} ({_layer_origin(lyr)})' for lyr in spec.layers))
 
         # Off-ramp for genuinely large jobs: they hold the GUI thread for minutes and
         # the window can look frozen, so let the user opt in knowingly.
