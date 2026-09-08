@@ -9,6 +9,7 @@ import sys
 import getpass
 import xmlrpc.client
 from optparse import OptionParser
+from urllib.parse import quote
 
 # Configuration
 PROTOCOL = 'https'
@@ -16,6 +17,10 @@ SERVER = 'plugins.qgis.org'
 PORT = '443'
 ENDPOINT = '/plugins/RPC2/'
 VERBOSE = False
+# Conta publicadora do TairuDB no plugins.qgis.org. Fica aqui, e nao na linha de
+# comando, porque a senha e digitada na hora (getpass, mais abaixo) — passa-la em
+# -w deixaria a senha no historico do shell e na lista de processos.
+DEFAULT_USERNAME = 'danielhsm'
 
 
 def main(parameters, arguments):
@@ -24,10 +29,13 @@ def main(parameters, arguments):
     :param parameters: Command line parameters.
     :param arguments: Command line arguments.
     """
+    # As credenciais vao DENTRO da URL: sem escapar, uma senha com '@', ':' ou '/'
+    # (perfeitamente valida no site) monta um endereco errado e o upload falha com
+    # um erro de rede que nao diz isso.
     address = "{protocol}://{username}:{password}@{server}:{port}{endpoint}".format(
         protocol=PROTOCOL,
-        username=parameters.username,
-        password=parameters.password,
+        username=quote(parameters.username, safe=''),
+        password=quote(parameters.password, safe=''),
         server=parameters.server,
         port=parameters.port,
         endpoint=ENDPOINT)
@@ -95,8 +103,8 @@ if __name__ == "__main__":
         options.port = PORT
     if not options.username:
         # interactive mode
-        username = getpass.getuser()
-        print("Please enter user name [%s] :" % username, end=' ')
+        username = DEFAULT_USERNAME
+        print("Usuario do plugins.qgis.org [%s] :" % username, end=' ')
 
         res = input()
         if res != "":
@@ -104,6 +112,6 @@ if __name__ == "__main__":
         else:
             options.username = username
     if not options.password:
-        # interactive mode
-        options.password = getpass.getpass()
+        # interactive mode (nao ecoa, nao fica no historico)
+        options.password = getpass.getpass('Senha de %s: ' % options.username)
     main(options, args)
