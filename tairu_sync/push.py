@@ -34,7 +34,7 @@ try:
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
         sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
-        SYNC_MAP_ID_PROPERTY,
+        SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
@@ -47,7 +47,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
         sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
-        SYNC_MAP_ID_PROPERTY,
+        SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
     )
     from tairu_sync.tasks import run_task
 
@@ -1245,9 +1245,11 @@ _ALL_UPDATE_FIELDS = list(_DIFF_SCALARS) + [
 ]
 
 
-def _baseline_hash(feature):
+def _baseline_hash(feature, fallback=None):
     value = _attr(feature, SYNC_HASH_FIELD)
-    return str(value or '')
+    if value:
+        return str(value)
+    return str((fallback or {}).get('hash') or '')
 
 
 def _append_warning(existing, warning):
@@ -1328,6 +1330,8 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
                     copied_from_map_id=origin_map_id if copying_from_other_map else '')
     seen_ids = set()
     sync_snapshot = layer_sync_snapshot(layer)
+    # Identidade de reserva para camadas cujo provedor nao guarda recordId (KML).
+    fallback_ids = layer_feature_record_ids(layer) if not copying_from_other_map else {}
     # One scan of the layer's ELEV values infers the contour interval up front so
     # every feature can be classified master/normal without re-scanning.
     contour_master_modulo = _contour_master_modulo(layer)
@@ -1342,6 +1346,9 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
         for index, feature in enumerate(layer.getFeatures(), start=1):
             candidate, warning = feature_to_record(
                 feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg)
+            if not candidate.record_id:
+                candidate.record_id = str(
+                    fallback_ids.get(str(feature.id()), {}).get('id') or '')
             entry = _FeatureCandidate(feature, candidate, warning)
             feature_entries.append(entry)
             if candidate.record_id:
@@ -1402,7 +1409,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             candidate.created_at = _attr_millis(feature, 'createdAt') or candidate.created_at
             candidate.is_deleted = False
 
-            base_hash = _baseline_hash(feature)
+            base_hash = _baseline_hash(feature, fallback_ids.get(str(feature.id())))
             if base_hash and sync_record_hash(candidate) == base_hash:
                 plan.items.append(PushItem('unchanged', candidate, feature.id(), [], warning))
             else:
@@ -1630,9 +1637,12 @@ def execute_push(dock, tmap, entries, group=None):
         # pertence à expedição de onde veio, e gravar nela o carimbo desta faria o próximo
         # envio de volta para a origem virar outra "cópia" — trocando a autoria dos
         # registros originais pela de quem copiou.
+        project_only = []
         for plan, source_layer in entries:
-            if not plan.copied_from_map_id:
-                _write_back_records_to_source_layer(plan, source_layer)
+            if plan.copied_from_map_id:
+                continue
+            if not _write_back_records_to_source_layer(plan, source_layer):
+                project_only.append(plan.layer_name)
         with contextlib.suppress(Exception):
             cache = FirestoreCache(dock.env.key, dock.tokens.uid)
             cache.store_record_models(
@@ -1643,6 +1653,13 @@ def execute_push(dock, tmap, entries, group=None):
         page.set_busy(False)
         page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
         dock.notify(f'{tmap.nome}: {batch_summary(plans)} — enviado.')
+        if project_only:
+            dock.notify(
+                'A camada {} não guarda os identificadores dos registros (formato '
+                'somente-leitura, como KML). Eles ficaram no projeto: SALVE o projeto '
+                'antes do próximo envio, senão os mesmos registros serão enviados de '
+                'novo como duplicatas.'.format(', '.join(project_only)),
+                error=True)
         try:
             try:
                 from .pull import start_pull
@@ -1667,11 +1684,24 @@ def execute_push(dock, tmap, entries, group=None):
 
 
 def _write_back_records_to_source_layer(plan, layer):
-    """Persist approved record attributes into the source layer when possible."""
+    """Persist approved record attributes into the source layer when possible.
+
+    Devolve False so quando ACABAMOS de descobrir que o provedor recusa guardar o
+    recordId (KML, GeoJSON somente-leitura, camadas de consulta) — o caller avisa que
+    a identidade foi para o PROJETO e precisa ser salva. Camada que ja vinha usando a
+    reserva devolve True: o aviso ja foi dado, e sem essa identidade cada envio
+    reclassificava as mesmas feicoes como registros novos, duplicando tudo em silencio.
+    """
     if layer is None:
-        return
-    with contextlib.suppress(Exception):
-        ensure_record_layer_fields(layer)
+        return True
+    # Ja sabemos que esta camada engole a gravacao (tem identidade de reserva de um
+    # envio anterior): nao insistir evita o CRITICAL "Erro OGR ao configurar feicao"
+    # a cada envio e nao suja a tabela de atributos com 26 campos fantasma que o
+    # provedor nunca criou.
+    known_unwritable = bool(layer_feature_record_ids(layer))
+    if not known_unwritable:
+        with contextlib.suppress(Exception):
+            ensure_record_layer_fields(layer)
     # A camada passa a carregar recordId/tairuSyncHash DESTA expedição; sem registrar
     # qual é, um envio posterior para outra expedição repetiria o bug da prévia vazia.
     with contextlib.suppress(Exception):
@@ -1679,6 +1709,7 @@ def _write_back_records_to_source_layer(plan, layer):
 
     fields = layer.fields()
     changes = {}
+    fallback = {}
     for item in plan.items:
         if item.action not in ('new', 'update') or item.feature_id is None:
             continue
@@ -1688,13 +1719,18 @@ def _write_back_records_to_source_layer(plan, layer):
         if not item.send:
             continue
         attr_map = record_to_attribute_map(item.record)
+        fallback[str(item.feature_id)] = {
+            'id': item.record.record_id,
+            'hash': attr_map[SYNC_HASH_FIELD],
+            'lastModified': attr_map[SYNC_LAST_MODIFIED_FIELD],
+        }
         row_changes = {
             fields.indexOf(name): value for name, value in attr_map.items()
             if fields.indexOf(name) >= 0
         }
         if row_changes:
             changes[item.feature_id] = row_changes
-    if changes:
+    if changes and not known_unwritable:
         # source may be read-only; remote commit has already succeeded
         with contextlib.suppress(Exception):
             if layer.isEditable():
@@ -1704,5 +1740,35 @@ def _write_back_records_to_source_layer(plan, layer):
             else:
                 layer.dataProvider().changeAttributeValues(changes)
             layer.triggerRepaint()
+    # Sem nada a carimbar nao ha o que garantir; com itens mas sem changes a camada
+    # nem tem onde guardar (o provedor recusou ate criar os campos).
+    if not fallback:
+        persisted = True
+    elif known_unwritable:
+        persisted = False
+    else:
+        persisted = _record_id_persisted(layer, changes)
+    if not persisted:
+        set_layer_feature_record_ids(layer, fallback)
     with contextlib.suppress(Exception):
         configure_record_layer_fields(layer)
+    return persisted or known_unwritable
+
+
+def _record_id_persisted(layer, changes):
+    """A camada realmente guardou o recordId que acabamos de gravar?
+
+    O provedor devolve False (ou nem isso: o OGR loga "Erro OGR ao configurar
+    feicao N: Invalid index") sem levantar excecao, entao a unica prova e reler.
+    Uma feicao basta: o provedor aceita todas ou nenhuma.
+    """
+    if not changes:
+        return False
+    idx = layer.fields().indexOf('recordId')
+    if idx < 0:
+        return False
+    try:
+        feat = layer.getFeature(next(iter(changes)))
+        return bool(feat.isValid() and str(feat.attribute(idx) or ''))
+    except Exception:
+        return False

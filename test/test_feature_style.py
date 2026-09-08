@@ -59,7 +59,9 @@ def _install_stubs():
           sync_record_hash=_dummy, SYNC_HASH_FIELD='tairuSyncHash',
           SYNC_LAST_MODIFIED_FIELD='tairuSyncLastModified',
           layer_origin_map_id=lambda _layer: '',
-          SYNC_MAP_ID_PROPERTY='tairu/syncMapId')
+          SYNC_MAP_ID_PROPERTY='tairu/syncMapId',
+          layer_feature_record_ids=lambda _layer: {},
+          set_layer_feature_record_ids=_dummy)
     _stub('tairu_sync.tasks', run_task=_dummy)
 
 

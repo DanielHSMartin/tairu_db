@@ -16,6 +16,7 @@
 Precisa do Python do QGIS (qgis.core); pulado em outros interpretadores.
 """
 
+import json
 import os
 import unittest
 
@@ -204,6 +205,91 @@ class TestRecordGroup(unittest.TestCase):
 
         _write_back_records_to_source_layer(plan, _Layer())
         self.assertEqual(touched, [1])
+
+    def test_layer_that_cannot_store_record_ids_keeps_them_in_the_project(self):
+        """Camada somente-leitura (KML): sem esta reserva, cada envio duplica tudo.
+
+        O provedor engole a gravacao (devolve False / loga "Invalid index" e segue),
+        entao a feicao volta sem recordId e o envio seguinte a manda como registro
+        NOVO — foi assim que um poligono KML virou varias copias empilhadas no app.
+        """
+        from tairu_firebase.models import TairuRecord
+        from tairu_sync.push import (
+            PushItem, PushPlan, _baseline_hash, _write_back_records_to_source_layer,
+        )
+        from tairu_sync.record_convert import FEATURE_IDS_PROPERTY
+
+        class _Fields:
+            def indexOf(self, name):
+                return 0 if name == 'recordId' else -1
+
+        class _Feature:
+            def __init__(self, value):
+                self._value = value
+
+            def isValid(self):
+                return True
+
+            def fields(self):
+                return _Fields()
+
+            def attribute(self, _idx):
+                return self._value
+
+        class _Layer:
+            def __init__(self, stored):
+                self.stored = stored
+                self.properties = {}
+
+            def fields(self):
+                return _Fields()
+
+            def isEditable(self):
+                return False
+
+            def getFeature(self, _fid):
+                return _Feature(self.stored)
+
+            def customProperty(self, key, default=''):
+                return self.properties.get(key, default)
+
+            def setCustomProperty(self, key, value):
+                self.properties[key] = value
+
+            def triggerRepaint(self):
+                pass
+
+            def dataProvider(self):
+                class _Provider:
+                    def changeAttributeValues(self, _changes):
+                        return False
+                return _Provider()
+
+        def _plan():
+            return PushPlan(map_id='m1', items=[
+                PushItem('new', TairuRecord(record_id='a', nome='X'), feature_id=1),
+            ])
+
+        swallowed = _Layer(stored='')
+        self.assertFalse(_write_back_records_to_source_layer(_plan(), swallowed))
+        stored = json.loads(swallowed.properties[FEATURE_IDS_PROPERTY])
+        self.assertEqual(stored['1']['id'], 'a')
+        self.assertTrue(stored['1']['hash'])
+        # ... e o proximo envio reconhece a feicao pelo hash guardado (nao e "novo").
+        self.assertEqual(_baseline_hash(_Feature(None), stored['1']), stored['1']['hash'])
+
+        # Segundo envio na mesma camada: nem tenta gravar (fim do CRITICAL do OGR)
+        # e a reserva continua valendo.
+        swallowed.dataProvider = lambda: self.fail('nao deveria tentar gravar de novo')
+        # ... e o aviso nao se repete a cada envio (a reserva ja existe).
+        self.assertTrue(_write_back_records_to_source_layer(_plan(), swallowed))
+        self.assertEqual(
+            json.loads(swallowed.properties[FEATURE_IDS_PROPERTY])['1']['id'], 'a')
+
+        # Camada que guarda de verdade nao suja o projeto.
+        real = _Layer(stored='a')
+        self.assertTrue(_write_back_records_to_source_layer(_plan(), real))
+        self.assertNotIn(FEATURE_IDS_PROPERTY, real.properties)
 
     def test_group_id_reaches_the_document_fields(self):
         from tairu_firebase.models import TairuRecord

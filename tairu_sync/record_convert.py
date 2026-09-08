@@ -495,6 +495,38 @@ def _set_layer_sync_snapshot(layer):
         )
 
 
+# Identidade de reserva, guardada NO PROJETO: {fid: {'id', 'hash', 'lastModified'}}.
+# Camada cujo provedor recusa gravar campos (KML e afins) perdia o recordId no
+# write-back do envio — e o envio seguinte reclassificava a mesma feicao como registro
+# NOVO, duplicando os registros da expedicao em silencio (o app mostra poligonos
+# empilhados e a edicao de um deles "nao muda nada").
+FEATURE_IDS_PROPERTY = 'tairu/featureRecordIds'
+
+
+def layer_feature_record_ids(layer):
+    """{'<fid>': {'id', 'hash', 'lastModified'}} gravado no projeto, ou {}."""
+    if layer is None:
+        return {}
+    try:
+        data = json.loads(layer.customProperty(FEATURE_IDS_PROPERTY, '') or '{}')
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def set_layer_feature_record_ids(layer, entries):
+    """Mescla {fid: {...}} no mapa de identidade de reserva da camada."""
+    if layer is None or not entries:
+        return
+    merged = layer_feature_record_ids(layer)
+    merged.update(entries)
+    with contextlib.suppress(Exception):
+        layer.setCustomProperty(
+            FEATURE_IDS_PROPERTY,
+            json.dumps(merged, sort_keys=True, separators=(',', ':')),
+        )
+
+
 def configure_record_layer_fields(layer):
     """Hide internal sync/style fields from ordinary QGIS editing surfaces."""
     if layer is None:
@@ -742,6 +774,21 @@ class PullResult:
     errors: list = field(default_factory=list)   # (record_id, reason)
 
 
+def _check_provider(ok, provider, what, result):
+    """Registra em result.errors uma gravacao que o provedor recusou.
+
+    addFeatures & cia. devolvem False em vez de levantar; ignorar isso fazia o pull
+    anunciar "N novos" com o GeoPackage intacto — o registro simplesmente nao
+    aparecia na camada, sem erro em lugar nenhum.
+    """
+    if ok:
+        return
+    detail = ''
+    with contextlib.suppress(Exception):
+        detail = '; '.join(provider.errors() or [])
+    result.errors.append(('*', f'{what} nao gravado(s): {detail or "provedor recusou"}'))
+
+
 def apply_pull(gpkg_path, records, remove_missing=True):
     """Merge TairuRecord list into the map GeoPackage by recordId.
 
@@ -849,14 +896,19 @@ def apply_pull(gpkg_path, records, remove_missing=True):
                     removals.append(fid)
         result.removed += len(removals)
 
+        label = LAYER_SPECS[spec_key][2]
         if attr_changes:
-            provider.changeAttributeValues(attr_changes)
+            _check_provider(provider.changeAttributeValues(attr_changes),
+                            provider, f'{label}: atributos', result)
         if geom_changes:
-            provider.changeGeometryValues(geom_changes)
+            _check_provider(provider.changeGeometryValues(geom_changes),
+                            provider, f'{label}: geometrias', result)
         if additions:
-            provider.addFeatures(additions)
+            _check_provider(provider.addFeatures(additions),
+                            provider, f'{label}: {len(additions)} registro(s)', result)
         if removals:
-            provider.deleteFeatures(removals)
+            _check_provider(provider.deleteFeatures(removals),
+                            provider, f'{label}: remocoes', result)
         layer.updateExtents()
 
     return result
@@ -1016,10 +1068,20 @@ def add_record_layers_to_project(gpkg_path, map_name):
         uri = gpkg_layer_uri(gpkg_path, spec_key)
         label = f'{map_name} — {geo_suffix}'
         if uri in existing_by_source:
-            configure_record_layer_fields(existing_by_source[uri])
+            existing = existing_by_source[uri]
+            # apply_pull grava no GeoPackage por uma SEGUNDA conexao OGR, entao a camada
+            # que ja esta no projeto continua com a contagem de feicoes e a extensao
+            # antigas — o registro recem-baixado parece nao ter vindo. Sem edicao em
+            # curso (reload descartaria), releia.
+            if not existing.isEditable():
+                with contextlib.suppress(Exception):
+                    existing.reload()
+                    existing.updateExtents()
+                    existing.triggerRepaint()
+            configure_record_layer_fields(existing)
             # Re-apply styling so style fixes reach layers from older pulls
             if spec_key != 'none':
-                style_layer(existing_by_source[uri], spec_key)
+                style_layer(existing, spec_key)
             continue
         layer = QgsVectorLayer(uri, label, 'ogr')
         if not layer.isValid():

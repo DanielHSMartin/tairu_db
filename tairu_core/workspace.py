@@ -15,7 +15,7 @@ Managed local workspace for cloud-synced data:
 import json
 import os
 
-from qgis.core import QgsApplication
+from qgis.core import QgsApplication, QgsSettings
 
 
 WORKSPACE_DIR_NAME = 'tairu_workspace'
@@ -69,6 +69,31 @@ def save_last_pull_ts(paths, ts):
             json.dump({'ts': ts}, f)
     except OSError:
         pass
+
+
+# Quando esta maquina abriu cada expedicao pela ultima vez — a ordem da lista,
+# espelhando lastActivityMillisFor do app (ultimo acesso local, com o lastModified
+# da expedicao como reserva para a que nunca foi aberta aqui). Fica em QgsSettings, e
+# nao no workspace, porque ler um arquivo por expedicao criaria o diretorio de TODAS
+# elas so para desenhar a lista.
+_LAST_OPENED_KEY = 'tairu_db/lastOpened'
+
+
+def mark_map_opened(env_key, map_id, ts):
+    """Registra que a expedicao foi aberta agora (epoch-ms)."""
+    if not env_key or not map_id:
+        return
+    QgsSettings().setValue(f'{_LAST_OPENED_KEY}/{env_key}/{map_id}', str(int(ts)))
+
+
+def map_last_opened_ms(env_key, map_id):
+    """Epoch-ms da ultima abertura desta expedicao nesta maquina, ou 0."""
+    if not env_key or not map_id:
+        return 0
+    try:
+        return int(QgsSettings().value(f'{_LAST_OPENED_KEY}/{env_key}/{map_id}', 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def slugify_filename(name, fallback='arquivo'):

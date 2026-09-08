@@ -220,6 +220,7 @@ class TairuMap:
     has_emergency_alert: bool = False
     plan_version: str = 'online'
     is_deleted: bool = False
+    last_modified: int = 0              # epoch millis
 
     @classmethod
     def from_fields(cls, map_id, d):
@@ -245,6 +246,7 @@ class TairuMap:
             has_emergency_alert=bool(d.get('hasEmergencyAlert') or False),
             plan_version=d.get('planVersion') or 'online',
             is_deleted=bool(d.get('isDeleted') or False),
+            last_modified=parse_millis(d.get('lastModified')),
         )
 
     def role_for(self, uid):

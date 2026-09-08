@@ -11,6 +11,7 @@ from qgis.PyQt.QtWidgets import (
 
 try:
     from ..compat import _USER_ROLE
+    from ..tairu_core.workspace import map_last_opened_ms
     from .style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
         SURFACE_CONTAINER, WARNING, WARNING_CONTAINER,
@@ -19,6 +20,7 @@ try:
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _USER_ROLE
+    from tairu_core.workspace import map_last_opened_ms
     from tairu_ui.style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
         SURFACE_CONTAINER, WARNING, WARNING_CONTAINER,
@@ -63,6 +65,7 @@ class MapsPage(QWidget):
         self._maps = {}        # map_id -> TairuMap
         self._counts = {}      # map_id -> record count
         self._uid = None
+        self._env_key = ''
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
@@ -113,11 +116,18 @@ class MapsPage(QWidget):
 
     # ------------------------------------------------------------------ api
 
-    def set_maps(self, maps, uid):
+    def set_maps(self, maps, uid, env_key=''):
         """maps: list of TairuMap models."""
         self._maps = {m.map_id: m for m in maps}
         self._uid = uid
+        self._env_key = env_key or self._env_key
         self._rebuild()
+
+    def refresh_order(self):
+        """Redesenha a lista — usada ao voltar de uma expedicao, que acabou de virar
+        a mais recente."""
+        if self._maps:
+            self._rebuild()
 
     def set_record_counts(self, counts):
         """Batch-update record counts and rebuild the list ONCE.
@@ -149,7 +159,7 @@ class MapsPage(QWidget):
         self.list_widget.clear()
         show_archived = self.archived_check.isChecked()
         visible = 0
-        for tmap in sorted(self._maps.values(), key=lambda m: (m.nome or '').lower()):
+        for tmap in sorted(self._maps.values(), key=self._order_key):
             if tmap.is_deleted:
                 continue
             if tmap.status == 'archived' and not show_archived:
@@ -169,6 +179,17 @@ class MapsPage(QWidget):
                 'Nenhuma expedição encontrada. Crie uma expedição no aplicativo Tairu Maps.')
         else:
             self.set_status('')
+
+    def _order_key(self, tmap):
+        """Uso mais recente primeiro, como a lista de expedicoes do aplicativo.
+
+        Mesma definicao de TairuDataProvider.lastActivityMillisFor: a ultima vez que
+        ESTA maquina abriu a expedicao e, para a que nunca foi aberta aqui, a ultima
+        alteracao da propria expedicao — assim uma instalacao nova ja abre numa ordem
+        util em vez de alfabetica. Empates pelo nome e depois pelo id.
+        """
+        recent = map_last_opened_ms(self._env_key, tmap.map_id) or tmap.last_modified
+        return (-recent, (tmap.nome or '').lower(), tmap.map_id)
 
     def _on_item_activated(self, item):
         map_id = item.data(_USER_ROLE)

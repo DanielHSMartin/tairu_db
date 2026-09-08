@@ -21,6 +21,8 @@ def _install_qgis_stub(settings_dir):
     qgis_mod = types.ModuleType('qgis')
     core_mod = types.ModuleType('qgis.core')
     core_mod.QgsApplication = _QgsApplicationStub
+    # workspace.py tambem importa QgsSettings (carimbo de "expedicao aberta").
+    core_mod.QgsSettings = type('QgsSettingsStub', (), {})
     sys.modules['qgis'] = qgis_mod
     sys.modules['qgis.core'] = core_mod
 

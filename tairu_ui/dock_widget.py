@@ -29,6 +29,7 @@ try:
     from ..tairu_firebase.oauth_loopback import LoopbackServer
     from ..tairu_firebase.storage import StorageClient
     from ..tairu_core.firestore_cache import FirestoreCache
+    from ..tairu_core.workspace import mark_map_opened
     from ..tairu_firebase.models import now_millis
     from ..tairu_sync.tasks import run_task, cancel_all_tasks
     from .login_page import LoginPage
@@ -45,6 +46,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_firebase.oauth_loopback import LoopbackServer
     from tairu_firebase.storage import StorageClient
     from tairu_core.firestore_cache import FirestoreCache
+    from tairu_core.workspace import mark_map_opened
     from tairu_firebase.models import now_millis
     from tairu_sync.tasks import run_task, cancel_all_tasks
     from tairu_ui.login_page import LoginPage
@@ -291,7 +293,9 @@ class TairuDockWidget(QgsDockWidget):
         self.maps = {}
         for map_id, fields in rows:
             self.maps[map_id] = TairuMap.from_fields(map_id, fields)
-        self.maps_page.set_maps(list(self.maps.values()), self.tokens.uid)
+        self.maps_page.set_maps(
+            list(self.maps.values()), self.tokens.uid,
+            self.env.key if self.env else '')
         if status is not None:
             self.maps_page.set_status(status)
         self._load_record_counts(allow_remote=allow_remote_counts)
@@ -404,6 +408,10 @@ class TairuDockWidget(QgsDockWidget):
         tmap = self.maps.get(map_id)
         if not tmap:
             return
+        # Abrir É o uso: e o que leva a expedicao para o topo da lista, como no app.
+        with contextlib.suppress(Exception):
+            mark_map_opened(self.env.key if self.env else '', map_id, now_millis())
+            self.maps_page.refresh_order()
         self.detail_page.set_map(tmap, self.tokens.uid)
         self.stack.setCurrentWidget(self.detail_page)
 
