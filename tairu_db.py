@@ -86,6 +86,46 @@ class TairuDBPlugin(object):
         self.iface.removeToolBarIcon(self.action)
         self.iface.removePluginMenu('TairuDB', self.action)
         QgsApplication.processingRegistry().removeProvider(self.provider)
+        self._forget_own_modules()
+
+    def _forget_own_modules(self):
+        """Devolve o plugin ao estado de antes de ser carregado, para poder recarregar.
+
+        DUAS coisas, e as duas sao necessarias.
+
+        1. Tirar os modulos da memoria. Ao desativar um complemento o QGIS descarta apenas
+           os modulos cujo pacote RAIZ tem o nome dele (qgis/utils.py:
+           `package_name = module_name.split('.')[0]` e `if package_name in
+           available_plugins`). Os nossos sao de PRIMEIRO NIVEL — tairu_core, tairu_sync,
+           tairu_firebase, tairu_ui, compat — porque o import la em cima poe a pasta do
+           plugin no sys.path. Sem isto, desmarcar e marcar nao recarregava nada: o Python
+           devolvia a versao velha e so reiniciar o QGIS adiantava.
+
+        2. Tirar a pasta do sys.path. Ela fica em sys.path[0] e contem `tairu_db.py`;
+           com os modulos fora da memoria, o `__import__('tairu_db')` do QGIS acharia o
+           ARQUIVO antes do PACOTE e o carregamento morreria em "attempted relative import
+           with no known parent package". Nao adianta tratar so o import deste arquivo: a
+           falha se repete em cascata em tairu_db_provider.py e adiante. O import la em
+           cima recoloca a pasta no proximo carregamento.
+        """
+        with contextlib.suppress(Exception):
+            raiz = os.path.realpath(cmd_folder)
+            alvos = []
+            for nome, modulo in list(sys.modules.items()):
+                if nome in ('__main__', '__mp_main__'):
+                    continue     # o console do QGIS nao e nosso para descartar
+                arquivo = getattr(modulo, '__file__', None)
+                if not arquivo:
+                    continue
+                with contextlib.suppress(Exception):
+                    if os.path.realpath(arquivo).startswith(raiz + os.sep):
+                        alvos.append(nome)
+            for nome in alvos:
+                sys.modules.pop(nome, None)
+            for entrada in [x for x in sys.path
+                            if os.path.realpath(x) == raiz]:
+                with contextlib.suppress(ValueError):
+                    sys.path.remove(entrada)
 
     def _show_dock(self):
         with contextlib.suppress(Exception):

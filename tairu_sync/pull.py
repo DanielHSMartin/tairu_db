@@ -14,23 +14,35 @@ from qgis.core import QgsMessageLog
 
 try:
     from ..compat import _MSG_WARNING
-    from ..tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
+    from ..tairu_core.firestore_cache import (
+        FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from ..tairu_core.reentrancy_guard import run_or_defer
     from ..tairu_core.mbtiles import tairudb_to_mbtiles
-    from ..tairu_core.workspace import map_workspace, save_last_pull_ts
+    from ..tairu_core.workspace import (
+        map_workspace, mark_record_schema_generation,
+        record_schema_generation, save_last_pull_ts)
     from ..tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from ..tairu_firebase.models import TairuRecord, now_millis, parse_millis
-    from .record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
+    from ..tairu_firebase.models import (
+        TairuRecord, TairuRecordGroup, now_millis, parse_millis)
+    from .record_convert import (
+        RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
+        add_raster_to_project)
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
-    from tairu_core.firestore_cache import FirestoreCache, RECORDS_COLLECTION
+    from tairu_core.firestore_cache import (
+        FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from tairu_core.reentrancy_guard import run_or_defer
     from tairu_core.mbtiles import tairudb_to_mbtiles
-    from tairu_core.workspace import map_workspace, save_last_pull_ts
+    from tairu_core.workspace import (
+        map_workspace, mark_record_schema_generation,
+        record_schema_generation, save_last_pull_ts)
     from tairu_firebase.config import TAIRUDB_OBJECT_PATH
-    from tairu_firebase.models import TairuRecord, now_millis, parse_millis
-    from tairu_sync.record_convert import apply_pull, add_record_layers_to_project, add_raster_to_project
+    from tairu_firebase.models import (
+        TairuRecord, TairuRecordGroup, now_millis, parse_millis)
+    from tairu_sync.record_convert import (
+        RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
+        add_raster_to_project)
     from tairu_sync.tasks import run_task
 
 # Safety margin subtracted from the Firestore serverTimestamp cursor to absorb
@@ -78,11 +90,22 @@ def start_pull(dock, tmap):
     # Migration safety: legacy last_pull.json and delta-only cache state are not
     # enough to prove the SQLite cache contains the whole record collection.
     since_millis = cache_since_millis if has_full_cache_snapshot else 0
+    # Migracao do grupo: o pull normal e INCREMENTAL e o delta nao traz registro
+    # inalterado, entao quem ja tinha a expedicao baixada ganharia a coluna vazia em todo
+    # mundo e veria a arvore de grupos inteira nascer vazia, sem uma mensagem. Um pull
+    # completo, uma unica vez por expedicao, preenche.
+    backfilling = bool(since_millis) and (
+        record_schema_generation(dock.env.key, tmap.map_id) < RECORD_SCHEMA_GENERATION)
+    if backfilling:
+        since_millis = 0
     is_incremental = since_millis > 0
 
     page.set_busy(True, 'Baixando registros…')
 
     def fetch(task):
+        # Os grupos vem SEMPRE inteiros, nunca por delta: sao dezenas de documentos
+        # minusculos, e a arvore precisa da lista completa para saber o que sumiu.
+        group_rows = fs.list_record_groups(tmap.map_id, cancel_cb=task.isCanceled)
         if is_incremental:
             query_since = max(0, since_millis - _PULL_CLOCK_SKEW_MS)
             rows = fs.list_records_since(tmap.map_id, query_since, cancel_cb=task.isCanceled)
@@ -90,14 +113,18 @@ def start_pull(dock, tmap):
         else:
             rows = fs.list_records(tmap.map_id, cancel_cb=task.isCanceled)
             task.report(1.0, f'{len(rows)} registros recebidos')
-        return rows
+        return rows, group_rows
 
     # NOTE: apply_pull creates QgsVectorLayer / QgsVectorFileWriter and reads
     # QgsProject.instance() — those crash the C++ layer off the GUI thread (a worker
     # attempt hard-crashed QGIS), so the GeoPackage merge stays on the GUI thread here.
     # The heavy-map freeze is a known trade-off; a safe off-thread merge would need a
     # thread-confined OGR path that never touches QgsProject/QgsVectorLayer.
-    def apply_rows(rows, from_cache=False):
+    def apply_rows(rows, group_rows=(), from_cache=False):
+        groups = []
+        for group_id, fields in group_rows or ():
+            with contextlib.suppress(Exception):
+                groups.append(TairuRecordGroup.from_fields(group_id, fields))
         records = []
         parse_errors = []
         for record_id, fields in rows:
@@ -111,6 +138,11 @@ def start_pull(dock, tmap):
                 paths['gpkg'],
                 records,
                 remove_missing=from_cache or not is_incremental,
+                # No pull de migracao, NAO levar junto o que o usuario desenhou e ainda
+                # nao enviou: o pull completo normal limpa essas feicoes de proposito
+                # (o estado local e refeito), mas este aqui so precisa preencher a coluna
+                # do grupo, e ate ontem o mesmo clique era incremental e inofensivo.
+                keep_unpushed=backfilling,
             )
         except Exception as e:
             page.set_busy(False)
@@ -121,7 +153,8 @@ def start_pull(dock, tmap):
         # event loop — addMapLayer there fires the wizard's layer combo and crashes
         # QGIS. run_or_defer runs this immediately in normal operation, or defers it
         # until the generation finishes.
-        run_or_defer(lambda: add_record_layers_to_project(paths['gpkg'], tmap.nome or tmap.map_id))
+        run_or_defer(lambda: add_record_layers_to_project(
+            paths['gpkg'], tmap.nome or tmap.map_id, tmap.map_id, groups))
 
         page.set_busy(False)
         if from_cache:
@@ -147,7 +180,8 @@ def start_pull(dock, tmap):
         dock.notify(f'{tmap.nome}: {summary}')
         return result
 
-    def on_success(rows):
+    def on_success(payload):
+        rows, group_rows = payload
         if is_incremental:
             sync_watermark = _rows_server_watermark(rows) or since_millis
         else:
@@ -164,7 +198,12 @@ def start_pull(dock, tmap):
                 full_snapshot=not is_incremental,
             )
             cache_stored = True
-        result = apply_rows(rows)
+        # Os grupos vao para o mesmo cache: sem eles, abrir a expedicao sem rede mostraria
+        # a arvore vazia e todo registro em "Sem grupo", que parece perda de dado.
+        with contextlib.suppress(Exception):
+            cache.store_records(tmap.map_id, group_rows, pull_started_at,
+                                full_snapshot=True, collection=RECORD_GROUPS_COLLECTION)
+        result = apply_rows(rows, group_rows)
         if result is None:
             return
         # Advance the sync cursor ONLY when the cache actually captured this batch.
@@ -173,6 +212,13 @@ def start_pull(dock, tmap):
         # OFFLINE pull (which rebuilds the GeoPackage from the cache via remove_missing)
         # would delete those local records. Leaving the cursor put makes the next pull
         # re-fetch and re-attempt the cache write, healing the divergence.
+        if not is_incremental:
+            # So depois de um recebimento completo bem-sucedido: o marcador e o que impede
+            # a migracao de rodar de novo, e tambem o que impede que ela seja cancelada
+            # para sempre por um envio ter criado a coluna numa tabela.
+            with contextlib.suppress(Exception):
+                mark_record_schema_generation(dock.env.key, tmap.map_id,
+                                              RECORD_SCHEMA_GENERATION)
         if cache_stored:
             with contextlib.suppress(Exception):
                 cache.save_sync_state(
@@ -185,6 +231,7 @@ def start_pull(dock, tmap):
 
     def on_error(message):
         cached_rows = []
+        cached_groups = []
         cache_loaded = False
         if has_full_cache_snapshot:
             try:
@@ -192,8 +239,11 @@ def start_pull(dock, tmap):
                 cache_loaded = True
             except Exception:
                 cached_rows = []
+            with contextlib.suppress(Exception):
+                cached_groups = cache.load_records(
+                    tmap.map_id, collection=RECORD_GROUPS_COLLECTION)
         if cache_loaded:
-            result = apply_rows(cached_rows, from_cache=True)
+            result = apply_rows(cached_rows, cached_groups, from_cache=True)
             if result is not None:
                 page.set_status(
                     f'Falha ao atualizar online. Usando cache local.\n{message}',
@@ -240,7 +290,8 @@ def start_tairudb_download(dock, tmap, file_name):
             added = 0
             for mbtiles_path, region_label in results:
                 name = f'{os.path.splitext(file_name)[0]} — {region_label}'
-                if add_raster_to_project(mbtiles_path, name, tmap.nome or tmap.map_id):
+                if add_raster_to_project(mbtiles_path, name,
+                                         tmap.nome or tmap.map_id, tmap.map_id):
                     added += 1
             page.set_status(f'{file_name}: {added} camada(s) raster adicionada(s).')
         page.set_busy(False)

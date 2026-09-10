@@ -294,7 +294,10 @@ class TestRecordGroup(unittest.TestCase):
     def test_group_id_reaches_the_document_fields(self):
         from tairu_firebase.models import TairuRecord
 
-        self.assertNotIn('groupId', TairuRecord(record_id='a').to_fields())
+        # groupId e escrito SEMPRE, inclusive vazio: a gravacao do plugin e uma patch com
+        # mascara, e sem a chave no corpo nao existiria forma de TIRAR um registro de um
+        # grupo pelo QGIS. Quem decide se o campo entra na mascara e _update_fields_for.
+        self.assertEqual(TairuRecord(record_id='a').to_fields()['groupId'], '')
         self.assertEqual(
             TairuRecord(record_id='a', group_id='g1').to_fields()['groupId'], 'g1')
 

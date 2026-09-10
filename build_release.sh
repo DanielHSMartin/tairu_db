@@ -32,7 +32,10 @@ mkdir -p "$stage"
 # ---- stage files (mirror pb_tool.cfg) ----
 flat_files="__init__.py tairu_db.py tairu_db_algorithm.py tairu_db_provider.py geopdf_converter.py compat.py qgis_proxy.py
             metadata.txt README.html TAIRUDB_SCHEMA.txt icon.png LICENSE"
-package_dirs="tairu_core tairu_ui tairu_firebase tairu_sync"
+# ATENCAO: esta lista NAO e lida do pb_tool.cfg — os dois precisam andar juntos.
+# "fonts" leva a fonte Material Icons, que e como o QGIS desenha o mesmo icone do
+# aplicativo; sem ela o ponto volta a ser um circulo, em silencio.
+package_dirs="tairu_core tairu_ui tairu_firebase tairu_sync fonts"
 
 for f in $flat_files; do
   [ -e "$SRC/$f" ] || fail "missing file listed in build: $f"

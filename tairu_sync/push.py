@@ -21,7 +21,8 @@ from dataclasses import dataclass, field
 
 from qgis.core import (
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsExpressionContext,
-    QgsExpressionContextUtils, QgsProject, QgsRenderContext,
+    QgsExpressionContextUtils, QgsFeatureRequest, QgsProject, QgsRenderContext,
+    QgsVectorLayer,
 )
 
 try:
@@ -550,6 +551,79 @@ def _rule_symbols_for_feature(renderer, feature, context):
         return []
 
 
+def _layer_subset_string(layer):
+    """Filtro em vigor na camada, ou '' — tolerante a camada sem a API (testes, mocks).
+
+    Deliberadamente uma copia da funcao homonima de record_convert, e nao um import:
+    test_feature_style substitui record_convert inteiro por um duble, e importar daqui um
+    nome que o duble nao tem derruba aquele modulo de teste na hora de carregar.
+    """
+    try:
+        return str(layer.subsetString() or '')
+    except Exception:
+        return ''
+
+
+def _record_ids_in_source(layer):
+    """recordIds presentes na TABELA, ignorando o filtro. None = camada sem filtro.
+
+    E o que separa "foi apagado" de "esta em outro grupo". getFeatures() honra o
+    subsetString — o provedor tambem —, entao numa pasta de grupo tudo o que esta fora do
+    filtro seria lido como exclusao local. Conferir na tabela custa uma varredura de uma
+    coluna e preserva a exclusao de verdade, que simplesmente desligar propagate_deletions
+    matava: numa expedicao com grupos TODA camada e filtrada, e nao sobraria caminho
+    nenhum para apagar um registro pelo QGIS.
+
+    Devolve conjunto VAZIO quando a conferencia falha — sem poder consultar a tabela nao
+    ha como afirmar que algo foi apagado, e o lado seguro e nao apagar.
+    """
+    try:
+        if not _layer_subset_string(layer):
+            return None
+        source = str(layer.source() or '').split('|subset=', 1)[0]
+        raw = QgsVectorLayer(source, 'tairu_conferencia', 'ogr')
+        if not raw.isValid():
+            return set()
+        idx = raw.fields().indexOf('recordId')
+        if idx < 0:
+            return set()
+        request = QgsFeatureRequest()
+        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        request.setSubsetOfAttributes([idx])
+        return {str(f.attribute(idx)) for f in raw.getFeatures(request) if f.attribute(idx)}
+    except Exception:
+        return set()
+
+
+def _e_camada_de_registros(layer):
+    """True quando a camada e uma das camadas de registro do plugin.
+
+    Copia deliberada da funcao homonima de record_convert, e nao um import: o
+    test_feature_style substitui aquele modulo por um duble, e importar daqui um nome que
+    o duble nao tem derruba o modulo de teste na hora de carregar. A identidade e o
+    esquema de campos, igual la.
+    """
+    try:
+        campos = layer.fields()
+        return campos.indexOf('recordId') >= 0 and campos.indexOf(SYNC_HASH_FIELD) >= 0
+    except Exception:
+        return False
+
+
+def _has_unsaved_deletions(layer):
+    """True quando ha exclusoes no buffer de edicao ainda nao gravadas.
+
+    getFeatures() ja devolve o buffer (sem elas) enquanto o snapshot e o do arquivo, entao
+    exclusao nao salva viraria isDeleted=True na nuvem — e um "Descartar edicoes" depois
+    devolveria a feicao aqui e a deixaria apagada la.
+    """
+    try:
+        return bool(layer.isEditable() and layer.editBuffer()
+                    and layer.editBuffer().deletedFeatureIds())
+    except Exception:
+        return False
+
+
 def _attr(feature, name):
     idx = feature.fields().indexOf(name)
     if idx < 0:
@@ -1018,25 +1092,59 @@ def layer_label_config(layer):
     return cfg
 
 
-def build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg):
-    """styleJson string for a feature, or None when it conveys nothing beyond the
-    legacy color/size columns (a plain solid feature with no fill/dash/label).
+def build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg,
+                             stored_json=None):
+    """styleJson string for a feature, ou None quando nao ha nada a dizer.
 
     color/bgColor are alpha-first ARGB ints matching the app (Color.toARGB32);
     `stroke` is a RecordStrokePattern name; `label_cfg` is layer_label_config().
+
+    `stored_json` e o styleJson que veio do app no recebimento. Quando existe, o
+    resultado e uma MESCLA: o que o simbolo do QGIS determina (cor, preenchimento,
+    traco) entra por cima, e tudo o mais que o app tinha — icone, rotulo, regras de
+    estilo por atributo — e preservado.
+
+    Sem essa mescla o envio de simbologia simplesmente NAO APARECE no aplicativo: ele
+    le a cor do styleJson ANTES do campo simples (Record.geometryColor), entao gravar
+    so geometryColorValue deixa o registro estilizado exatamente como estava. E gravar
+    um styleJson novo em folha, sem mesclar, apagaria o icone e o rotulo do usuario.
     """
-    base = {}
+    stored = {}
+    if stored_json:
+        try:
+            loaded = json.loads(stored_json)
+            if isinstance(loaded, dict):
+                stored = loaded
+        except (ValueError, TypeError):
+            stored = {}
+
+    stored_base = stored.get('base')
+    base = dict(stored_base) if isinstance(stored_base, dict) else {}
     if color_argb is not None:
         base['color'] = int(color_argb) & 0xFFFFFFFF
-    if spec_key in ('polygon', 'circle') and bg_argb is not None:
-        base['bgColor'] = int(bg_argb) & 0xFFFFFFFF
+    if spec_key in ('polygon', 'circle'):
+        # Tirar o preenchimento no QGIS e uma escolha; tem de apagar o que estava la.
+        if bg_argb is not None:
+            base['bgColor'] = int(bg_argb) & 0xFFFFFFFF
+        else:
+            base.pop('bgColor', None)
     if stroke in ('dashed', 'dotted'):
         base['stroke'] = stroke
+    elif stroke == 'solid':
+        # Ausente significa continuo; deixar 'dashed' velho seria ignorar a mudanca.
+        base.pop('stroke', None)
 
-    # Omit entirely unless something the columns can't carry is present.
+    if stored:
+        style = dict(stored)
+        style['v'] = stored.get('v', 1)
+        style['base'] = base
+        if label_cfg:
+            style['label'] = label_cfg
+        return json.dumps(style, separators=(',', ':'))
+
+    # Sem estilo de origem: so vale gravar quando ha algo que as colunas nao carregam.
     if 'bgColor' not in base and 'stroke' not in base and not label_cfg:
         return None
-
     style = {'v': 1, 'base': base}
     if label_cfg:
         style['label'] = label_cfg
@@ -1067,6 +1175,7 @@ _NON_ATTRIBUTE_FIELDS = frozenset({
     'geometryColor', 'geometryBackgroundColor', 'geometrySize', 'circleRadius',
     'geometryColorValue', 'geometryBackgroundColorValue',
     'isDeleted', 'createdBy', 'createdAt', 'lastModified', 'style', 'attributes',
+    'groupId',
     SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
 })
 
@@ -1138,6 +1247,15 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     # for regular layers it comes from the layer renderer/category/rule symbol.
     symbol_fg_argb, symbol_bg_argb = _feature_symbol_argbs(layer, feature, spec_key)
     color_argb = _first_defined(mapping.get('color_argb'), symbol_fg_argb)
+    # Feicao DESENHADA numa camada de registros: ela ainda nao tem recordId, entao casa
+    # com a categoria coringa do renderizador — um cinza de ESPERA, que existe so para o
+    # ponto aparecer no mapa antes do envio. Gravar essa cor faria o registro nascer
+    # cinza no aplicativo, como se o usuario a tivesse escolhido. Sem cor, o aplicativo
+    # aplica a cor do TIPO do registro, que e o que acontece quando ele e criado por la.
+    # Nao vale para camada do usuario (shapefile, KML): la a cor do simbolo e escolha.
+    if (color_argb is not None and not _attr(feature, 'recordId')
+            and _e_camada_de_registros(layer)):
+        color_argb = None
     bg_argb = symbol_bg_argb
 
     descricao = ''
@@ -1211,6 +1329,12 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
         created_by=uid,
         created_at=now,
         last_modified=now,
+        # Grupo do app. Vem CRU da coluna: um groupId que não resolve (o grupo foi
+        # apagado) é inofensivo por construção no app — renderiza como "Sem grupo" e
+        # mantém o vínculo —, então o plugin nunca o "corrige" para ''. Camada comum
+        # do QGIS não tem a coluna e devolve '' aqui; é o gate em build_push_plan que
+        # impede esse '' de virar máscara e limpar o grupo de um registro existente.
+        group_id=str(_attr(feature, 'groupId') or ''),
     )
     # Lossless geometry for holed / multipart features. The flat geometry_points
     # above is the exterior/largest-part representative (old-client + diff path);
@@ -1223,7 +1347,9 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     is_contour = contour_elev is not None and spec_key == 'line'
     if not is_contour:
         stroke = _feature_stroke_pattern(layer, feature)
-        rec.style = build_feature_style_json(color_argb, bg_argb, spec_key, stroke, label_cfg)
+        rec.style = build_feature_style_json(
+            color_argb, bg_argb, spec_key, stroke, label_cfg,
+            stored_json=_attr(feature, 'style'))
         # Every genuine user attribute of the source layer, always. They used to be
         # sent only when a label referenced a non-name field (the label-by-attribute
         # data), which meant the app showed an empty "Atributos" tab for practically
@@ -1240,9 +1366,30 @@ _DIFF_SCALARS = [
     'owner', 'plateTag', 'brand', 'model', 'year', 'color', 'valueEstimate', 'size',
     'eventDateTime', 'geometrySize', 'geometryColorValue', 'geometryBackgroundColorValue',
 ]
-_ALL_UPDATE_FIELDS = list(_DIFF_SCALARS) + [
+# TUPLA, nao lista: esta colecao vira o `changed_fields` de todo item 'update', e
+# apply_group_to_plan fazia append nele — ou seja, gravava dentro da CONSTANTE do modulo.
+# A partir dai, todo envio da sessao, de qualquer camada, mandava groupId='' na mascara e
+# tirava do grupo registros que estavam organizados no aplicativo. Sendo tupla, um append
+# estoura no teste em vez de corromper a sessao em silencio.
+_ALL_UPDATE_FIELDS = tuple(_DIFF_SCALARS) + (
     'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb',
-]
+)
+
+
+def _update_fields_for(layer):
+    """Máscara de atualização da camada — com 'groupId' SÓ quando ela tem a coluna.
+
+    A máscara é o que o Firestore sobrescreve. Uma camada comum do QGIS não tem a
+    coluna, e o candidato sai com group_id='': incluir o campo aí moveria para "Sem
+    grupo" todo registro reenviado a partir de uma camada própria do usuário. Com a
+    coluna presente (a do pull, e portanto as vistas de grupo), '' é uma escolha real
+    do usuário — é assim que se tira um registro do grupo pelo QGIS.
+    """
+    try:
+        has_group = layer.fields().indexOf('groupId') >= 0
+    except Exception:
+        has_group = False
+    return list(_ALL_UPDATE_FIELDS) + (['groupId'] if has_group else [])
 
 
 def _baseline_hash(feature, fallback=None):
@@ -1316,6 +1463,13 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
         # outra expedição para esta.
         propagate_deletions = False
 
+    # Exclusão ainda no buffer de edição não é exclusão: getFeatures() já devolve o
+    # buffer (sem a feição) enquanto o snapshot é o do arquivo. Propagar daqui gravaria
+    # isDeleted=True na nuvem antes de o usuário salvar — e um "Descartar edições"
+    # devolveria a feição aqui deixando o registro apagado lá.
+    if _has_unsaved_deletions(layer):
+        propagate_deletions = False
+
     total = 0
     if progress is not None:
         with contextlib.suppress(Exception):
@@ -1337,6 +1491,15 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
     contour_master_modulo = _contour_master_modulo(layer)
     # Layer label settings resolved once and folded into every record's styleJson.
     label_cfg = layer_label_config(layer)
+    update_fields = _update_fields_for(layer)
+    # A camada carrega o styleJson que veio do recebimento? Numa camada de uma versao
+    # anterior a coluna nao existe, e a ausencia dela e indistinguivel de "o registro nao
+    # tem estilo". Escrever um estilo montado do zero nesse caso apagaria o icone e o
+    # rotulo que o usuario escolheu no aplicativo — entao, para registro que JA EXISTE,
+    # so se mexe no estilo quando ha de onde mesclar.
+    layer_carries_style = False
+    with contextlib.suppress(Exception):
+        layer_carries_style = layer.fields().indexOf('style') >= 0
 
     feature_entries = []
     entries_by_record_id = {}
@@ -1399,6 +1562,8 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
         if candidate.record_id:
             # Existing record from a previous pull.
             seen_ids.add(candidate.record_id)
+            if not layer_carries_style:
+                candidate.style = None
             created_by = str(_attr(feature, 'createdBy') or '')
             if not is_admin and created_by and created_by != uid:
                 plan.items.append(PushItem('forbidden', candidate, feature.id(),
@@ -1414,7 +1579,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
                 plan.items.append(PushItem('unchanged', candidate, feature.id(), [], warning))
             else:
                 plan.items.append(PushItem('update', candidate, feature.id(),
-                                           _ALL_UPDATE_FIELDS, warning))
+                                           update_fields, warning))
         else:
             candidate.record_id = TairuRecord.new_id()
             plan.items.append(PushItem('new', candidate, feature.id(), [], warning))
@@ -1422,8 +1587,18 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
     if propagate_deletions:
         # Records present at last sync (sync_snapshot) but no longer in the layer
         # are treated as local deletions.
+        #
+        # Numa camada FILTRADA (as pastas de grupo do painel, ou o Filtrar… do QGIS) isso
+        # sozinho estaria errado: o filtro esconde, não apaga, e um registro que apenas
+        # mudou de grupo sairia da vista e viraria isDeleted=True na nuvem. Por isso a
+        # pergunta é feita à TABELA, e não à vista — o que continua permitindo a exclusão
+        # de verdade a partir de uma pasta, o único caminho que sobra numa expedição
+        # organizada em grupos, onde não existe mais camada sem filtro.
+        still_in_source = _record_ids_in_source(layer)
         for record_id in (sync_snapshot or {}):
             if record_id in seen_ids:
+                continue
+            if still_in_source is not None and record_id in still_in_source:
                 continue
             plan.items.append(PushItem('delete', TairuRecord(record_id=record_id)))
 
@@ -1501,7 +1676,9 @@ def apply_group_to_plan(plan, group_id):
         if item.action == 'unchanged':
             item.action = 'update'
         if item.action == 'update' and 'groupId' not in item.changed_fields:
-            item.changed_fields.append('groupId')
+            # Lista NOVA: changed_fields pode ser a colecao compartilhada por todos os
+            # itens — mutar no lugar vazaria para os outros e para a constante do modulo.
+            item.changed_fields = list(item.changed_fields) + ['groupId']
 
 
 def build_writes(fs, plan, uid):
@@ -1532,6 +1709,10 @@ def build_writes(fs, plan, uid):
                 # documento não exista — o lote inteiro falharia. O upsert cria na
                 # primeira vez e atualiza a cópia depois, que é o que "manter o mesmo ID"
                 # precisa significar para o usuário.
+                # O grupo pertence a expedicao de DESTINO, e o plugin nao tem como saber
+                # qual e. Mandar o groupId da ORIGEM (ou '' quando la nao havia grupo)
+                # sobrescreveria, a cada reenvio, a organizacao montada no destino.
+                fields.pop('groupId', None)
                 writes.append(fs.build_update_write(
                     path, fields, list(fields.keys()), require_existing=False))
             else:
@@ -1551,6 +1732,14 @@ def build_writes(fs, plan, uid):
             # candidate means "not seen", never "clear what the app has".
             if rec.attributes and 'attributes' not in mask:
                 mask.append('attributes')
+            # `style` tambem nao e diferenca de coluna e nunca chega por changed_fields.
+            # Sem esta linha, mudar a cor de um registro ESTILIZADO no QGIS nao aparece no
+            # aplicativo: ele resolve a cor pelo styleJson primeiro, e o styleJson antigo
+            # continuaria intacto. Como build_feature_style_json mescla no estilo que veio
+            # do recebimento, gravar aqui atualiza a aparencia sem apagar icone nem rotulo.
+            # So ADICIONA: candidato sem estilo significa "nada a dizer", nunca "limpar".
+            if rec.style and 'style' not in mask:
+                mask.append('style')
             rec.last_modified = now_millis()
             rec.is_deleted = False
             # The plugin cannot read cloud geometryWkb on pull, so `geometry_wkb is
@@ -1642,7 +1831,7 @@ def execute_push(dock, tmap, entries, group=None):
             if plan.copied_from_map_id:
                 continue
             if not _write_back_records_to_source_layer(plan, source_layer):
-                project_only.append(plan.layer_name)
+                project_only.append((plan.layer_name, source_layer))
         with contextlib.suppress(Exception):
             cache = FirestoreCache(dock.env.key, dock.tokens.uid)
             cache.store_record_models(
@@ -1654,12 +1843,7 @@ def execute_push(dock, tmap, entries, group=None):
         page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
         dock.notify(f'{tmap.nome}: {batch_summary(plans)} — enviado.')
         if project_only:
-            dock.notify(
-                'A camada {} não guarda os identificadores dos registros (formato '
-                'somente-leitura, como KML). Eles ficaram no projeto: SALVE o projeto '
-                'antes do próximo envio, senão os mesmos registros serão enviados de '
-                'novo como duplicatas.'.format(', '.join(project_only)),
-                error=True)
+            dock.notify(_aviso_identidade_no_projeto(project_only), error=True)
         try:
             try:
                 from .pull import start_pull
@@ -1681,6 +1865,49 @@ def execute_push(dock, tmap, entries, group=None):
     run_task(f'Tairu Maps: enviando registros para {tmap.nome}', send,
              on_success=on_success, on_error=on_error,
              on_progress=lambda f, m: page.set_progress(f, m))
+
+
+def _dentro_de_arquivo_compactado(layer):
+    """A camada e lida de dentro de um ZIP (ou tar/gzip) pelo sistema virtual do GDAL?
+
+    Um `/vsizip/...` e somente leitura POR CONSTRUCAO: o provedor recusa criar campo e
+    gravar atributo, entao o identificador do registro nao tem onde ficar. E o caso dos
+    pacotes de feicoes do CAR abertos direto do .zip, sem extrair — a situacao real que
+    disparava um aviso falando de KML, exemplo que so atrapalhava o diagnostico.
+    """
+    try:
+        fonte = str(layer.source() or '')
+    except Exception:
+        return False
+    return any(fonte.startswith(p) or ('/' + p.strip('/') + '/') in fonte
+               for p in ('/vsizip/', '/vsitar/', '/vsigzip/'))
+
+
+def _aviso_identidade_no_projeto(camadas):
+    """Mensagem do envio quando a camada de origem nao aceitou guardar o identificador.
+
+    `camadas` e [(nome, camada)]. O motivo muda o conselho: com a camada dentro de um
+    ZIP a saida boa e extrair o arquivo, e nao apenas salvar o projeto.
+    """
+    compactadas = [nome for nome, l in camadas if _dentro_de_arquivo_compactado(l)]
+    nomes = ', '.join(compactadas or [nome for nome, _l in camadas])
+    plural = len(compactadas or camadas) > 1
+    if compactadas:
+        causa = ('{} {} {} de DENTRO DE UM ARQUIVO ZIP, que é somente leitura, então '
+                 'não {} onde guardar os identificadores dos registros.').format(
+                     'As camadas' if plural else 'A camada', nomes,
+                     'estão sendo lidas' if plural else 'está sendo lida',
+                     'têm' if plural else 'tem')
+        conselho = (' Melhor ainda: extraia o .zip e abra o arquivo extraído, para o '
+                    'identificador passar a morar na própria camada.')
+    else:
+        causa = ('{} {} não {} os identificadores dos registros: o formato é somente '
+                 'leitura.').format('As camadas' if plural else 'A camada', nomes,
+                                    'guardam' if plural else 'guarda')
+        conselho = ''
+    return (causa + ' Eles ficaram no projeto, então SALVE o projeto antes do próximo '
+            'envio, senão os mesmos registros serão enviados de novo como duplicatas.'
+            + conselho)
 
 
 def _write_back_records_to_source_layer(plan, layer):

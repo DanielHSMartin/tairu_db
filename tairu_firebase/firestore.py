@@ -170,6 +170,32 @@ class FirestoreClient:
                 break
         return result
 
+    def list_record_groups(self, map_id, page_size=300, cancel_cb=None):
+        """Grupos de registros da expedicao. Devolve [(group_id, dict)].
+
+        Sempre completo, nunca incremental: sao dezenas de documentos minusculos (o
+        app renomeia 1843 registros com UMA escrita justamente porque o nome mora
+        aqui), e a arvore do painel precisa da lista INTEIRA para saber o que sumiu.
+        Traz tambem as lapides (isDeleted) — quem monta a arvore filtra. Descartar a
+        lapide aqui faria o grupo apagado ressuscitar do cache local no proximo
+        acesso offline.
+        """
+        result = []
+        page_token = None
+        while True:
+            if cancel_cb and cancel_cb():
+                break
+            url = f'{self._base}/maps/{map_id}/recordGroups?pageSize={page_size}'
+            if page_token:
+                url += f'&pageToken={urllib.parse.quote(page_token)}'
+            data = self._session.request_json('GET', url)
+            for doc in data.get('documents', []):
+                result.append((doc_id_from_name(doc['name']), fields_to_dict(doc.get('fields'))))
+            page_token = data.get('nextPageToken')
+            if not page_token:
+                break
+        return result
+
     def list_records_since(self, map_id, since_millis, cancel_cb=None):
         """Records committed after since_millis. Returns [(record_id, dict)].
 

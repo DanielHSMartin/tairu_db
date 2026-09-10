@@ -12,6 +12,7 @@ from qgis.core import QgsProject, QgsVectorLayer
 
 try:
     from ..tairu_core.layer_tree import layer_is_visible
+    from ..tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from ..tairu_sync.record_convert import layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from ..tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
@@ -22,6 +23,7 @@ try:
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.layer_tree import layer_is_visible
+    from tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from tairu_sync.record_convert import layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
@@ -121,6 +123,23 @@ _STEP_TITLES = [
     'Etapa 2 de 3 · Feições',
     'Etapa 3 de 3 · Grupo de registros',
 ]
+
+
+def _layer_display_name(layer):
+    """Nome da camada com a pasta em que ela esta.
+
+    Com a arvore de grupos a mesma expedicao tem varias camadas chamadas "Pontos": sem
+    o nome da pasta a tabela de escolha vira uma lista de repetidos e nao ha como saber
+    o que se esta enviando.
+    """
+    name = layer.name()
+    try:
+        node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+        parent = node.parent() if node is not None else None
+        parent_name = parent.name() if parent is not None else ''
+    except Exception:
+        parent_name = ''
+    return f'{parent_name} / {name}' if parent_name else name
 
 
 class _PreviewAborted(Exception):
@@ -284,7 +303,8 @@ class PushDialog(QDialog):
         count = layer.featureCount()
         count_text = str(count) if count is not None and count >= 0 else '—'
         crs = layer.crs().authid() or '—'
-        return [layer.name(), geometry, count_text, crs, self._layer_origin_label(layer)]
+        return [_layer_display_name(layer), geometry, count_text, crs,
+                self._layer_origin_label(layer)]
 
     def _layer_origin_label(self, layer):
         if layer.fields().indexOf('recordId') < 0:
@@ -405,6 +425,9 @@ class PushDialog(QDialog):
             self.group_summary_label.setText('')
             return
         text = f'Serão enviados: {batch_summary(plans)}.'
+        if self._all_layers_already_grouped() and not self.group_check.isChecked():
+            text += (' Cada registro mantém o grupo em que já está no aplicativo; '
+                     'marque a caixa acima só para reuni-los todos em um grupo novo.')
         unchanged = sum(plan.count('unchanged') for plan in plans)
         if self.group_check.isChecked() and unchanged:
             # O grupo não entra no tairuSyncHash, então entrar no grupo é, para
@@ -415,8 +438,25 @@ class PushDialog(QDialog):
         self.group_summary_label.setText(text)
 
     def _default_group_name(self):
+        # layer.name(), NUNCA o rotulo com a pasta: este texto vira o nome do grupo e,
+        # por record_group_id(map_id, uid, nome), tambem o ID do documento — que existe
+        # para reenviar a mesma camada cair no MESMO grupo. Fazendo-o depender da pasta do
+        # painel, arrastar a camada entre dois envios forjaria um segundo grupo no app.
         names = [plan.layer_name for plan, _layer in self.entries if plan.layer_name]
         return names[0] if len(names) == 1 else 'Camadas do QGIS'
+
+    def _all_layers_already_grouped(self):
+        """True quando TODA camada escolhida ja e uma pasta da arvore desta expedicao.
+
+        Nesse caso os registros ja carregam o grupo deles e a coluna groupId sobe junto:
+        reagrupar seria MOVER a organizacao inteira do usuario para um grupo novo chamado
+        "Pontos". A caixa comeca desmarcada — quem quiser reagrupar ainda pode marcar.
+        """
+        if not self.entries:
+            return False
+        prefix = f'{self.tmap.map_id}|'
+        return all(str(layer.customProperty(_FOLDER_PROPERTY, '') or '').startswith(prefix)
+                   for _plan, layer in self.entries)
 
     def selected_group(self):
         """(group_id, nome) escolhido na etapa 3, ou None."""
@@ -443,6 +483,7 @@ class PushDialog(QDialog):
                 return
             if not self._group_name_touched:
                 self.group_name_edit.setText(self._default_group_name())
+                self.group_check.setChecked(not self._all_layers_already_grouped())
             self._refresh_group_summary()
             self._show_step(_STEP_GROUP)
         else:

@@ -28,6 +28,11 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
 SCHEMA_VERSION = 2
 MAPS_COLLECTION = 'maps'
 RECORDS_COLLECTION = 'records'
+# Grupos de registros da expedicao. Guardados no MESMO cache generico dos registros
+# (firestore_entities e chaveado por collection_path), o que da o modo offline de graca:
+# sem isso, abrir o painel sem rede mostraria a arvore de grupos vazia com os registros
+# todos em "Sem grupo" — pior que nao mostrar grupo nenhum, porque parece perda de dado.
+RECORD_GROUPS_COLLECTION = 'recordGroups'
 
 
 def _collection_path(map_id=None, collection=None):
@@ -203,8 +208,8 @@ class FirestoreCache:
                             (fetched_at_ms, self.env_key, self.user_id, MAPS_COLLECTION, doc_id),
                         )
 
-    def load_records(self, map_id, include_deleted=False):
-        collection_path = _collection_path(map_id, RECORDS_COLLECTION)
+    def load_records(self, map_id, include_deleted=False, collection=RECORDS_COLLECTION):
+        collection_path = _collection_path(map_id, collection)
         params = [self.env_key, self.user_id, collection_path]
         # Two static queries avoid f-string SQL construction (flagged by security scanners).
         if include_deleted:
@@ -225,13 +230,15 @@ class FirestoreCache:
             rows = conn.execute(sql, params).fetchall()
         return [(doc_id, json.loads(payload_json)) for doc_id, payload_json in rows]
 
-    def store_records(self, map_id, rows, fetched_at_ms, full_snapshot=False):
-        collection_path = _collection_path(map_id, RECORDS_COLLECTION)
+    def store_records(self, map_id, rows, fetched_at_ms, full_snapshot=False,
+                      collection=RECORDS_COLLECTION):
+        collection_path = _collection_path(map_id, collection)
         incoming = set()
         with closing(self._connect()) as conn:
             with conn:
                 for doc_id, fields in rows:
-                    doc_id = str(doc_id or fields.get('recordId') or fields.get('targetId') or '')
+                    doc_id = str(doc_id or fields.get('recordId')
+                                 or fields.get('groupId') or fields.get('targetId') or '')
                     if not doc_id:
                         continue
                     incoming.add(doc_id)

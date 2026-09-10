@@ -96,6 +96,38 @@ def map_last_opened_ms(env_key, map_id):
         return 0
 
 
+# Geracao do esquema local ja preenchida, por expedicao. Um recebimento normal e
+# INCREMENTAL e o delta nao traz registro inalterado, entao uma coluna recem-criada
+# nasceria vazia em todo mundo: a arvore de grupos apareceria toda em "Sem grupo", os
+# icones sumiriam, e — pior — o envio mesclaria a simbologia num estilo vazio e apagaria
+# o icone e o rotulo que o usuario escolheu no aplicativo. Um recebimento COMPLETO por
+# geracao preenche tudo.
+#
+# E um marcador EXPLICITO, e nao a presenca da coluna no GeoPackage: o write-back do envio
+# cria coluna apenas na tabela enviada, entao quem clicasse em "Enviar" antes de "Receber"
+# teria a deteccao por esquema cancelada para sempre.
+#
+# NUMERO, e nao booleano, exatamente para a proxima coluna nova nao passar batido em quem
+# ja rodou uma versao anterior — foi o que quase aconteceu entre 'groupId' e 'style'.
+_SCHEMA_GENERATION_KEY = 'tairu_db/recordSchemaGeneration'
+
+
+def record_schema_generation(env_key, map_id):
+    """Geracao ja preenchida por um recebimento completo nesta maquina, ou 0."""
+    if not env_key or not map_id:
+        return 1 << 30
+    try:
+        return int(QgsSettings().value(f'{_SCHEMA_GENERATION_KEY}/{env_key}/{map_id}', 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def mark_record_schema_generation(env_key, map_id, generation):
+    if env_key and map_id:
+        QgsSettings().setValue(f'{_SCHEMA_GENERATION_KEY}/{env_key}/{map_id}',
+                               str(int(generation)))
+
+
 def slugify_filename(name, fallback='arquivo'):
     """ASCII-safe object/file name for Storage paths."""
     import re

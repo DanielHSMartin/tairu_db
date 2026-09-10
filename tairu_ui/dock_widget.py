@@ -142,7 +142,15 @@ class TairuDockWidget(QgsDockWidget):
     def _setup_session(self):
         if self.tokens:
             self.tokens.sign_out()
-        self.env = ENVIRONMENTS[DEFAULT_ENVIRONMENT_KEY]
+        # A chave gravada manda, quando existe e e conhecida. E assim que o plugin roda
+        # contra o projeto de desenvolvimento para teste, sem nenhum controle na interface
+        # que um usuario comum possa esbarrar: a chave e gravada de proposito, pelo
+        # console de Python do QGIS, e a barra de titulo passa a dizer em que ambiente a
+        # sessao esta, para nao restar duvida sobre onde os dados foram parar.
+        env_key = auth_store.load_environment_key(DEFAULT_ENVIRONMENT_KEY)
+        self.env = ENVIRONMENTS.get(env_key) or ENVIRONMENTS[DEFAULT_ENVIRONMENT_KEY]
+        self.setWindowTitle('Tairu Maps' if self.env.key == DEFAULT_ENVIRONMENT_KEY
+                            else f'Tairu Maps — {self.env.label.upper()}')
         self.tokens = TokenManager(self.env, parent=self)
         self.tokens.sessionExpired.connect(self._on_session_expired)
         self.appcheck = AppCheckManager(self.env, self.tokens)
@@ -261,6 +269,9 @@ class TairuDockWidget(QgsDockWidget):
         self.maps = {}
         self.account_label.setText('')
         self.signout_btn.hide()
+        # Relê o ambiente ao sair: é o que permite trocar entre producao e o projeto de
+        # desenvolvimento sem reiniciar o QGIS — grava a chave, sai, entra de novo.
+        self._setup_session()
         self.show_login_page()
 
     def _stop_loopback(self):

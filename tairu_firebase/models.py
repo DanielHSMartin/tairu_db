@@ -331,6 +331,7 @@ class TairuRecord:
     style: str = None                   # styleJson (opaque; app-authored or QGIS-produced)
     attributes: str = None              # per-feature attributes JSON (for label-by-attribute)
     group_id: str = ''                  # RecordGroup do app; '' = "Sem grupo"
+    icon_name: str = ''                 # sombra resolvida do icone (campo recordIcon)
 
     @classmethod
     def from_fields(cls, record_id, d):
@@ -400,6 +401,10 @@ class TairuRecord:
             style=_f('style'),
             attributes=_f('attributes'),
             group_id=_f('groupId', '') or '',
+            # Sombra resolvida do icone. O app grava aqui `styleJson.base.icon` ou a
+            # escolha do usuario; um valor com ':' e uma imagem embutida (KMZ), nao um
+            # nome de catalogo — quem desenha e que decide o que fazer com isso.
+            icon_name=_f('recordIcon', '') or '',
         )
         # Legacy records: geometry only in deprecated la/lo fields
         if not rec.geometry_points_json and (d.get('la') or d.get('lo')):
@@ -474,12 +479,78 @@ class TairuRecord:
             fields['style'] = self.style
         if self.attributes:
             fields['attributes'] = self.attributes
-        # Espelha Record.toFirestore(): a chave so existe quando ha grupo, e um
-        # groupId que nao resolve renderiza como "Sem grupo" (orfao inofensivo).
-        if self.group_id:
-            fields['groupId'] = self.group_id
+        # O campo e escrito SEMPRE, inclusive vazio. O app trata '' e ausente como o
+        # mesmo "Sem grupo", mas a gravacao do plugin e uma patch com mascara: com a
+        # chave ausente nao existe forma de TIRAR um registro de um grupo pelo QGIS —
+        # a mascara listaria groupId e o corpo nao o traria. Quem decide se o campo
+        # entra na mascara e _update_fields_for (push.py), que so o inclui quando a
+        # camada de origem tem a coluna.
+        fields['groupId'] = self.group_id or ''
+        # O icone NAO e escrito: o plugin nao tem como derivar a escolha do usuario a
+        # partir de um simbolo do QGIS, e gravar aqui apagaria o icone dele. Ele sobrevive
+        # por nunca entrar na mascara de atualizacao.
         return fields
 
     @staticmethod
     def new_id():
         return str(uuid.uuid4())
+
+
+# Cor padrao de RecordGroup.defaultColorValue (record_group_model.dart): o cinza-azulado
+# que o app usa num grupo criado por importacao, ou seja quando ninguem escolheu cor.
+RECORD_GROUP_DEFAULT_COLOR = 0xFF607D8B
+
+
+@dataclass
+class TairuRecordGroup:
+    """maps/{mapId}/recordGroups/{groupId} — a UNICA organizacao que o usuario controla.
+
+    Espelha RecordGroup (lib/common/record_group_model.dart). Dois contratos do app
+    que valem aqui e nao se deduzem do documento:
+
+    - `parent_group_id` vazio significa nivel superior, e um pai que NAO EXISTE tambem:
+      grupo nunca some por causa de um vinculo podre. A regra unica esta em
+      `tairu_core.record_groups.effective_parent_id`, portada 1:1 do Dart — leia SEMPRE
+      por ela, nunca o campo cru.
+    - um grupo com `is_deleted` e uma lapide: o app monta a arvore so com os vivos e
+      joga em "Sem grupo" todo registro cujo groupId nao resolve. Por isso `is_deleted`
+      e lido aqui e filtrado por quem monta a arvore, em vez de o pull descartar a
+      lapide (que faria o grupo apagado ressuscitar do cache local).
+    """
+
+    group_id: str
+    name: str = ''
+    color_value: int = RECORD_GROUP_DEFAULT_COLOR
+    icon_name: str = ''
+    parent_group_id: str = ''
+    is_deleted: bool = False
+    created_by: str = ''
+    created_at: int = 0                 # epoch millis
+    last_modified: int = 0              # epoch millis
+
+    @classmethod
+    def from_fields(cls, group_id, d):
+        d = d or {}
+
+        def _text(key):
+            value = d.get(key)
+            return '' if value is None else str(value)
+
+        color = d.get('colorValue')
+        try:
+            color_value = int(color) if color is not None else RECORD_GROUP_DEFAULT_COLOR
+        except (TypeError, ValueError):
+            color_value = RECORD_GROUP_DEFAULT_COLOR
+
+        return cls(
+            group_id=str(group_id or _text('groupId')),
+            # 'nome' e a chave do app (FirestoreKeys.nome), nao 'name'.
+            name=_text('nome'),
+            color_value=color_value,
+            icon_name=_text('iconName'),
+            parent_group_id=_text('parentGroupId'),
+            is_deleted=bool(d.get('isDeleted')),
+            created_by=_text('createdBy'),
+            created_at=parse_millis(d.get('createdAt', 0)),
+            last_modified=parse_millis(d.get('lastModified', 0)),
+        )
