@@ -46,6 +46,7 @@ try:
     )
     from ..tairu_core.feedback import FeedbackAdapter
     from ..tairu_core.layer_tree import layer_is_visible
+    from ..tairu_core.raster_footprint import coverage_ratio, data_footprint
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles, to_wgs84
     from ..tairu_core.tile_prefetch import prefetch_basemap_tiles
@@ -72,6 +73,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_core.feedback import FeedbackAdapter
     from tairu_core.layer_tree import layer_is_visible
+    from tairu_core.raster_footprint import coverage_ratio, data_footprint
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles, to_wgs84
     from tairu_core.tile_prefetch import prefetch_basemap_tiles
@@ -692,7 +694,15 @@ class ExtentPage(QWizardPage):
         if layer.extent().isEmpty():
             raise ValueError('A camada não informa uma extensão.')
         bb = to_wgs84(QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox()
-        return [layer.name(), _km_size(bb), _resolution_label(layer, bb), layer.crs().authid() or '—']
+        area = _km_size(bb)
+        # Numa imagem recortada a medida da caixa mente por larga margem: o
+        # mosaico de um corredor fluvial anunciava "50,6 × 47,3 km" com 4% de
+        # pixel. Quem lê a tabela é quem decide marcar a imagem — o número tem
+        # que estar aqui, não três telas adiante.
+        ratio = coverage_ratio(layer, data_footprint(layer))
+        if ratio is not None and ratio < 0.9:
+            area = f'{area} ({ratio * 100:.0f}% com imagem)'.replace('.', ',')
+        return [layer.name(), area, _resolution_label(layer, bb), layer.crs().authid() or '—']
 
     def has_usable_images(self):
         """Existe imagem de arquivo que possa desenhar o mapa neste projeto."""
@@ -819,9 +829,17 @@ class ExtentPage(QWizardPage):
         elif self.raster_radio.isChecked():
             # Uma região por imagem. Tiles repetidos entre imagens que se
             # sobrepõem são unificados em `filtered_tiles`, não renderizados 2x.
+            #
+            # O contorno do dado válido, e não `extent()`: a caixa de uma imagem
+            # RECORTADA cobre muito mais chão do que ela tem pixel — num mosaico
+            # de corredor fluvial foram 106.392 tiles pela caixa contra 5.949
+            # pelo contorno. E como a região virava um retângulo, o estêncil de
+            # borda não recortava nada e o mapa de fundo do projeto preenchia
+            # todo o vazio com conteúdo: o arquivo saía 18x maior, não só mais
+            # lento. Imagem sem alfa nem nodata devolve None e segue na caixa.
             for layer in self.checked_raster_layers():
-                polygons.append(to_wgs84(
-                    QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx))
+                geom = data_footprint(layer) or QgsGeometry.fromRect(layer.extent())
+                polygons.append(to_wgs84(geom, layer.crs(), wgs84, ctx))
         else:
             layer = self.layer_combo.currentLayer()
             for feature in layer.getFeatures():
