@@ -1550,7 +1550,14 @@ def apply_record_legend(layer, spec_key):
     # unico e ela aparecia; a legenda por registro nao pode custar isso.
     fallback = _record_symbol(spec_key, _qcolor(_COLOR_FALLBACK), None)
     if fallback is not None:
-        categories.append(QgsRendererCategory(QVariant(), fallback, _NEW_RECORD_LABEL))
+        # `None`, e nao `QVariant()`: os dois viram o MESMO QVariant invalido, que e o que
+        # faz desta a categoria coringa, mas converter um QVariant() explicito faz o PyQGIS
+        # despejar "Invalid conversion of QVariant(QVariant.Null)" no log a cada recebimento.
+        # NAO trocar pelo `NULL` do qgis.core, que e o que esse aviso sugere: `NULL` e um
+        # QVariant nulo TIPADO, entao a categoria passa a casar com o valor NULL em vez de
+        # ser a coringa — a feicao recem-desenhada para de ser pintada e o rotulo de espera
+        # vaza para a lista de camadas. Ha teste para as duas coisas.
+        categories.append(QgsRendererCategory(None, fallback, _NEW_RECORD_LABEL))
     else:
         fallback = None
     layer.setRenderer(QgsCategorizedSymbolRenderer('recordId', categories))
