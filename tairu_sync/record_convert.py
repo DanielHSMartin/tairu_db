@@ -22,7 +22,7 @@ import hashlib
 import json
 import os
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 try:
     from ..tairu_core.workspace import GPKG_FILE_NAME, WORKSPACE_DIR_NAME
@@ -373,9 +373,17 @@ def sync_record_payload(rec):
       stored type label (it lands in the no-geometry layer either way);
     - colors are resolved to the actual rendered ARGB, so an absent color and an
       explicit type-default color (which render identically) compare equal.
+
+    `attributes` (as colunas próprias da camada) entra SÓ quando existe. Editar um
+    atributo no QGIS não mexia em nenhum campo daqui, então o envio classificava a
+    feição como inalterada e a mudança nunca subia — o caminho que já põe
+    `attributes` na máscara (build_writes) só roda em item 'update'. A chave é
+    condicional de propósito: camada sem colunas próprias — toda camada vinda de
+    "Receber Registros" — produz o MESMO payload de antes, então o tairuSyncHash já
+    gravado nela continua valendo e nenhuma expedição é reclassificada inteira.
     """
     pts = normalized_geometry_points(rec)
-    return {
+    payload = {
         'nome': rec.nome or '',
         'descricao': rec.descricao or '',
         'situation': rec.situation or '',
@@ -398,6 +406,9 @@ def sync_record_payload(rec):
         'geometryColorValue': resolved_color_argb(rec),
         'geometryBackgroundColorValue': resolved_background_argb(rec),
     }
+    if rec.attributes:
+        payload['attributes'] = rec.attributes
+    return payload
 
 
 def sync_record_hash(rec):
@@ -929,7 +940,12 @@ def apply_pull(gpkg_path, records, remove_missing=True, keep_unpushed=False):
 
         for rec in recs:
             try:
-                attr_map = record_to_attribute_map(rec)
+                # O tairuSyncHash gravado aqui é a LINHA DE BASE do próximo envio, e
+                # esta camada não tem as colunas próprias do usuário: o candidato que
+                # ela produzir virá sem `attributes`. Guardar um hash que inclui os
+                # atributos da nuvem faria todo registro que tem atributos sair como
+                # alterado no envio seguinte — a prévia cheia de mudança fantasma.
+                attr_map = record_to_attribute_map(replace(rec, attributes=None))
                 geom = record_geometry(rec, spec_key)
                 if rec.record_id in existing:
                     fid = existing[rec.record_id]

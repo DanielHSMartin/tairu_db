@@ -61,7 +61,9 @@ def _install_stubs():
           layer_origin_map_id=lambda _layer: '',
           SYNC_MAP_ID_PROPERTY='tairu/syncMapId',
           layer_feature_record_ids=lambda _layer: {},
-          set_layer_feature_record_ids=_dummy)
+          set_layer_feature_record_ids=_dummy,
+          # push deriva _NON_ATTRIBUTE_FIELDS daqui; dois nomes bastam para o stub.
+          FIELD_DEFS=[('recordId', 'string'), ('nome', 'string')])
     _stub('tairu_sync.tasks', run_task=_dummy)
 
 

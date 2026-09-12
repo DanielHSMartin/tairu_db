@@ -24,6 +24,7 @@ import json
 import sys
 import types
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -68,6 +69,7 @@ from tairu_firebase.models import TairuRecord  # noqa: E402
 from tairu_sync.push import (  # noqa: E402
     build_writes, PushPlan, PushItem, _feature_attributes_json,
 )
+from tairu_sync.record_convert import sync_record_hash, sync_record_payload  # noqa: E402
 
 
 class _Field:
@@ -144,9 +146,41 @@ class _FakeFs:
         return {'path': path, 'fields': dict(fields)}
 
 
+class TestSyncHashSeesAttributes(unittest.TestCase):
+    """Editar SÓ uma coluna do usuário tem de sair como alteração.
+
+    A classificação do envio é `sync_record_hash(candidato) == tairuSyncHash`. Com os
+    atributos fora do payload, mudar uma coluna não mudava nada: "inalterado", nenhuma
+    escrita, e a máscara de build_writes (que já sabe incluir `attributes`) nem chegava
+    a rodar. A chave é condicional: sem atributos o payload é o de antes, senão o
+    tairuSyncHash gravado em toda feição já baixada viraria pó.
+    """
+
+    def _record(self, attributes=None):
+        return TairuRecord(record_id='r1', nome='a', geometry_type='point',
+                           geometry_points_json='[{"la":1.0,"lo":2.0,"ts":0}]',
+                           attributes=attributes)
+
+    def test_no_attributes_keeps_the_old_payload(self):
+        self.assertNotIn('attributes', sync_record_payload(self._record()))
+
+    def test_attribute_edit_changes_the_hash(self):
+        antes = sync_record_hash(self._record('{"fase":"REQUERIMENTO"}'))
+        depois = sync_record_hash(self._record('{"fase":"LAVRA GARIMPEIRA"}'))
+        self.assertNotEqual(antes, depois)
+
+    def test_layer_without_user_columns_is_not_a_phantom_diff(self):
+        # Camada baixada: o registro da nuvem tem atributos, a camada não tem as
+        # colunas. A linha de base é gravada sem eles (apply_pull) justamente para
+        # bater com o candidato que essa camada produz.
+        nuvem = self._record('{"fase":"LAVRA GARIMPEIRA"}')
+        self.assertEqual(sync_record_hash(replace(nuvem, attributes=None)),
+                         sync_record_hash(self._record()))
+
+
 class TestUpdateMask(unittest.TestCase):
-    """`attributes` is neither a layer column nor part of the sync hash, so it never
-    reaches changed_fields — build_writes has to add it itself."""
+    """`attributes` is not a layer column, so it never reaches changed_fields (lista
+    fixa) — build_writes has to add it itself."""
 
     def _write_for(self, rec, changed_fields=()):
         plan = PushPlan(map_id='m1')

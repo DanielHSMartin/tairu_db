@@ -33,6 +33,7 @@ try:
     )
     from .record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
+        FIELD_DEFS,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
         sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
         SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
@@ -46,6 +47,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_sync.record_convert import (
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
+        FIELD_DEFS,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
         sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
         SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
@@ -1168,16 +1170,16 @@ def feature_export_style_json(layer, feature, spec_key, master_modulo, label_cfg
 
 # Tairu record/sync columns excluded from a pushed record's `attributes` (only
 # genuine user attributes feed label-by-attribute / data-driven styling).
-_NON_ATTRIBUTE_FIELDS = frozenset({
-    'recordId', 'nome', 'descricao', 'tipoRegistro', 'subTipo', 'situation',
-    'endereco', 'owner', 'color', 'size',
-    'plateTag', 'brand', 'model', 'year', 'valueEstimate', 'eventDateTime',
-    'geometryColor', 'geometryBackgroundColor', 'geometrySize', 'circleRadius',
-    'geometryColorValue', 'geometryBackgroundColorValue',
-    'isDeleted', 'createdBy', 'createdAt', 'lastModified', 'style', 'attributes',
-    'groupId',
-    SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
-})
+#
+# Derivado de FIELD_DEFS, e não escrito à mão: a lista manual tinha ficado para trás em
+# strokePattern e recordIcon (e nunca teve o `fid` do GeoPackage), então TODA camada
+# baixada produzia "atributos" que são o espelho do próprio registro — lixo na aba
+# Atributos do aplicativo e, desde que o hash passou a contar os atributos, uma
+# diferença fantasma por registro. Coluna nova do esquema já nasce excluída aqui.
+_NON_ATTRIBUTE_FIELDS = frozenset(
+    [name for name, _type in FIELD_DEFS]
+    # Chave do GeoPackage + nomes que só existem no documento da nuvem.
+    + ['fid', 'attributes', 'geometryColorValue', 'geometryBackgroundColorValue'])
 
 
 def _json_safe(value):
@@ -1743,9 +1745,11 @@ def build_writes(fs, plan, uid):
             # (apply_pull skips isDeleted records), so the feature never reappears.
             mask = list(dict.fromkeys(
                 item.changed_fields + ['lastModified', 'lastModifiedBy', 'isDeleted']))
-            # `attributes` is neither a layer column nor part of the sync hash, so it
-            # never arrives through changed_fields — without this an existing record
-            # would never gain the attributes this push just read from the feature.
+            # `attributes` is not a layer column, so it never arrives through
+            # changed_fields (a fixed list) — without this an existing record would
+            # never gain the attributes this push just read from the feature. O hash
+            # conta os atributos (sync_record_payload) e por isso a edição de uma
+            # coluna CHEGA aqui como 'update'; é esta linha que a faz subir.
             # Only ever ADD: a pulled layer carries no user columns, so an empty
             # candidate means "not seen", never "clear what the app has".
             if rec.attributes and 'attributes' not in mask:
