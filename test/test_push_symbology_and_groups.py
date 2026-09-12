@@ -143,25 +143,58 @@ class TestRecordGroup(unittest.TestCase):
         # dono/administrador da expedição.
         self.assertNotEqual(first, record_group_id('m1', 'uid2', 'Curvas de nível'))
 
-    def test_group_is_applied_to_every_sent_item(self):
+    def test_group_reaches_only_what_the_push_really_writes(self):
+        """O grupo alcanca o que vai ser gravado, e nada alem disso.
+
+        O modelo antigo reunia "tudo": promovia inalterado a update so para entrar no
+        grupo — e a previa chega a esconder esses itens, entao o usuario via "1 novo" e
+        mexia em dezenas de registros.
+        """
         from tairu_firebase.models import TairuRecord
-        from tairu_sync.push import PushItem, PushPlan, apply_group_to_plan
+        from tairu_sync.push import (
+            PushItem, PushPlan, apply_group_to_plan, group_candidate_count,
+        )
 
         plan = PushPlan(map_id='m1', items=[
             PushItem('new', TairuRecord(record_id='a')),
-            # 'unchanged' precisa virar 'update': o grupo não entra no
-            # tairuSyncHash, então sem a promoção estes registros ficariam de fora.
-            PushItem('unchanged', TairuRecord(record_id='b')),
-            PushItem('forbidden', TairuRecord(record_id='c')),
-            PushItem('new', TairuRecord(record_id='d'), send=False),
+            PushItem('update', TairuRecord(record_id='b'), changed_fields=['nome']),
+            PushItem('unchanged', TairuRecord(record_id='c')),
+            PushItem('forbidden', TairuRecord(record_id='d')),
+            PushItem('new', TairuRecord(record_id='e'), send=False),
         ])
-        apply_group_to_plan(plan, 'g1')
+        self.assertEqual(group_candidate_count(plan), 2)
+        self.assertEqual(apply_group_to_plan(plan, 'g1'), 2)
 
         self.assertEqual([i.action for i in plan.items],
-                         ['new', 'update', 'forbidden', 'new'])
-        self.assertEqual([i.record.group_id for i in plan.items], ['g1', 'g1', '', ''])
+                         ['new', 'update', 'unchanged', 'forbidden', 'new'])
+        self.assertEqual([i.record.group_id for i in plan.items],
+                         ['g1', 'g1', '', '', ''])
         self.assertIn('groupId', plan.items[1].changed_fields)
         self.assertEqual([i.record.record_id for i in plan.writable_items()], ['a', 'b'])
+
+    def test_group_never_moves_a_record_the_app_already_grouped(self):
+        """Enviar uma camada-pasta nao pode arrastar a organizacao do app para o grupo novo.
+
+        Era o caso que "acaba com a organizacao do usuario": a camada vem da arvore de
+        pastas, cada registro ja carrega o groupId dele, e reunir movia todos.
+        """
+        from tairu_firebase.models import TairuRecord
+        from tairu_sync.push import (
+            PushItem, PushPlan, apply_group_to_plan, group_candidate_count,
+        )
+
+        plan = PushPlan(map_id='m1', items=[
+            PushItem('update', TairuRecord(record_id='a', group_id='pasta-do-app'),
+                     changed_fields=['nome']),
+            PushItem('new', TairuRecord(record_id='b', group_id='pasta-do-app')),
+            PushItem('new', TairuRecord(record_id='c')),
+        ])
+        self.assertEqual(group_candidate_count(plan), 1)
+        self.assertEqual(apply_group_to_plan(plan, 'g1'), 1)
+
+        self.assertEqual([i.record.group_id for i in plan.items],
+                         ['pasta-do-app', 'pasta-do-app', 'g1'])
+        self.assertNotIn('groupId', plan.items[0].changed_fields)
 
     def test_unsent_feature_is_not_stamped_back_into_the_layer(self):
         """Carimbar recordId/tairuSyncHash em item desmarcado corrompe o proximo envio.

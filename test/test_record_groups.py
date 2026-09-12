@@ -31,7 +31,7 @@ import unittest
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
-    from qgis.core import QgsApplication, QgsProject
+    from qgis.core import QgsApplication, QgsLayerTree, QgsProject
 except ImportError:  # pragma: no cover - sem QGIS neste interpretador
     QgsApplication = None
 
@@ -344,7 +344,7 @@ class TestArvoreDeGrupos(unittest.TestCase):
         self.assertEqual(vistos, {'r0', 'r1', 'r2'})
 
     def test_duas_expedicoes_de_mesmo_nome_nao_colapsam(self):
-        from tairu_sync.record_convert import sync_record_layers
+        from tairu_sync.record_convert import ROOT_GROUP_NAME, sync_record_layers
 
         um = _fresh_gpkg([_record(0, '')])
         outro = _fresh_gpkg([_record(1, '')])
@@ -352,18 +352,37 @@ class TestArvoreDeGrupos(unittest.TestCase):
         sync_record_layers(outro, 'Levantamento', 'mapa-dois', [])
         sync_record_layers(um, 'Levantamento', 'mapa-um', [])
 
-        raiz = QgsProject.instance().layerTreeRoot().findGroup('Tairu')
+        raiz = QgsProject.instance().layerTreeRoot().findGroup(ROOT_GROUP_NAME)
         chaves = sorted(n.customProperty('tairu/nodeKey', '') for n in raiz.findGroups(True))
         self.assertEqual(chaves, ['map:mapa-dois', 'map:mapa-um'])
 
+    def test_raiz_antiga_e_renomeada_em_vez_de_duplicada(self):
+        """Projeto salvo com o raiz chamado 'Tairu' nao pode ganhar um segundo raiz.
+
+        Dois nos deixariam as camadas da expedicao divididas entre eles, e a metade
+        antiga nunca mais seria tocada por nenhuma sincronizacao.
+        """
+        from tairu_sync.record_convert import ROOT_GROUP_NAME, sync_record_layers
+
+        raiz = QgsProject.instance().layerTreeRoot()
+        antigo = raiz.addGroup('Tairu')
+        gpkg = _fresh_gpkg([_record(0, '')])
+        sync_record_layers(gpkg, 'Exp', _MAP_ID, [])
+
+        self.assertIsNone(raiz.findGroup('Tairu'))
+        self.assertEqual(ROOT_GROUP_NAME, antigo.name())
+        self.assertEqual(1, sum(1 for n in raiz.children()
+                                if QgsLayerTree.isGroup(n) and n.name() == ROOT_GROUP_NAME))
+        self.assertTrue(raiz.findGroup(ROOT_GROUP_NAME).findGroups(True))
+
     def test_pasta_sem_grupo_existe_mesmo_vazia(self):
-        from tairu_sync.record_convert import sync_record_layers
+        from tairu_sync.record_convert import ROOT_GROUP_NAME, sync_record_layers
 
         # E para onde vai o registro que o usuario tira de um grupo pelo campo Grupo. Sem
         # a pasta, a feicao some do painel inteiro e a escolha nunca chega a ser enviada.
         gpkg = _fresh_gpkg([_record(0, 'gA')])
         sync_record_layers(gpkg, 'Exp', _MAP_ID, [_group('gA', 'Alfa')])
-        raiz = QgsProject.instance().layerTreeRoot().findGroup('Tairu')
+        raiz = QgsProject.instance().layerTreeRoot().findGroup(ROOT_GROUP_NAME)
         nomes = [n.name() for n in raiz.findGroups(True)]
         self.assertIn('Sem grupo', nomes)
 

@@ -1184,6 +1184,7 @@ def style_layer(layer, spec_key):
 # Identidade dos nos e camadas que ESTE plugin gerencia. Sempre por propriedade, nunca
 # por nome: o usuario renomeia a expedicao e o grupo no painel, e dois grupos irmaos
 # podem ter o mesmo nome — casar por nome duplica a arvore ou faz um engolir o outro.
+ROOT_GROUP_NAME = 'Tairu Maps'          # raiz do plugin no painel de camadas
 NODE_KEY_PROPERTY = 'tairu/nodeKey'      # nos de grupo:  'map:<mapId>' | 'grp:<mapId>:<groupId>'
 FOLDER_PROPERTY = 'tairu/folder'         # camadas-folha: '<mapId>|<spec>|<bucket>'
 CATEGORIES_PROPERTY = 'tairu/catIds'     # assinatura do conjunto de recordId ja categorizado
@@ -1630,7 +1631,7 @@ def _scan_buckets(gpkg_path, live_ids):
 
 
 def _find_or_create_group(map_name, map_id=''):
-    """O no da expedicao dentro de 'Tairu', achado por IDENTIDADE e nao por nome.
+    """O no da expedicao dentro de ROOT_GROUP_NAME, achado por IDENTIDADE e nao por nome.
 
     Achar pelo nome criava um segundo grupo toda vez que a expedicao era renomeada (no
     app ou no proprio painel), deixando um grupo fantasma com metade das camadas. A
@@ -1638,12 +1639,18 @@ def _find_or_create_group(map_name, map_id=''):
     camadas desta expedicao —, porque o usuario pode ter renomeado o no antes de atualizar.
     """
     root = QgsProject.instance().layerTreeRoot()
-    tairu_group = root.findGroup('Tairu') or root.addGroup('Tairu')
+    # Projeto de versao anterior tem o no chamado so 'Tairu': renomeia o que existe em vez
+    # de criar um segundo raiz e deixar as camadas divididas entre os dois.
+    tairu_group = root.findGroup(ROOT_GROUP_NAME) or root.findGroup('Tairu')
+    if tairu_group is None:
+        tairu_group = root.addGroup(ROOT_GROUP_NAME)
+    elif tairu_group.name() != ROOT_GROUP_NAME:
+        tairu_group.setName(ROOT_GROUP_NAME)
     if not map_id:
         return tairu_group.findGroup(map_name) or tairu_group.addGroup(map_name)
 
     key = f'map:{map_id}'
-    # A busca pela CHAVE varre a arvore inteira, e nao so os filhos de 'Tairu': o usuario
+    # A busca pela CHAVE varre a arvore inteira, e nao so os filhos do raiz: o usuario
     # pode ter criado 'Tairu/Meus projetos' e arrastado a expedicao para dentro. Procurar
     # so um nivel criaria um segundo no com a mesma chave e deixaria para tras uma copia
     # vazia da hierarquia, que nenhuma sincronizacao seguinte remove.

@@ -1662,23 +1662,41 @@ def build_group_write(fs, map_id, group_id, name, uid):
         require_existing=False)
 
 
-def apply_group_to_plan(plan, group_id):
-    """Aponta para `group_id` todo registro que o plano vai gravar.
+def _entra_no_grupo(item):
+    """Uma definicao so do que o grupo alcanca — usada para contar e para aplicar."""
+    return (item.send and item.action in ('new', 'update') and not item.record.group_id)
 
-    Itens 'unchanged' viram 'update': o grupo NAO entra no tairuSyncHash (nao e
-    coluna da camada), entao sem esta promocao um reenvio de camada de ida-e-volta
-    deixaria de fora justamente os registros que o usuario ve marcados na previa.
+
+def group_candidate_count(plan):
+    """Quantos registros deste plano entrariam no grupo, sem mexer em nada."""
+    return sum(1 for item in plan.items if _entra_no_grupo(item))
+
+
+def apply_group_to_plan(plan, group_id):
+    """Aponta para `group_id` so os registros que este envio vai REALMENTE gravar.
+
+    Ficam de fora, e e isso que importa aqui:
+
+    - o que nao vai ser gravado — desmarcado na previa, inalterado, apagado, proibido.
+      Reunir "tudo" promovia inalterado a update so para entrar no grupo, e a previa
+      chega a esconder esses itens: o usuario via "3 novos" e mexia em 43 registros.
+    - quem JA tem grupo no aplicativo. Sem isto, um envio de camada que veio da propria
+      arvore de pastas arrastava a organizacao inteira da aba Registros para um grupo
+      novo — justamente o que o agrupamento deveria preservar.
+
+    Devolve quantos registros entraram no grupo.
     """
+    entraram = 0
     for item in plan.items:
-        if item.action in ('delete', 'forbidden') or not item.send:
+        if not _entra_no_grupo(item):
             continue
         item.record.group_id = group_id
-        if item.action == 'unchanged':
-            item.action = 'update'
         if item.action == 'update' and 'groupId' not in item.changed_fields:
             # Lista NOVA: changed_fields pode ser a colecao compartilhada por todos os
             # itens — mutar no lugar vazaria para os outros e para a constante do modulo.
             item.changed_fields = list(item.changed_fields) + ['groupId']
+        entraram += 1
+    return entraram
 
 
 def build_writes(fs, plan, uid):

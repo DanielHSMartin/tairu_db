@@ -108,36 +108,37 @@ fi
 # recusa. Um achado legitimo se resolve corrigindo o codigo ou com um `# nosec`
 # comentado — nunca afrouxando este gate.
 blockers="B102,B105,B106,B107,B304,B305,B307,B506,B602,B613"
-if "$PYTHON" -m bandit --version >/dev/null 2>&1; then
-  # `|| true` on BOTH: bandit exits 1 when it finds something, and with
-  # `set -e -o pipefail` that killed the script right here — aborting the build
-  # with no message at all. The report has to say WHY it refused.
-  report=$("$PYTHON" -m bandit -r "$stage" -f json -t "$blockers" 2>/dev/null || true)
-  hits=$(printf '%s' "$report" \
-    | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin)["results"]))' || echo 0)
-  if [ "${hits:-0}" != "0" ]; then
-    printf '%s' "$report" | "$PYTHON" -c '
+# O bandit 1.8.6 escreve a barra de progresso do `rich` no PROPRIO stdout, antes do
+# JSON. `json.load()` estourava nela, o `|| echo 0` transformava o erro em "zero
+# achados" e este gate anunciou "bandit OK" sem ter lido o bandit uma unica vez.
+# Agora: corta tudo antes da primeira '{' e RECUSA relatorio ilegivel, que nao e a
+# mesma coisa que relatorio limpo.
+bandit_report='
 import json, sys
-for r in json.load(sys.stdin)["results"]:
-    print("  {} {}:{}  {}".format(
-        r["test_id"], r["filename"], r["line_number"], r["issue_text"]))
-' || true
-    fail "bandit found $hits BLOCKING finding(s) — plugins.qgis.org would refuse this upload"
-  fi
-  # Segunda passagem: bandit inteiro, sem filtro de regra nem de severidade.
-  report_all=$("$PYTHON" -m bandit -r "$stage" -f json 2>/dev/null || true)
-  hits_all=$(printf '%s' "$report_all" \
-    | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin)["results"]))' || echo 0)
-  if [ "${hits_all:-0}" != "0" ]; then
-    printf '%s' "$report_all" | "$PYTHON" -c '
-import json, sys
-for r in json.load(sys.stdin)["results"]:
+raw = sys.stdin.read()
+i = raw.find("{")
+if i < 0:
+    sys.exit("bandit nao produziu JSON")
+for r in json.loads(raw[i:])["results"]:
     print("  {} ({}) {}:{}  {}".format(
-        r["test_id"], r["issue_severity"], r["filename"], r["line_number"],
-        r["issue_text"]))
-' || true
-    fail "bandit found $hits_all finding(s) — o relatorio de seguranca do plugins.qgis.org mostraria todas"
-  fi
+        r["test_id"], r["issue_severity"], r["filename"], r["line_number"], r["issue_text"]))
+'
+if "$PYTHON" -m bandit --version >/dev/null 2>&1; then
+  # `|| true` no bandit: ele sai com 1 quando acha algo e, com `set -e`, isso matava
+  # o script aqui — abortando o build sem mensagem nenhuma.
+  for pass_label in "bloqueantes" "todas as regras"; do
+    if [ "$pass_label" = "bloqueantes" ]; then
+      report=$("$PYTHON" -m bandit -r "$stage" -f json -t "$blockers" 2>/dev/null || true)
+    else
+      report=$("$PYTHON" -m bandit -r "$stage" -f json 2>/dev/null || true)
+    fi
+    found=$(printf '%s' "$report" | "$PYTHON" -c "$bandit_report") \
+      || fail "bandit ($pass_label) nao devolveu JSON legivel — o gate ficou CEGO, e isso nao e 'passou'"
+    if [ -n "$found" ]; then
+      printf '%s\n' "$found"
+      fail "bandit achou $(printf '%s\n' "$found" | wc -l | tr -d ' ') coisa(s) em '$pass_label' — o relatorio do plugins.qgis.org mostraria todas"
+    fi
+  done
   echo "bandit OK (0 findings, todas as regras)"
 else
   echo "WARNING: bandit not installed (pip install bandit) — blocking-rule scan skipped"

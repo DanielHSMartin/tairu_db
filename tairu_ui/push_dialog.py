@@ -15,7 +15,10 @@ try:
     from ..tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from ..tairu_sync.record_convert import layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
-    from ..tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
+    from ..tairu_sync.push import (
+        apply_group_to_plan, batch_summary, build_push_plan, execute_push,
+        group_candidate_count, record_group_id,
+    )
     from ..tairu_core.vector_types import has_elevation_attribute
     from .style import (
         apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
@@ -26,7 +29,10 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from tairu_sync.record_convert import layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
-    from tairu_sync.push import batch_summary, build_push_plan, execute_push, record_group_id, apply_group_to_plan
+    from tairu_sync.push import (
+        apply_group_to_plan, batch_summary, build_push_plan, execute_push,
+        group_candidate_count, record_group_id,
+    )
     from tairu_core.vector_types import has_elevation_attribute
     from tairu_ui.style import (
         apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
@@ -365,7 +371,7 @@ class PushDialog(QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
-        self.group_check = QCheckBox('Reunir os registros enviados em um grupo')
+        self.group_check = QCheckBox('Reunir em um grupo os registros que ainda não têm um')
         # Marcada por padrão: reunir o lote é o que quase todo envio quer, e o
         # nome já vem preenchido. Desmarcar desliga o campo de nome.
         self.group_check.setChecked(True)
@@ -375,7 +381,9 @@ class PushDialog(QDialog):
         hint = set_muted(QLabel(
             'O grupo aparece na aba Registros do aplicativo e pode ser renomeado '
             'lá depois. Reenviar as mesmas camadas com o mesmo nome reaproveita o '
-            'grupo em vez de criar outro.'))
+            'grupo em vez de criar outro. Entram só os registros deste envio que '
+            'ainda não pertencem a um grupo — o plugin nunca tira um registro do '
+            'grupo em que o aplicativo já o colocou.'))
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -425,16 +433,19 @@ class PushDialog(QDialog):
             self.group_summary_label.setText('')
             return
         text = f'Serão enviados: {batch_summary(plans)}.'
-        if self._all_layers_already_grouped() and not self.group_check.isChecked():
-            text += (' Cada registro mantém o grupo em que já está no aplicativo; '
-                     'marque a caixa acima só para reuni-los todos em um grupo novo.')
-        unchanged = sum(plan.count('unchanged') for plan in plans)
-        if self.group_check.isChecked() and unchanged:
-            # O grupo não entra no tairuSyncHash, então entrar no grupo é, para
-            # estes registros, uma alteração — e dizer isso aqui evita a surpresa
-            # de ver "N inalterados" virar N gravações.
-            text += (f' Os {unchanged} registros inalterados também serão atualizados '
-                     f'para entrar no grupo.')
+        if self.group_check.isChecked():
+            # Dizer o número evita as duas surpresas do modelo antigo: a de reunir mais
+            # do que o usuário vê marcado, e a de marcar a caixa e nada acontecer porque
+            # todo registro escolhido já tem grupo no aplicativo.
+            entram = sum(group_candidate_count(plan) for plan in plans)
+            if entram:
+                text += (f' Entram no grupo {entram} '
+                         f'{"registro" if entram == 1 else "registros"}.')
+            else:
+                text += (' Nenhum registro entra no grupo: os que serão enviados já têm '
+                         'grupo no aplicativo, e o plugin não desfaz essa organização.')
+        else:
+            text += ' Cada registro mantém o grupo em que já está no aplicativo.'
         self.group_summary_label.setText(text)
 
     def _default_group_name(self):
@@ -448,9 +459,9 @@ class PushDialog(QDialog):
     def _all_layers_already_grouped(self):
         """True quando TODA camada escolhida ja e uma pasta da arvore desta expedicao.
 
-        Nesse caso os registros ja carregam o grupo deles e a coluna groupId sobe junto:
-        reagrupar seria MOVER a organizacao inteira do usuario para um grupo novo chamado
-        "Pontos". A caixa comeca desmarcada — quem quiser reagrupar ainda pode marcar.
+        Nesse caso os registros ja carregam o grupo deles, entao a caixa comeca
+        desmarcada: marca-la nao faria nada (apply_group_to_plan pula quem ja tem grupo)
+        e so deixaria um grupo vazio no aplicativo.
         """
         if not self.entries:
             return False
@@ -891,8 +902,11 @@ class PushDialog(QDialog):
             return
         group = self.selected_group()
         if group is not None:
-            for plan, _layer in self.entries:
-                apply_group_to_plan(plan, group[0])
+            entraram = sum(apply_group_to_plan(plan, group[0]) for plan, _layer in self.entries)
+            if not entraram:
+                # Sem ninguem para reunir, criar o RecordGroup so deixaria uma pasta vazia
+                # na aba Registros do aplicativo.
+                group = None
         entries = list(self.entries)
         self.accept()
         execute_push(self.dock, self.tmap, entries, group=group)
