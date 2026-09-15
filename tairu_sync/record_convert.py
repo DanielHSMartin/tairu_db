@@ -1037,6 +1037,8 @@ TYPE_COLORS = {
     'trilha': '#FF009688',        # Colors.teal
     'pontoDeInteresse': '#FFFFC107',  # Colors.amber
     'desenho': '#FF607D8B',       # Colors.blueGrey
+    'planoEvacuacao': '#FFE91E63',  # Colors.pink
+    'alerta': '#FFFFAB40',        # Colors.orangeAccent
 }
 _COLOR_FALLBACK = '#FF9E9E9E'     # Colors.grey
 

@@ -34,6 +34,8 @@ RECORD_TYPES = {
     'pontoDeInteresse': 'Ponto de Interesse',
     'desenho': 'Desenho',
     'curvaNivel': 'Curva de Nível',
+    'planoEvacuacao': 'Plano de Evacuação',
+    'alerta': 'Alerta',
 }
 
 RECORD_SUBTYPES = {
@@ -94,6 +96,15 @@ RECORD_SUBTYPES = {
     'desenhoPoligono': 'Polígono', 'desenhoCirculo': 'Círculo',
     # Curva de Nível
     'curvaMestra': 'Curva Mestra', 'curvaNormal': 'Curva Normal',
+    # Plano de Evacuação
+    'localAtendimento': 'Local de Atendimento', 'zonaPouso': 'Zona de Pouso',
+    'pontoComunicacao': 'Ponto de Comunicação', 'rotaEvacuacao': 'Rota de Evacuação',
+    'centralApoio': 'Central de Apoio',
+    # Alerta
+    'alertaIncidente': 'Incidente', 'alertaIncendio': 'Incêndio',
+    'alertaAnimal': 'Animal Perigoso', 'alertaClima': 'Clima',
+    'alertaTrilha': 'Trilha Interditada', 'alertaInundacao': 'Inundação',
+    'outroAlerta': 'Outro',
 }
 
 SUBTYPES_BY_TYPE = {
@@ -119,6 +130,10 @@ SUBTYPES_BY_TYPE = {
                          'referenciaPoI', 'outroPoI'],
     'desenho': ['desenhoPonto', 'desenhoLinha', 'desenhoPoligono', 'desenhoCirculo'],
     'curvaNivel': ['curvaMestra', 'curvaNormal'],
+    'planoEvacuacao': ['localAtendimento', 'zonaPouso', 'pontoComunicacao',
+                       'rotaEvacuacao', 'centralApoio'],
+    'alerta': ['alertaIncidente', 'alertaIncendio', 'alertaAnimal', 'alertaClima',
+               'alertaTrilha', 'alertaInundacao', 'outroAlerta'],
 }
 
 SITUATIONS_BY_TYPE = {
@@ -132,6 +147,8 @@ SITUATIONS_BY_TYPE = {
     'pontoDeInteresse': ['A Visitar', 'Visitado', 'Recomendado', 'Evitar'],
     'desenho': ['Ativo', 'Inativo'],
     'curvaNivel': ['Ativa', 'Inativa'],
+    'planoEvacuacao': ['Ativo', 'Inativo'],
+    'alerta': ['Ativo', 'Inativo'],
 }
 
 GEOMETRY_TYPES = ('none', 'point', 'line', 'polygon', 'circle')
