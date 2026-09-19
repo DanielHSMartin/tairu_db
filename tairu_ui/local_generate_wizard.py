@@ -45,7 +45,7 @@ try:
         SMOOTHING_NONE, generate_contours,
     )
     from ..tairu_core.feedback import FeedbackAdapter
-    from ..tairu_core.layer_tree import layer_is_visible
+    from ..tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from ..tairu_core.raster_footprint import coverage_ratio, data_footprint
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from ..tairu_core.tile_math import compute_region_tiles, to_wgs84
@@ -57,6 +57,7 @@ try:
         estimate_bytes as elevation_estimate_bytes)
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
+    from .open_tairudb import open_tairudb
     from .style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
@@ -72,7 +73,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         SMOOTHING_NONE, generate_contours,
     )
     from tairu_core.feedback import FeedbackAdapter
-    from tairu_core.layer_tree import layer_is_visible
+    from tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from tairu_core.raster_footprint import coverage_ratio, data_footprint
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
     from tairu_core.tile_math import compute_region_tiles, to_wgs84
@@ -84,6 +85,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         estimate_bytes as elevation_estimate_bytes)
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
+    from tairu_ui.open_tairudb import open_tairudb
     from tairu_ui.style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
@@ -373,7 +375,7 @@ def _hidden_basemap_names(project):
     """
     nomes = []
     for layer in project.layerTreeRoot().layerOrder():
-        if not layer.isValid() or layer_is_visible(layer, project):
+        if not layer.isValid() or layer_is_visible(layer, project) or is_tairudb_view(layer):
             continue
         if layer.type() in (_RASTER_LAYER_TYPE, _VECTOR_TILE_LAYER_TYPE):
             nomes.append(layer.name())
@@ -640,7 +642,9 @@ class ExtentPage(QWizardPage):
                   if layer.type() == _RASTER_LAYER_TYPE and layer.isValid()
                   and layer.providerType() == 'gdal'
                   # Camada oculta não é renderizada: a extensão dela só geraria tiles vazios.
-                  and layer_is_visible(layer, project)]
+                  and layer_is_visible(layer, project)
+                  # Resultado de uma geração aberto no projeto não é fonte da próxima.
+                  and not is_tairudb_view(layer)]
 
         # Guardado em atributo, não lido de volta do rótulo: `isVisible()` é
         # False enquanto a página não foi mostrada, e initializePage roda antes.
@@ -1030,7 +1034,7 @@ class VectorLayersPage(QWizardPage):
         project = QgsProject.instance()
         hidden = 0
         for layer in project.mapLayers().values():
-            if not isinstance(layer, QgsVectorLayer) or not layer.isValid():
+            if not isinstance(layer, QgsVectorLayer) or not layer.isValid() or is_tairudb_view(layer):
                 continue
             # Camada desmarcada no painel de camadas não é desenhada no mapa e não entra
             # no .tairudb — não faz sentido oferecê-la aqui.
@@ -1335,6 +1339,22 @@ def _recall_output(scope):
         return None
 
 
+# "Abrir o arquivo no QGIS ao terminar": quem desmarca uma vez nao quer desmarcar sempre.
+_OPEN_AFTER_SETTINGS_KEY = 'tairu_db/open_after_generate'
+
+
+def _remember_open_after(checked):
+    with contextlib.suppress(Exception):
+        QSettings().setValue(_OPEN_AFTER_SETTINGS_KEY, bool(checked))
+
+
+def _recall_open_after():
+    try:
+        return bool(QSettings().value(_OPEN_AFTER_SETTINGS_KEY, True, type=bool))
+    except Exception:
+        return True
+
+
 class DestinationPage(QWizardPage):
 
     def __init__(self, wizard):
@@ -1343,6 +1363,7 @@ class DestinationPage(QWizardPage):
         self.setTitle('Nome do Arquivo' if wizard.is_upload_mode else 'Arquivo de Destino')
         self.output_edit = None
         self.name_edit = None
+        self.open_check = None
 
         layout = QVBoxLayout(self)
 
@@ -1371,8 +1392,16 @@ class DestinationPage(QWizardPage):
             browse_btn.clicked.connect(self._browse_output)
             output_layout.addWidget(browse_btn)
             layout.addLayout(output_layout)
+            self.open_check = QCheckBox('Abrir o arquivo no QGIS ao terminar')
+            self.open_check.setChecked(_recall_open_after())
+            self.open_check.toggled.connect(_remember_open_after)
+            layout.addWidget(self.open_check)
 
         layout.addStretch(1)
+
+    def open_after(self):
+        """Abrir o resultado no projeto: so no arquivo local, e so se a caixa estiver marcada."""
+        return self.open_check is not None and self.open_check.isChecked()
 
     def _settings_scope(self):
         if self._wizard.is_upload_mode and self._wizard.tmap is not None:
@@ -1885,6 +1914,10 @@ class RunPage(QWizardPage):
             self.progress.setValue(100)
             self._append(f'Concluído! Arquivo gerado: {size_mb:.1f} MB')
             self.output_label.setText(f'Salvo em: {output_file}')
+            if dest.open_after():
+                # Se ja estava aberto, o grupo antigo da lugar ao novo (open_tairudb).
+                self._append('Abrindo o arquivo no QGIS…')
+                open_tairudb(wizard.iface, output_file)
             self._done = True
             self._running = False
             self.completeChanged.emit()

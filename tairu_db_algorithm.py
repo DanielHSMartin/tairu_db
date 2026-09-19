@@ -35,7 +35,7 @@ from qgis.core import (
 try:
     from .qgis_proxy import install_qgis_proxy
     from .compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
-    from .tairu_core.layer_tree import layer_is_visible
+    from .tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from .tairu_core.feedback import ProcessingFeedbackAdapter
     from .tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401 (re-export)
     from .tairu_core.tile_math import compute_region_tiles, to_wgs84
@@ -50,7 +50,7 @@ try:
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from qgis_proxy import install_qgis_proxy
     from compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
-    from tairu_core.layer_tree import layer_is_visible
+    from tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from tairu_core.feedback import ProcessingFeedbackAdapter
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile  # noqa: F401
     from tairu_core.tile_math import compute_region_tiles, to_wgs84
@@ -254,7 +254,8 @@ def TairuDBAlgorithm():
             project = QgsProject.instance()
             self.layers = [
                 layer for layer in project.mapLayers().values()
-                if layer.type() in [_RASTER_LAYER_TYPE] and layer_is_visible(layer, project)]
+                if layer.type() in [_RASTER_LAYER_TYPE] and layer_is_visible(layer, project)
+                and not is_tairudb_view(layer)]   # resultado aberto no projeto nao e fonte
 
             if not self.layers:
                 feedback.reportError(self.tr("Nenhuma camada encontrada para renderizar."))

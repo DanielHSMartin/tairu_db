@@ -32,6 +32,7 @@ import sys
 import inspect
 
 from qgis.core import QgsApplication
+from qgis.gui import QgsCustomDropHandler
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 from .tairu_db_provider import TairuDBProvider
@@ -42,12 +43,28 @@ if cmd_folder not in sys.path:
     sys.path.insert(0, cmd_folder)
 
 
+class _TairuDBDropHandler(QgsCustomDropHandler):
+    """Arrastar um .tairudb para o QGIS abre o arquivo como camadas."""
+
+    def __init__(self, open_file):
+        super().__init__()
+        self._open_file = open_file
+
+    def handleFileDrop(self, file):
+        if not str(file).lower().endswith('.tairudb'):
+            return False
+        self._open_file(file)
+        return True
+
+
 class TairuDBPlugin(object):
 
     def __init__(self, iface):
         self.iface = iface
         self.provider = None
         self.action = None
+        self.open_action = None
+        self.drop_handler = None
         self.dock = None
         self.icon_path = os.path.join(os.path.dirname(__file__), 'icon.png')
 
@@ -73,10 +90,28 @@ class TairuDBPlugin(object):
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu('TairuDB', self.action)
 
+        self.open_action = QAction('Abrir arquivo .tairudb…', self.iface.mainWindow())
+        self.open_action.triggered.connect(self._open_dialog)
+        self.iface.addPluginToMenu('TairuDB', self.open_action)
+        self.drop_handler = _TairuDBDropHandler(self._open_file)
+        self.iface.registerCustomDropHandler(self.drop_handler)
+
+    def _open_dialog(self):
+        from .tairu_ui.open_tairudb import open_tairudb_dialog
+        open_tairudb_dialog(self.iface)
+
+    def _open_file(self, path):
+        from .tairu_ui.open_tairudb import open_tairudb
+        open_tairudb(self.iface, path)
+
     def unload(self):
         with contextlib.suppress(Exception):
             from .tairu_ui.local_generate_wizard import close_open_wizards
             close_open_wizards()
+        if self.drop_handler is not None:
+            self.iface.unregisterCustomDropHandler(self.drop_handler)
+            self.drop_handler = None
+        self.iface.removePluginMenu('TairuDB', self.open_action)
         if self.dock is not None:
             with contextlib.suppress(Exception):
                 self.dock.shutdown()

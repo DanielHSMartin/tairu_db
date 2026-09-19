@@ -50,6 +50,26 @@ selecionável mesmo oculta, porque desmarcar o limite depois de desenhá-lo é r
 Permissões refletem as regras do servidor: membros leem tudo e criam/editam os próprios
 registros; donos e administradores editam tudo e enviam arquivos raster.
 
+## Abrir um arquivo .tairudb
+
+**Complementos › TairuDB › Abrir arquivo .tairudb…**, ou arraste o arquivo para o QGIS. O
+arquivo vira um grupo no topo do painel de camadas, desenhado como no aplicativo:
+
+- cada **região raster** vira uma camada (MBTiles);
+- cada **camada vetorial** vira uma camada por tipo de geometria, com a cor, o tamanho, o
+  traço, o ícone e os rótulos que o app usa — inclusive os ícones embutidos de KMZ, e o
+  polígono sem preenchimento continua só com o contorno;
+- o **GRG** vira as linhas da grade e os rótulos das colunas e linhas por fora da borda.
+
+É **somente leitura**: o `.tairudb` não é alterado. A conversão fica na pasta
+`tairu_workspace/arquivos/` do perfil do QGIS e é reaproveitada ao reabrir o mesmo arquivo.
+
+Ao **gerar um arquivo local**, o resultado é aberto assim no projeto ao terminar (caixa
+"Abrir o arquivo no QGIS ao terminar", na tela do arquivo de destino; a escolha fica
+lembrada). Gerar de novo no mesmo arquivo substitui o grupo aberto. As camadas abertas de
+um `.tairudb` **não entram na geração seguinte** — nem como imagem, nem como vetor: são o
+resultado, não a fonte.
+
 ---
 
 ## What is Tairu Maps?

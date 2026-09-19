@@ -16,8 +16,18 @@ ids in the same insertion order; the mapping handles both conventions.
 import os
 import re
 import sqlite3
+from pathlib import Path
 
 _TILE_TABLE_RE = re.compile(r'^tiles_region_\d+$')
+
+
+def read_only_uri(path):
+    """URI SQLite somente leitura para `path`.
+
+    Percent-encoded: montada com f'file:{path}?mode=ro', um '#' ou '?' no nome do
+    arquivo cortava o caminho ali e a abertura falhava.
+    """
+    return Path(os.path.abspath(path)).as_uri() + '?mode=ro'
 
 
 def _parse_bounds_ring(ring_str):
@@ -62,7 +72,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
     os.makedirs(out_dir, exist_ok=True)
     base_name = base_name or os.path.splitext(os.path.basename(tairudb_path))[0]
 
-    src = sqlite3.connect(f'file:{tairudb_path}?mode=ro', uri=True)
+    src = sqlite3.connect(read_only_uri(tairudb_path), uri=True)
     try:
         metadata = dict(src.execute('SELECT name, value FROM metadata'))
 

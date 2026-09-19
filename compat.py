@@ -16,6 +16,7 @@ from qgis.PyQt.QtGui import QImage
 # relatorio. Renomear _QgsSymbolLayer para QgsSymbolLayer reintroduz os achados em silencio.
 from qgis.core import Qgis, QgsProcessingAlgorithm
 from qgis.core import QgsMapLayerProxyModel as _QgsMapLayerProxyModel
+from qgis.core import QgsPalLayerSettings as _QgsPalLayerSettings
 from qgis.core import QgsSymbolLayer as _QgsSymbolLayer
 from qgis.core import QgsVectorFileWriter as _QgsVectorFileWriter
 
@@ -78,6 +79,12 @@ except AttributeError:
     _SYMBOL_TYPE_FILL = _QgsSymbol.Fill                                                   # older QGIS 3
 
 _MSG_WARNING = Qgis.MessageLevel.Warning
+
+try:
+    _LABEL_OVER_POINT = Qgis.LabelPlacement.OverPoint                                     # QGIS 3.26+/4
+except AttributeError:
+    _LABEL_OVER_POINT = _QgsPalLayerSettings.OverPoint                                    # QGIS 3.20-3.24
+_LABEL_PROP_QUADRANT = _QgsPalLayerSettings.Property.OffsetQuad
 
 try:
     _VECTOR_LAYER_FILTER = _QgsMapLayerProxyModel.Filter.VectorLayer                      # QGIS 4

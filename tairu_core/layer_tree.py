@@ -37,6 +37,22 @@ def layer_is_visible(layer, project=None):
     return node is not None and node.isVisible()
 
 
+# Camada que o plugin abriu a partir de um .tairudb (tairu_ui/open_tairudb.py). Ela e o
+# RESULTADO de uma geracao, nao fonte: fica fora de tudo que alimenta a proxima. Visivel,
+# a imagem entraria marcada na primeira tela e o mapa anterior seria assado por cima da
+# imagem de origem; os vetores voltariam com uuid novo e duplicariam no app a feicao ja
+# incorporada. O valor e o caminho do arquivo de origem.
+TAIRUDB_VIEW_PROPERTY = 'tairu/tairudbAberto'
+
+
+def is_tairudb_view(layer):
+    """True para camada aberta de um .tairudb pelo plugin."""
+    try:
+        return bool(layer.customProperty(TAIRUDB_VIEW_PROPERTY, ''))
+    except Exception:
+        return False
+
+
 def visible_layers(layers, project=None):
     """Só as camadas visíveis, preservando a ordem recebida."""
     if project is None:

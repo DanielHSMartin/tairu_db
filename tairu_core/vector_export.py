@@ -19,9 +19,11 @@ from qgis.core import (
 
 try:
     from .vector_types import tairudb_type_for_fields
+    from .layer_tree import is_tairudb_view
     from .map_identity import feature_uuid_for
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
+    from tairu_core.layer_tree import is_tairudb_view
     from tairu_core.map_identity import feature_uuid_for
 
 
@@ -228,6 +230,17 @@ def export_vector_layers(writer, layers, transform_context, feedback,
                     ", ".join(lyr.name() for lyr in record_layers)))
             if not layers:
                 return
+
+    # Camada aberta de um .tairudb e resultado, nao fonte: reexporta-la cunharia uuid novo
+    # para cada feicao e o app duplicaria a que ja foi incorporada. Ver layer_tree.
+    views = [lyr for lyr in layers if is_tairudb_view(lyr)]
+    if views:
+        layers = [lyr for lyr in layers if lyr not in views]
+        feedback.push_info(
+            "Camada(s) aberta(s) de um arquivo .tairudb ignorada(s) na exportação vetorial "
+            "({}).".format(", ".join(lyr.name() for lyr in views)))
+        if not layers:
+            return
 
     for layer_idx, layer in enumerate(layers):
         if feedback.is_canceled():
