@@ -25,8 +25,10 @@ import urllib.error
 import urllib.request
 
 try:
+    from ..tairu_core.i18n import tr
     from .http import FirebaseError, USER_AGENT
 except ImportError:
+    from tairu_core.i18n import tr
     from tairu_firebase.http import FirebaseError, USER_AGENT
 
 # Refresh the App Check token this many seconds before it would expire.
@@ -123,5 +125,5 @@ class AppCheckManager:
         result = payload.get('result') or payload
         if not result.get('token'):
             raise FirebaseError('APP_CHECK_ERROR',
-                                'getQgisAppCheckToken não retornou um token')
+                                tr('getQgisAppCheckToken não retornou um token'))
         return result

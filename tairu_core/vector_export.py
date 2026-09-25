@@ -21,10 +21,12 @@ try:
     from .vector_types import tairudb_type_for_fields
     from .layer_tree import is_tairudb_view
     from .map_identity import feature_uuid_for
+    from .i18n import tr
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
     from tairu_core.layer_tree import is_tairudb_view
     from tairu_core.map_identity import feature_uuid_for
+    from tairu_core.i18n import tr
 
 
 # Categorias que nao puderam ser lidas; inspecionavel em depuracao.
@@ -204,7 +206,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
     feedback: FeedbackAdapter for progress/cancel/log.
     """
     if not layers:
-        feedback.push_info("Nenhuma camada vetorial selecionada para exportação.")
+        feedback.push_info(tr("Nenhuma camada vetorial selecionada para exportação."))
         return
 
     if transform_context is None:
@@ -223,11 +225,11 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         record_layers = [lyr for lyr in layers if is_record_sync_layer(lyr)]
         if record_layers:
             layers = [lyr for lyr in layers if lyr not in record_layers]
-            feedback.push_info(
+            feedback.push_info(tr(
                 "Camada(s) de registros do Tairu ignorada(s) na exportação vetorial "
-                "({}): os registros já são sincronizados pelo app; incluí-los criaria "
-                "geometrias duplicadas no mapa e exporia dados dos registros.".format(
-                    ", ".join(lyr.name() for lyr in record_layers)))
+                "({layers}): os registros já são sincronizados pelo app; incluí-los criaria "
+                "geometrias duplicadas no mapa e exporia dados dos registros.").format(
+                    layers=", ".join(lyr.name() for lyr in record_layers)))
             if not layers:
                 return
 
@@ -236,9 +238,9 @@ def export_vector_layers(writer, layers, transform_context, feedback,
     views = [lyr for lyr in layers if is_tairudb_view(lyr)]
     if views:
         layers = [lyr for lyr in layers if lyr not in views]
-        feedback.push_info(
+        feedback.push_info(tr(
             "Camada(s) aberta(s) de um arquivo .tairudb ignorada(s) na exportação vetorial "
-            "({}).".format(", ".join(lyr.name() for lyr in views)))
+            "({layers}).").format(layers=", ".join(lyr.name() for lyr in views)))
         if not layers:
             return
 
@@ -249,7 +251,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         # Update progress for vector export
         progress = progress_start + (progress_span * layer_idx / len(layers))
         feedback.set_progress(progress)
-        feedback.set_progress_text(f"Exportando camada vetorial: {layer.name()}")
+        feedback.set_progress_text(tr("Exportando camada vetorial: {name}").format(name=layer.name()))
 
         if not layer.isValid():
             continue
@@ -296,10 +298,10 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         # feicao seria gravada no .tairudb em metros — geometria no lugar errado,
         # sem erro nenhum. O retorno de transform() era ignorado abaixo.
         if not layer_crs.isValid() or not transform.isValid():
-            origem = layer_crs.authid() or layer_crs.description() or 'origem desconhecida'
-            feedback.report_error(
-                f'Camada "{layer.name()}" não pôde ser reprojetada de {origem} '
-                'para WGS84 (EPSG:4326) — não foi exportada.')
+            origem = layer_crs.authid() or layer_crs.description() or tr('origem desconhecida')
+            feedback.report_error(tr(
+                'Camada "{name}" não pôde ser reprojetada de {origin} '
+                'para WGS84 (EPSG:4326) — não foi exportada.').format(name=layer.name(), origin=origem))
             continue
 
         feature_count = 0
@@ -317,7 +319,7 @@ def export_vector_layers(writer, layers, transform_context, feedback,
 
         for feat in layer.getFeatures():
             if feedback.is_canceled():
-                feedback.push_info(f"Exportação de camada vetorial cancelada em {layer_name}")
+                feedback.push_info(tr("Exportação de camada vetorial cancelada em {name}").format(name=layer_name))
                 return
 
             feature_count += 1

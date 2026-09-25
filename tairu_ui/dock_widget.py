@@ -29,6 +29,7 @@ try:
     from ..tairu_firebase.oauth_loopback import LoopbackServer
     from ..tairu_firebase.storage import StorageClient
     from ..tairu_core.firestore_cache import FirestoreCache
+    from ..tairu_core.i18n import tr
     from ..tairu_core.workspace import mark_map_opened
     from ..tairu_firebase.models import now_millis
     from ..tairu_sync.tasks import run_task, cancel_all_tasks
@@ -46,6 +47,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_firebase.oauth_loopback import LoopbackServer
     from tairu_firebase.storage import StorageClient
     from tairu_core.firestore_cache import FirestoreCache
+    from tairu_core.i18n import tr
     from tairu_core.workspace import mark_map_opened
     from tairu_firebase.models import now_millis
     from tairu_sync.tasks import run_task, cancel_all_tasks
@@ -54,7 +56,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_ui.map_detail_page import MapDetailPage
     from tairu_ui.style import apply_tairu_style, set_link_button, set_muted
 
-_VERSION_LABELS = {'offline': 'Offline', 'online': 'Online', 'realtime': 'Tempo Real'}
+_VERSION_LABELS = {'offline': tr('Offline'), 'online': tr('Online'), 'realtime': tr('Tempo Real')}
 
 
 def _plugin_version():
@@ -109,7 +111,7 @@ class TairuDockWidget(QgsDockWidget):
         self.version_label = set_muted(QLabel(''))
         self._refresh_version()
         footer.addWidget(self.version_label)
-        self.signout_btn = set_link_button(QPushButton('Sair'))
+        self.signout_btn = set_link_button(QPushButton(tr('Sair')))
         self.signout_btn.clicked.connect(self.sign_out)
         self.signout_btn.hide()
         footer.addWidget(self.signout_btn)
@@ -149,8 +151,8 @@ class TairuDockWidget(QgsDockWidget):
         # sessao esta, para nao restar duvida sobre onde os dados foram parar.
         env_key = auth_store.load_environment_key(DEFAULT_ENVIRONMENT_KEY)
         self.env = ENVIRONMENTS.get(env_key) or ENVIRONMENTS[DEFAULT_ENVIRONMENT_KEY]
-        self.setWindowTitle('Tairu Maps' if self.env.key == DEFAULT_ENVIRONMENT_KEY
-                            else f'Tairu Maps — {self.env.label.upper()}')
+        self.setWindowTitle(tr('Tairu Maps') if self.env.key == DEFAULT_ENVIRONMENT_KEY
+                            else tr('Tairu Maps — {ambiente}').format(ambiente=self.env.label.upper()))
         self.tokens = TokenManager(self.env, parent=self)
         self.tokens.sessionExpired.connect(self._on_session_expired)
         self.appcheck = AppCheckManager(self.env, self.tokens)
@@ -169,9 +171,9 @@ class TairuDockWidget(QgsDockWidget):
             self.show_login_page()
             return
         tokens = self.tokens
-        self.login_page.set_busy(True, 'Restaurando sessão…')
+        self.login_page.set_busy(True, tr('Restaurando sessão…'))
         run_task(
-            'Tairu Maps: restaurando sessão',
+            tr('Tairu Maps: restaurando sessão'),
             lambda task: tokens.resume_from_refresh_token(token),
             on_success=lambda _: self._post_signin(remember=True),
             on_error=self._on_login_failed,
@@ -186,7 +188,7 @@ class TairuDockWidget(QgsDockWidget):
         self._loopback.failed.connect(self._on_browser_login_failed)
         port, state = self._loopback.start()
         url = f'{self.env.auth_page}?port={port}&state={state}'
-        self.login_page.set_busy(True, 'Conclua o login no navegador…')
+        self.login_page.set_busy(True, tr('Conclua o login no navegador…'))
         QDesktopServices.openUrl(QUrl(url))
 
     def _on_loopback_credentials(self, data):
@@ -212,9 +214,9 @@ class TairuDockWidget(QgsDockWidget):
 
     def _resume_with_token(self, refresh_token, remember):
         tokens = self.tokens
-        self.login_page.set_busy(True, 'Validando credenciais…')
+        self.login_page.set_busy(True, tr('Validando credenciais…'))
         run_task(
-            'Tairu Maps: validando credenciais',
+            tr('Tairu Maps: validando credenciais'),
             lambda task: tokens.resume_from_refresh_token(refresh_token),
             on_success=lambda _: self._post_signin(remember),
             on_error=self._on_login_failed,
@@ -232,9 +234,9 @@ class TairuDockWidget(QgsDockWidget):
         version, allowed = self.tokens.plan_status()
         if not allowed:
             label = _VERSION_LABELS.get(version, version)
-            self.login_page.set_status(
-                f'Sua conta está no plano {label}. O acesso pelo QGIS requer plano '
-                f'Online ou Tempo Real.')
+            self.login_page.set_status(tr(
+                'Sua conta está no plano {plano}. O acesso pelo QGIS requer plano '
+                'Online ou Tempo Real.').format(plano=label))
             self.tokens.sign_out()
             auth_store.clear_refresh_token(self.env.key)
             self.show_login_page()
@@ -255,7 +257,7 @@ class TairuDockWidget(QgsDockWidget):
     def _on_session_expired(self, reason):
         self.account_label.setText('')
         self.signout_btn.hide()
-        self.login_page.set_status(reason or 'Sessão expirada. Entre novamente.')
+        self.login_page.set_status(reason or tr('Sessão expirada. Entre novamente.'))
         self.show_login_page()
 
     def sign_out(self):
@@ -323,7 +325,7 @@ class TairuDockWidget(QgsDockWidget):
             return False
         self._apply_map_rows(
             rows,
-            status='Mostrando expedições salvas localmente.',
+            status=tr('Mostrando expedições salvas localmente.'),
             allow_remote_counts=False,
         )
         return True
@@ -347,9 +349,9 @@ class TairuDockWidget(QgsDockWidget):
         had_cached_maps = self._load_cached_maps()
         self.maps_page.set_busy(True)
         if not had_cached_maps:
-            self.maps_page.set_status('Carregando expedições…')
+            self.maps_page.set_status(tr('Carregando expedições…'))
         run_task(
-            'Tairu Maps: carregando expedições',
+            tr('Tairu Maps: carregando expedições'),
             lambda task: fs.list_user_maps(uid),
             on_success=self._on_maps_loaded,
             on_error=self._on_maps_failed,
@@ -367,7 +369,8 @@ class TairuDockWidget(QgsDockWidget):
         self.maps_page.set_busy(False)
         if self.maps:
             self.maps_page.set_status(
-                f'Sem conexão com o Tairu Maps. Usando expedições salvas localmente. {message}',
+                tr('Sem conexão com o Tairu Maps. Usando expedições salvas localmente. {erro}').format(
+                    erro=message),
                 error=False)
         else:
             self.maps_page.set_status(message, error=True)
@@ -402,14 +405,14 @@ class TairuDockWidget(QgsDockWidget):
                     count = None
                 if count is not None:
                     counts[map_id] = count
-                task.report((index + 1) / max(1, total), 'Contando registros…')
+                task.report((index + 1) / max(1, total), tr('Contando registros…'))
             return counts
 
         def apply_counts(counts):
             self.maps_page.set_record_counts(counts)
 
         run_task(
-            'Tairu Maps: contando registros',
+            tr('Tairu Maps: contando registros'),
             fetch,
             on_success=apply_counts,
             on_error=lambda _message: None,
@@ -476,9 +479,9 @@ class TairuDockWidget(QgsDockWidget):
 
     def notify(self, message, error=False):
         if error:
-            self.iface.messageBar().pushCritical('Tairu Maps', message)
+            self.iface.messageBar().pushCritical(tr('Tairu Maps'), message)
         else:
-            self.iface.messageBar().pushSuccess('Tairu Maps', message)
+            self.iface.messageBar().pushSuccess(tr('Tairu Maps'), message)
 
     def confirm(self, title, message):
         return QMessageBox.question(self, title, message) == (

@@ -26,6 +26,11 @@ metadata by [write_elevation_tiles].
 
 import math
 
+try:
+    from .i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 ELEVATION_ZOOM = 12
 
 ELEVATION_TILE_URL = (
@@ -100,7 +105,7 @@ def write_elevation_tiles(writer, extent_wgs84, feedback):
     if not tiles:
         return 0
     if not writer.createElevationTable():
-        feedback.push_info('Aviso: não foi possível criar a tabela de altitude.')
+        feedback.push_info(tr('Aviso: não foi possível criar a tabela de altitude.'))
         return 0
 
     stored = _download_into(writer, tiles, feedback)
@@ -125,7 +130,7 @@ def _download_into(writer, tiles, feedback, concurrency=8):
     # test_elevation_tiles.py exercitar a matematica de tiles sozinha.
     nam = QgsNetworkAccessManager.instance()
     total = len(tiles)
-    feedback.push_info(f'Baixando {total} tile(s) de altitude…')
+    feedback.push_info(tr('Baixando {n} tile(s) de altitude…').format(n=total))
     feedback.reset_progress()
     st = {'idx': 0, 'done': 0, 'inflight': 0, 'stored': 0,
           'failed': 0, 'rejected': 0, 'last_error': ''}
@@ -197,13 +202,14 @@ def _download_into(writer, tiles, feedback, concurrency=8):
     # holes in its terrain, and the user is the only one who can decide whether
     # to redo it.
     if st['rejected']:
-        feedback.push_info(
-            f"Aviso: {st['rejected']} tile(s) de altitude vieram sem imagem "
-            'valida e foram descartados.')
+        feedback.push_info(tr(
+            'Aviso: {n} tile(s) de altitude vieram sem imagem '
+            'valida e foram descartados.').format(n=st['rejected']))
     if st['failed']:
-        feedback.push_info(
-            f"Aviso: {st['failed']} tile(s) de altitude nao puderam ser "
-            f"gravados{(': ' + st['last_error']) if st['last_error'] else ''}.")
+        feedback.push_info(tr(
+            'Aviso: {n} tile(s) de altitude nao puderam ser '
+            'gravados{detail}.').format(
+                n=st['failed'], detail=(': ' + st['last_error']) if st['last_error'] else ''))
     return st['stored']
 
 
@@ -221,6 +227,6 @@ def _report_progress(feedback, st, total):
     rather than dropped on the floor."""
     try:
         feedback.set_progress(int(100 * st['done'] / total))
-        feedback.heartbeat(f"Baixando altitude… {st['done']}/{total} tiles")
+        feedback.heartbeat(tr('Baixando altitude… {done}/{total} tiles').format(done=st['done'], total=total))
     except Exception as exc:  # noqa: BLE001 - counted, and never fatal
         st['last_error'] = str(exc)

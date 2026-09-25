@@ -56,6 +56,7 @@ try:
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _LABEL_OVER_POINT, _LABEL_PROP_QUADRANT,
         _WRITER_NO_ERROR)
     from ..tairu_core.grg_generator import _col_label, _dms_label
+    from ..tairu_core.i18n import tr
     from ..tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
     from ..tairu_core.mbtiles import read_only_uri, tairudb_to_mbtiles
     from ..tairu_core.record_icons import FALLBACK_ICON, ICON_CODEPOINTS
@@ -70,6 +71,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _LABEL_OVER_POINT, _LABEL_PROP_QUADRANT,
         _WRITER_NO_ERROR)
     from tairu_core.grg_generator import _col_label, _dms_label
+    from tairu_core.i18n import tr
     from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
     from tairu_core.mbtiles import read_only_uri, tairudb_to_mbtiles
     from tairu_core.record_icons import FALLBACK_ICON, ICON_CODEPOINTS
@@ -154,12 +156,12 @@ def _convert_into(path, work, report, canceled):
     try:
         conn = sqlite3.connect(read_only_uri(path), uri=True)
     except sqlite3.Error as exc:
-        raise ValueError(f'Não foi possível ler o arquivo: {exc}') from exc
+        raise ValueError(tr('Não foi possível ler o arquivo: {erro}').format(erro=exc)) from exc
     try:
         try:
             metadata = dict(conn.execute('SELECT name, value FROM metadata'))
         except sqlite3.DatabaseError as exc:
-            raise ValueError('O arquivo não é um .tairudb válido.') from exc
+            raise ValueError(tr('O arquivo não é um .tairudb válido.')) from exc
         tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         layer_names = {}
@@ -192,7 +194,7 @@ def _convert_into(path, work, report, canceled):
     for number, (layer_id, kind) in enumerate(keys):
         if canceled():
             raise CanceledError()
-        report(0.3 * number / len(keys), 'Convertendo os vetores…')
+        report(0.3 * number / len(keys), tr('Convertendo os vetores…'))
         name = layer_names.get(layer_id) or 'Feições'
         if len(kinds_of[layer_id]) > 1:
             name = f'{name} ({_KIND_LABEL[kind]})'
@@ -204,7 +206,7 @@ def _convert_into(path, work, report, canceled):
     try:
         rasters = tairudb_to_mbtiles(
             path, work, base_name='raster',
-            progress_cb=lambda f: report(0.3 + 0.7 * f, 'Convertendo o raster…'))
+            progress_cb=lambda f: report(0.3 + 0.7 * f, tr('Convertendo o raster…')))
     except ValueError:   # sem tabela de tiles, ou tabelas vazias: arquivo so de vetores
         rasters = []
     for mbtiles_path, label in rasters:
@@ -370,7 +372,8 @@ def _write_gpkg(layer, gpkg, table):
     error = result[0] if isinstance(result, (tuple, list)) else result
     if error != _WRITER_NO_ERROR:
         message = result[1] if isinstance(result, (tuple, list)) and len(result) > 1 else str(error)
-        raise RuntimeError(f'Falha ao gravar {table} em {gpkg}: {message}')
+        raise RuntimeError(tr('Falha ao gravar {tabela} em {arquivo}: {erro}').format(
+            tabela=table, arquivo=gpkg, erro=message))
 
 
 def _memory_layer(geometry, table, columns):
@@ -391,7 +394,8 @@ def _add_features(layer, rows):
     ok = layer.dataProvider().addFeatures(features)
     ok = ok[0] if isinstance(ok, tuple) else ok
     if not ok:
-        raise RuntimeError(f'{layer.name()}: feições recusadas ({"; ".join(layer.dataProvider().errors())})')
+        raise RuntimeError(tr('{camada}: feições recusadas ({erros})').format(
+            camada=layer.name(), erros='; '.join(layer.dataProvider().errors())))
 
 
 def _vector_entry(rows, kind, table, name, gpkg, icons):
@@ -684,7 +688,7 @@ def add_to_project(iface, path, out_dir, manifest):
         if group.customProperty(_SOURCE_PROPERTY, '') != path:
             continue
         if group.customProperty(_KEY_PROPERTY, '') == key and group.findLayers():
-            _message(iface, f'{title} já está aberto no projeto.', Qgis.MessageLevel.Info)
+            _message(iface, tr('{titulo} já está aberto no projeto.').format(titulo=title), Qgis.MessageLevel.Info)
             return
         # Versao anterior do mesmo arquivo (ou grupo esvaziado): sai para dar lugar a atual.
         project.removeMapLayers([node.layerId() for node in group.findLayers()])
@@ -699,12 +703,13 @@ def add_to_project(iface, path, out_dir, manifest):
             layers.append(layer)
     if not layers:
         if manifest.get('package'):
-            text = (f'{title} é um pacote de registros de expedição, não um mapa: '
-                    'importe-o no aplicativo Tairu Maps.')
+            text = tr('{titulo} é um pacote de registros de expedição, não um mapa: '
+                      'importe-o no aplicativo Tairu Maps.').format(titulo=title)
         elif failed:
-            text = f'Não foi possível abrir as camadas de {title}: {", ".join(failed)}.'
+            text = tr('Não foi possível abrir as camadas de {titulo}: {camadas}.').format(
+                titulo=title, camadas=', '.join(failed))
         else:
-            text = f'{title} não tem raster, vetor nem GRG para abrir.'
+            text = tr('{titulo} não tem raster, vetor nem GRG para abrir.').format(titulo=title)
         _message(iface, text, Qgis.MessageLevel.Warning)
         return
 
@@ -716,14 +721,14 @@ def add_to_project(iface, path, out_dir, manifest):
         project.addMapLayer(layer, False)
         # Recolhido: montar a legenda de uma camada com muitos estilos aberta e caro.
         group.addLayer(layer).setExpanded(False)
-    text = f'{title}: {len(layers)} camada(s) aberta(s).'
+    text = tr('{titulo}: {n} camada(s) aberta(s).').format(titulo=title, n=len(layers))
     if failed:
-        text += f' Não abriram: {", ".join(failed)}.'
+        text += ' ' + tr('Não abriram: {camadas}.').format(camadas=', '.join(failed))
     _message(iface, text, Qgis.MessageLevel.Warning if failed else Qgis.MessageLevel.Success)
 
 
 def _message(iface, text, level):
-    iface.messageBar().pushMessage('TairuDB', text, level, 6)
+    iface.messageBar().pushMessage(tr('TairuDB'), text, level, 6)
 
 
 def open_tairudb(iface, path):
@@ -732,8 +737,8 @@ def open_tairudb(iface, path):
     try:
         out_dir = cache_dir_for(path)
     except OSError as exc:
-        _message(iface, f'Não foi possível abrir {os.path.basename(path)}: {exc}',
-                 Qgis.MessageLevel.Critical)
+        _message(iface, tr('Não foi possível abrir {arquivo}: {erro}').format(
+            arquivo=os.path.basename(path), erro=exc), Qgis.MessageLevel.Critical)
         return
 
     def work(task):
@@ -749,12 +754,12 @@ def open_tairudb(iface, path):
             return
         run_or_defer(lambda: add_to_project(iface, path, out_dir, manifest))
 
-    run_task(f'Tairu Maps: abrindo {os.path.basename(path)}', work, on_success=done,
+    run_task(tr('Tairu Maps: abrindo {arquivo}').format(arquivo=os.path.basename(path)), work, on_success=done,
              on_error=lambda message: _message(iface, message, Qgis.MessageLevel.Critical))
 
 
 def open_tairudb_dialog(iface):
     path, _filter = QFileDialog.getOpenFileName(
-        iface.mainWindow(), 'Abrir arquivo TairuDB', '', 'Arquivo TairuDB (*.tairudb)')
+        iface.mainWindow(), tr('Abrir arquivo TairuDB'), '', tr('Arquivo TairuDB (*.tairudb)'))
     if path:
         open_tairudb(iface, path)

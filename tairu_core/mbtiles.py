@@ -18,6 +18,11 @@ import re
 import sqlite3
 from pathlib import Path
 
+try:
+    from .i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 _TILE_TABLE_RE = re.compile(r'^tiles_region_\d+$')
 
 
@@ -91,7 +96,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
             if _TILE_TABLE_RE.fullmatch(row[0])
         ]
         if not tile_tables:
-            raise ValueError('O arquivo não contém tabelas de tiles (tiles_region_N).')
+            raise ValueError(tr('O arquivo não contém tabelas de tiles (tiles_region_N).'))
 
         results = []
         multi = len(tile_tables) > 1
@@ -154,7 +159,7 @@ def tairudb_to_mbtiles(tairudb_path, out_dir, base_name=None, progress_cb=None):
             results.append((out_path, region_label))
 
         if not results:
-            raise ValueError('O arquivo não contém tiles em nenhuma região.')
+            raise ValueError(tr('O arquivo não contém tiles em nenhuma região.'))
         return results
     finally:
         src.close()

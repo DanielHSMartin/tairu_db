@@ -45,6 +45,7 @@ try:
         SMOOTHING_NONE, generate_contours,
     )
     from ..tairu_core.feedback import FeedbackAdapter
+    from ..tairu_core.i18n import decimal, tr
     from ..tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from ..tairu_core.raster_footprint import coverage_ratio, data_footprint
     from ..tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
@@ -73,6 +74,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         SMOOTHING_NONE, generate_contours,
     )
     from tairu_core.feedback import FeedbackAdapter
+    from tairu_core.i18n import decimal, tr
     from tairu_core.layer_tree import is_tairudb_view, layer_is_visible
     from tairu_core.raster_footprint import coverage_ratio, data_footprint
     from tairu_core.generator import GenerationSpec, TileRenderEngine, estimate, format_estimate_report
@@ -113,14 +115,14 @@ QCheckBox:hover {
 """
 
 # Rótulo e valor da grade GRG numa fonte só: o log imprimia o valor cru do enum.
-_GRG_TYPES = [('Alfanumérica', 'alphanumeric'), ('Coordenada Geográfica', 'geographic')]
+_GRG_TYPES = [(tr('Alfanumérica'), 'alphanumeric'), (tr('Coordenada Geográfica'), 'geographic')]
 _GRG_TYPE_LABELS = {valor: rotulo for rotulo, valor in _GRG_TYPES}
 
 _RESOLUTIONS = [
-    ('Máxima (0,25 m/px)', 19),
-    ('Altíssima (0,5 m/px)', 18), ('Alta (1 m/px)', 17), ('Médio Alta (2 m/px)', 16),
-    ('Média (4 m/px)', 15), ('Médio Baixa (8 m/px)', 14), ('Baixa (16 m/px)', 13),
-    ('Muito Baixa (32 m/px)', 12),
+    (tr('Máxima (0,25 m/px)'), 19),
+    (tr('Altíssima (0,5 m/px)'), 18), (tr('Alta (1 m/px)'), 17), (tr('Médio Alta (2 m/px)'), 16),
+    (tr('Média (4 m/px)'), 15), (tr('Médio Baixa (8 m/px)'), 14), (tr('Baixa (16 m/px)'), 13),
+    (tr('Muito Baixa (32 m/px)'), 12),
 ]
 _FORMATS = ['PNG', 'JPG', 'WEBP']
 
@@ -218,7 +220,7 @@ class WizardFeedback(FeedbackAdapter):
                 self._log(text)
 
     def report_error(self, text, fatal=False):
-        self.push_info(f'ERRO: {text}')
+        self.push_info(tr('ERRO: {text}').format(text=text))
 
     def is_canceled(self):
         return self.canceled
@@ -233,9 +235,9 @@ class TairuDBGenerateWizard(QWizard):
         self.tmap = tmap
         self.is_upload_mode = dock is not None and tmap is not None
         if self.is_upload_mode:
-            self.setWindowTitle(f'Gerar e enviar TairuDB · {tmap.nome}')
+            self.setWindowTitle(tr('Gerar e enviar TairuDB · {nome}').format(nome=tmap.nome))
         else:
-            self.setWindowTitle('Gerar arquivo TairuDB')
+            self.setWindowTitle(tr('Gerar arquivo TairuDB'))
         self.resize(680, 560)
 
         # Cross-page state
@@ -271,11 +273,11 @@ class TairuDBGenerateWizard(QWizard):
 
     def _style_wizard_buttons(self):
         labels = {
-            'BackButton': 'Voltar',
-            'NextButton': 'Avançar',
-            'CancelButton': 'Cancelar',
-            'FinishButton': 'Concluir',
-            'CommitButton': 'Enviar',
+            'BackButton': tr('Voltar'),
+            'NextButton': tr('Avançar'),
+            'CancelButton': tr('Cancelar'),
+            'FinishButton': tr('Concluir'),
+            'CommitButton': tr('Enviar'),
         }
         primary = {'NextButton', 'FinishButton', 'CommitButton'}
         for name, label in labels.items():
@@ -322,17 +324,17 @@ def _km_size(bb):
     clat = math.radians((bb.yMinimum() + bb.yMaximum()) / 2)
     w_km = abs(bb.xMaximum() - bb.xMinimum()) * 111.32 * math.cos(clat)
     h_km = abs(bb.yMaximum() - bb.yMinimum()) * 110.574
-    return f'{w_km:.1f} × {h_km:.1f} km'.replace('.', ',')
+    return decimal(f'{w_km:.1f} × {h_km:.1f} km')
 
 
 _ALIGN_LEFT = Qt.AlignmentFlag.AlignLeft
 _SOURCE_LABELS = {
-    'canvas': 'A área visível do mapa',
-    'draw': 'Um retângulo desenhado no mapa',
-    'layer': 'Cada polígono de uma camada',
-    'raster': 'Cada imagem carregada no projeto',
+    'canvas': tr('A área visível do mapa'),
+    'draw': tr('Um retângulo desenhado no mapa'),
+    'layer': tr('Cada polígono de uma camada'),
+    'raster': tr('Cada imagem carregada no projeto'),
 }
-_IMAGE_HEADERS = ['Usar', 'Imagem', 'Área', 'Resolução', 'SRC']
+_IMAGE_HEADERS = [tr('Usar'), tr('Imagem'), tr('Área'), tr('Resolução'), tr('SRC')]
 
 
 def _resolution_label(layer, bb_wgs84):
@@ -348,7 +350,7 @@ def _resolution_label(layer, bb_wgs84):
     metres = abs(bb_wgs84.xMaximum() - bb_wgs84.xMinimum()) * 111320.0 * math.cos(clat)
     res = metres / width
     if res < 10:
-        return f'{res:.2f} m/px'.replace('.', ',')
+        return decimal(f'{res:.2f} m/px')
     return f'{res:.0f} m/px'
 
 
@@ -363,7 +365,7 @@ def _is_online(layer):
 
 
 def _layer_origin(layer):
-    return 'internet' if _is_online(layer) else 'arquivo local'
+    return tr('internet') if _is_online(layer) else tr('arquivo local')
 
 
 def _hidden_basemap_names(project):
@@ -407,15 +409,15 @@ def _safe_measure(fn, *args):
     try:
         return fn(*args)
     except Exception as exc:
-        return f'Não foi possível medir a área: {exc}'
+        return tr('Não foi possível medir a área: {exc}').format(exc=exc)
 
 
 def _regions_text(count, bb):
     size = _km_size(bb)
     # featureCount() responde -1 quando o provedor não sabe contar sem varrer.
     if count is None or count < 0:
-        return f'Área total: {size}'
-    label = '1 região' if count == 1 else f'{count} regiões'
+        return tr('Área total: {size}').format(size=size)
+    label = tr('1 região') if count == 1 else tr('{n} regiões').format(n=count)
     return f'{label} · {size}'
 
 
@@ -424,8 +426,8 @@ class ExtentPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Área de interesse')
-        self.setSubTitle('Escolha a área que vai virar mapa.')
+        self.setTitle(tr('Área de interesse'))
+        self.setSubTitle(tr('Escolha a área que vai virar mapa.'))
         self.drawn_rect = None
         self._picker = None
         self.hidden_images = []
@@ -452,7 +454,7 @@ class ExtentPage(QWizardPage):
 
         self.draw_radio = QRadioButton(_SOURCE_LABELS['draw'])
         self._draw_box = self._add_option(layout, self.draw_radio)
-        self.draw_btn = set_secondary_button(QPushButton('Desenhar no mapa'))
+        self.draw_btn = set_secondary_button(QPushButton(tr('Desenhar no mapa')))
         self.draw_btn.clicked.connect(self._start_picker)
         self._draw_box.layout().addWidget(self.draw_btn, 0, _ALIGN_LEFT)
 
@@ -466,9 +468,9 @@ class ExtentPage(QWizardPage):
         self.raster_radio = QRadioButton(_SOURCE_LABELS['raster'])
         self._raster_box = self._add_option(layout, self.raster_radio, stretch=1)
         self._raster_holder = self._raster_box.parentWidget()
-        self._raster_box.layout().addWidget(set_muted(QLabel(
+        self._raster_box.layout().addWidget(set_muted(QLabel(tr(
             'As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma '
-            'também define uma região.')))
+            'também define uma região.'))))
         self.raster_table = QTableWidget(0, len(_IMAGE_HEADERS))
         self.raster_table.setHorizontalHeaderLabels(_IMAGE_HEADERS)
         self.raster_table.setAlternatingRowColors(True)
@@ -569,13 +571,13 @@ class ExtentPage(QWizardPage):
         self._set_label(
             self.layer_radio, 'layer',
             _safe_measure(self._layer_hint_text, wgs84, ctx) if has_polygons
-            else 'nenhuma camada de polígonos neste projeto')
+            else tr('nenhuma camada de polígonos neste projeto'))
         self._set_label(
             self.raster_radio, 'raster',
             _safe_measure(self._raster_hint_text, wgs84, ctx) if has_images
-            else ('nenhuma imagem visível — as do projeto estão ocultas no painel'
+            else (tr('nenhuma imagem visível — as do projeto estão ocultas no painel')
                   if self.hidden_images
-                  else 'nenhum arquivo de imagem neste projeto'))
+                  else tr('nenhum arquivo de imagem neste projeto')))
 
     def _set_label(self, radio, key, suffix):
         """O sufixo só entra na opção marcada — ou quando ela não pode ser marcada."""
@@ -590,7 +592,7 @@ class ExtentPage(QWizardPage):
 
     def _draw_hint_text(self, wgs84, ctx):
         if self.drawn_rect is None or self.drawn_rect.isEmpty():
-            return 'nenhum definido ainda'
+            return tr('nenhum definido ainda')
         crs = QgsProject.instance().crs()
         return _regions_text(1, to_wgs84(
             QgsGeometry.fromRect(self.drawn_rect),
@@ -599,14 +601,14 @@ class ExtentPage(QWizardPage):
     def _layer_hint_text(self, wgs84, ctx):
         layer = self.layer_combo.currentLayer()
         if layer is None:
-            return 'nenhuma camada selecionada'
+            return tr('nenhuma camada selecionada')
         return _regions_text(layer.featureCount(), to_wgs84(
             QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox())
 
     def _raster_hint_text(self, wgs84, ctx):
         layers = self.checked_raster_layers()
         if not layers:
-            return 'nenhuma imagem marcada'
+            return tr('nenhuma imagem marcada')
         union = None
         for layer in layers:
             bb = to_wgs84(QgsGeometry.fromRect(layer.extent()),
@@ -651,13 +653,14 @@ class ExtentPage(QWizardPage):
         self.hidden_images = _hidden_basemap_names(project)
         if self.hidden_images:
             uma = len(self.hidden_images) == 1
+            nomes = ', '.join(self.hidden_images)
             self.hidden_images_label.setText(
-                ('1 imagem oculta no painel de camadas não entra no mapa'
-                 if uma else
-                 f'{len(self.hidden_images)} imagens ocultas no painel de camadas '
-                 f'não entram no mapa')
-                + f' ({", ".join(self.hidden_images)}). '
-                + 'Marque a camada no painel do QGIS para poder usá-la aqui.')
+                tr('1 imagem oculta no painel de camadas não entra no mapa ({nomes}). '
+                   'Marque a camada no painel do QGIS para poder usá-la aqui.').format(nomes=nomes)
+                if uma else
+                tr('{n} imagens ocultas no painel de camadas não entram no mapa ({nomes}). '
+                   'Marque a camada no painel do QGIS para poder usá-la aqui.').format(
+                       n=len(self.hidden_images), nomes=nomes))
         self.hidden_images_label.setVisible(bool(self.hidden_images))
 
         self._raster_rows = []
@@ -670,7 +673,7 @@ class ExtentPage(QWizardPage):
             except ValueError as exc:
                 # Sem reprojeção não há área. Dizer o motivo AQUI, e não deixar
                 # falhar como "nenhum tile intersecta a área" três telas adiante.
-                values = [layer.name(), 'sem área utilizável', '—', layer.crs().authid() or '—']
+                values = [layer.name(), tr('sem área utilizável'), '—', layer.crs().authid() or '—']
                 usable, reason = False, str(exc)
             use = QTableWidgetItem('')
             flags = use.flags() & ~_ITEM_IS_EDITABLE
@@ -696,7 +699,7 @@ class ExtentPage(QWizardPage):
     def _image_row_values(self, layer, wgs84, ctx):
         """Nome, área, resolução no chão e SRC — o que decide se a imagem entra."""
         if layer.extent().isEmpty():
-            raise ValueError('A camada não informa uma extensão.')
+            raise ValueError(tr('A camada não informa uma extensão.'))
         bb = to_wgs84(QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, ctx).boundingBox()
         area = _km_size(bb)
         # Numa imagem recortada a medida da caixa mente por larga margem: o
@@ -705,7 +708,7 @@ class ExtentPage(QWizardPage):
         # que estar aqui, não três telas adiante.
         ratio = coverage_ratio(layer, data_footprint(layer))
         if ratio is not None and ratio < 0.9:
-            area = f'{area} ({ratio * 100:.0f}% com imagem)'.replace('.', ',')
+            area = tr('{area} ({pct:.0f}% com imagem)').format(area=area, pct=ratio * 100)
         return [layer.name(), area, _resolution_label(layer, bb), layer.crs().authid() or '—']
 
     def has_usable_images(self):
@@ -750,10 +753,10 @@ class ExtentPage(QWizardPage):
 
     def _on_extent_picked(self, rect):
         self.drawn_rect = rect
-        self.draw_btn.setText('Desenhar outro retângulo')
+        self.draw_btn.setText(tr('Desenhar outro retângulo'))
         self.draw_btn.setToolTip(
-            f'{rect.xMinimum():.5f}, {rect.yMinimum():.5f} — '
-            f'{rect.xMaximum():.5f}, {rect.yMaximum():.5f} (CRS do projeto)')
+            tr('{x0:.5f}, {y0:.5f} — {x1:.5f}, {y1:.5f} (CRS do projeto)').format(
+                x0=rect.xMinimum(), y0=rect.yMinimum(), x1=rect.xMaximum(), y1=rect.yMaximum()))
         self._restore_wizard()
 
     def _on_pick_canceled(self):
@@ -861,8 +864,8 @@ class ParamsPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Parâmetros')
-        self.setSubTitle('Resolução e formato dos tiles do mapa.')
+        self.setTitle(tr('Parâmetros'))
+        self.setSubTitle(tr('Resolução e formato dos tiles do mapa.'))
 
         self._basemap_ids = []
         self._first_visit = True
@@ -872,7 +875,7 @@ class ParamsPage(QWizardPage):
         # existe essa escolha. Um XYZ ligado no QGIS já entrou sozinho na
         # geração e baixou milhares de tiles sem aviso; tirá-lo sem oferecer a
         # caixa deixou sem saída quem não tem nenhuma imagem em disco.
-        self.basemap_check = QCheckBox('Incluir o mapa de fundo do projeto')
+        self.basemap_check = QCheckBox(tr('Incluir o mapa de fundo do projeto'))
         self.basemap_check.hide()
         layout.addWidget(self.basemap_check)
         self.online_note = set_muted(QLabel(''))
@@ -888,14 +891,14 @@ class ParamsPage(QWizardPage):
         # lista, mas não como padrão. Mesma razão do índice fixo do combo de formato.
         self.resolution_combo.setCurrentIndex(1)  # Altíssima (0,5 m/px)
         apply_combo_popup_style(self.resolution_combo)
-        form.addRow('Resolução:', self.resolution_combo)
+        form.addRow(tr('Resolução:'), self.resolution_combo)
 
         self.format_combo = QComboBox()
         for fmt in _FORMATS:
             self.format_combo.addItem(fmt)
         self.format_combo.setCurrentIndex(1)  # JPG
         apply_combo_popup_style(self.format_combo)
-        form.addRow('Formato:', self.format_combo)
+        form.addRow(tr('Formato:'), self.format_combo)
 
         self.quality_spin = QSpinBox()
         self.quality_spin.setRange(1, 100)
@@ -905,7 +908,7 @@ class ParamsPage(QWizardPage):
         self.quality_spin.setAccelerated(True)
         self.quality_spin.setMinimumWidth(84)
         self.quality_spin.setMaximumWidth(110)
-        form.addRow('Qualidade (JPG/WebP):', self.quality_spin)
+        form.addRow(tr('Qualidade (JPG/WebP):'), self.quality_spin)
         self.format_combo.currentTextChanged.connect(self._sync_quality_state)
         self._sync_quality_state()
 
@@ -915,17 +918,17 @@ class ParamsPage(QWizardPage):
         # the two come from different sources and either is useful without the
         # other. Cheap enough that asking would be the bigger imposition — one
         # ~36 KB tile covers 82 km², so a 30x30 km map gains under 1 MB.
-        self.elevation_check = QCheckBox('Incluir dados de altitude do terreno')
+        self.elevation_check = QCheckBox(tr('Incluir dados de altitude do terreno'))
         self.elevation_check.setChecked(True)
-        self.elevation_check.setToolTip(
+        self.elevation_check.setToolTip(tr(
             'Permite ao app mostrar a altitude de pontos e o perfil de elevação '
             'de linhas sem internet. Baixa tiles do modelo de terreno (USGS) '
-            'para a área do mapa.')
+            'para a área do mapa.'))
         layout.addWidget(self.elevation_check)
 
-        _elev_hint = QLabel(
+        _elev_hint = QLabel(tr(
             'ℹ️  Requer Tairu Maps versão 1.0.66 ou superior. '
-            'Versões anteriores ignoram estes dados e abrem o arquivo normalmente.')
+            'Versões anteriores ignoram estes dados e abrem o arquivo normalmente.'))
         _elev_hint.setWordWrap(True)
         _elev_hint.setStyleSheet('color: #666; font-style: italic;')
         layout.addWidget(_elev_hint)
@@ -943,11 +946,12 @@ class ParamsPage(QWizardPage):
             return
         nomes = ', '.join(layer.name() for layer in camadas)
         online = [layer.name() for layer in camadas if _is_online(layer)]
-        self.basemap_check.setText(f'Incluir o mapa de fundo do projeto ({nomes})')
+        self.basemap_check.setText(tr('Incluir o mapa de fundo do projeto ({nomes})').format(nomes=nomes))
         self.online_note.setText(
-            'Marcar isto BAIXA os tiles de ' + ', '.join(online) + ' durante a geração; '
-            'a Estimativa mostra quantos antes de começar.' if online else
-            'O restante do mapa vem das imagens marcadas na primeira tela.')
+            tr('Marcar isto BAIXA os tiles de {camadas} durante a geração; '
+               'a Estimativa mostra quantos antes de começar.').format(camadas=', '.join(online))
+            if online else
+            tr('O restante do mapa vem das imagens marcadas na primeira tela.'))
         if self._first_visit:
             self._first_visit = False
             # Marcado só quando não há imagem de arquivo: aí ele é a ÚNICA coisa
@@ -988,11 +992,11 @@ class VectorLayersPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Camadas Vetoriais')
-        self.setSubTitle(
+        self.setTitle(tr('Camadas Vetoriais'))
+        self.setSubTitle(tr(
             'Selecione camadas QGIS a incluir no .tairudb (opcional).\n'
             'As camadas vetoriais incluídas serão somente leitura no app '
-            '(não editáveis no Tairu Maps).')
+            '(não editáveis no Tairu Maps).'))
 
         layout = QVBoxLayout(self)
         self._vector_checkboxes = {}
@@ -1049,10 +1053,10 @@ class VectorLayersPage(QWizardPage):
         self._scroll_inner.addStretch(1)
         # Sem esta linha, "cadê minha camada?" vira chamado de suporte.
         if hidden:
-            plural = 's' if hidden > 1 else ''
             self.hidden_label.setText(
-                f'{hidden} camada{plural} oculta{plural} no painel de camadas '
-                f'não {"são" if hidden > 1 else "é"} listada{plural}.')
+                tr('{n} camadas ocultas no painel de camadas não são listadas.').format(n=hidden)
+                if hidden > 1 else
+                tr('1 camada oculta no painel de camadas não é listada.'))
             self.hidden_label.show()
         else:
             self.hidden_label.hide()
@@ -1088,17 +1092,17 @@ class ContourPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Curvas de Nível')
-        self.setSubTitle(
+        self.setTitle(tr('Curvas de Nível'))
+        self.setSubTitle(tr(
             'Gere curvas de nível automaticamente a partir de dados de elevação (opcional).\n'
-            'Requer conexão com a internet na etapa de geração.')
+            'Requer conexão com a internet na etapa de geração.'))
 
         layout = QVBoxLayout(self)
 
-        self._enable_check = QCheckBox('Gerar Curvas de Nível')
+        self._enable_check = QCheckBox(tr('Gerar Curvas de Nível'))
         layout.addWidget(self._enable_check)
 
-        _compat_label = QLabel('ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.')
+        _compat_label = QLabel(tr('ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.'))
         _compat_label.setStyleSheet('color: #666; font-style: italic; margin-bottom: 4px;')
         layout.addWidget(_compat_label)
 
@@ -1106,10 +1110,10 @@ class ContourPage(QWizardPage):
         form = QFormLayout(self._options_widget)
 
         self._source_combo = QComboBox()
-        self._source_combo.addItem('Copernicus GLO-30 (Mundial)', SOURCE_COPERNICUS)
-        self._source_combo.addItem('INPE TOPODATA (Brasil)', SOURCE_INPE)
+        self._source_combo.addItem(tr('Copernicus GLO-30 (Mundial)'), SOURCE_COPERNICUS)
+        self._source_combo.addItem(tr('INPE TOPODATA (Brasil)'), SOURCE_INPE)
         apply_combo_popup_style(self._source_combo)
-        form.addRow('Fonte de dados:', self._source_combo)
+        form.addRow(tr('Fonte de dados:'), self._source_combo)
 
         self._interval_spin = QSpinBox()
         self._interval_spin.setRange(1, 1000)
@@ -1118,21 +1122,21 @@ class ContourPage(QWizardPage):
         self._interval_spin.setSingleStep(5)
         self._interval_spin.setAccelerated(True)
         self._interval_spin.setMaximumWidth(110)
-        form.addRow('Intervalo:', self._interval_spin)
+        form.addRow(tr('Intervalo:'), self._interval_spin)
 
         self._smoothing_combo = QComboBox()
         for lvl in [SMOOTHING_NONE, 'Baixo', 'Médio', 'Alto']:
-            self._smoothing_combo.addItem(lvl)
+            self._smoothing_combo.addItem(tr(lvl), lvl)   # o dado fica pt: contour_generator compara
         self._smoothing_combo.setCurrentIndex(2)  # Médio
         apply_combo_popup_style(self._smoothing_combo)
-        form.addRow('Suavização:', self._smoothing_combo)
+        form.addRow(tr('Suavização:'), self._smoothing_combo)
 
         self._color = QColor(204, 119, 0, 204)  # brownish, ~80% opacity
         self._color_btn = QPushButton('  ')
         self._color_btn.setFixedWidth(48)
         self._update_color_btn()
         self._color_btn.clicked.connect(self._pick_color)
-        form.addRow('Cor das curvas:', self._color_btn)
+        form.addRow(tr('Cor das curvas:'), self._color_btn)
 
         layout.addWidget(self._options_widget)
         layout.addStretch(1)
@@ -1149,7 +1153,7 @@ class ContourPage(QWizardPage):
     def _pick_color(self):
         opt = QColorDialog.ColorDialogOption.ShowAlphaChannel
         color = QColorDialog.getColor(
-            self._color, self, 'Cor das curvas de nível', options=opt)
+            self._color, self, tr('Cor das curvas de nível'), options=opt)
         if color.isValid():
             self._color = color
             self._update_color_btn()
@@ -1167,7 +1171,7 @@ class ContourPage(QWizardPage):
         return self._interval_spin.value()
 
     def smoothing(self):
-        return self._smoothing_combo.currentText()
+        return self._smoothing_combo.currentData()
 
     def color(self):
         return QColor(self._color)
@@ -1180,16 +1184,16 @@ class GrgPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Grade GRG')
-        self.setSubTitle('Adicione uma grade de referência geográfica ao arquivo (opcional).')
+        self.setTitle(tr('Grade GRG'))
+        self.setSubTitle(tr('Adicione uma grade de referência geográfica ao arquivo (opcional).'))
 
         layout = QVBoxLayout(self)
 
-        self._grg_check = QCheckBox('Incluir grade GRG')
+        self._grg_check = QCheckBox(tr('Incluir grade GRG'))
         layout.addWidget(self._grg_check)
 
         _compat_label = QLabel(
-            'ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.'
+            tr('ℹ️  Requer Tairu Maps versão 1.0.38 ou superior.')
         )
         _compat_label.setStyleSheet('color: #666; font-style: italic; margin-bottom: 4px;')
         layout.addWidget(_compat_label)
@@ -1201,7 +1205,7 @@ class GrgPage(QWizardPage):
         for rotulo, valor in _GRG_TYPES:
             self._grg_type_combo.addItem(rotulo, valor)
         apply_combo_popup_style(self._grg_type_combo)
-        form.addRow('Tipo:', self._grg_type_combo)
+        form.addRow(tr('Tipo:'), self._grg_type_combo)
 
         self._grg_spacing_spin = QDoubleSpinBox()
         self._grg_spacing_spin.setRange(50, 200000)
@@ -1209,15 +1213,15 @@ class GrgPage(QWizardPage):
         self._grg_spacing_spin.setSuffix(' m')
         self._grg_spacing_spin.setDecimals(0)
         self._grg_spacing_spin.setSingleStep(100)
-        form.addRow('Espaçamento:', self._grg_spacing_spin)
+        form.addRow(tr('Espaçamento:'), self._grg_spacing_spin)
 
         # Line style
         self._grg_style_combo = QComboBox()
-        for lbl, val in [('Sólido', 'solid'), ('Tracejado', 'dashed'),
-                         ('Pontilhado', 'dotted'), ('Traço-ponto', 'dotdash')]:
+        for lbl, val in [(tr('Sólido'), 'solid'), (tr('Tracejado'), 'dashed'),
+                         (tr('Pontilhado'), 'dotted'), (tr('Traço-ponto'), 'dotdash')]:
             self._grg_style_combo.addItem(lbl, val)
         apply_combo_popup_style(self._grg_style_combo)
-        form.addRow('Estilo:', self._grg_style_combo)
+        form.addRow(tr('Estilo:'), self._grg_style_combo)
 
         # Thickness + opacity
         width_row = QWidget()
@@ -1226,10 +1230,10 @@ class GrgPage(QWizardPage):
         self._grg_width_spin = QSpinBox()
         self._grg_width_spin.setRange(1, 10)
         self._grg_width_spin.setValue(2)
-        self._grg_width_spin.setSuffix(' px')
+        self._grg_width_spin.setSuffix(tr(' px'))
         self._grg_width_spin.setMaximumWidth(80)
         width_lay.addWidget(self._grg_width_spin)
-        width_lay.addWidget(QLabel('Opacidade:'))
+        width_lay.addWidget(QLabel(tr('Opacidade:')))
         self._grg_opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self._grg_opacity_slider.setRange(0, 100)
         self._grg_opacity_slider.setValue(80)
@@ -1238,7 +1242,7 @@ class GrgPage(QWizardPage):
             lambda v: self._grg_opacity_label.setText(f'{v}%'))
         width_lay.addWidget(self._grg_opacity_slider, 1)
         width_lay.addWidget(self._grg_opacity_label)
-        form.addRow('Espessura:', width_row)
+        form.addRow(tr('Espessura:'), width_row)
 
         # Line color
         self._grg_line_color = QColor('#000000')
@@ -1247,7 +1251,7 @@ class GrgPage(QWizardPage):
         self._grg_color_btn.setStyleSheet(
             f'background-color: {self._grg_line_color.name()}; border: 1px solid #666;')
         self._grg_color_btn.clicked.connect(self._pick_line_color)
-        form.addRow('Cor da linha:', self._grg_color_btn)
+        form.addRow(tr('Cor da linha:'), self._grg_color_btn)
 
         # Font color + size
         font_row = QWidget()
@@ -1260,15 +1264,15 @@ class GrgPage(QWizardPage):
             f'background-color: {self._grg_font_color.name()}; border: 1px solid #666;')
         self._grg_font_color_btn.clicked.connect(self._pick_font_color)
         font_lay.addWidget(self._grg_font_color_btn)
-        font_lay.addWidget(QLabel('Tamanho:'))
+        font_lay.addWidget(QLabel(tr('Tamanho:')))
         self._grg_font_spin = QSpinBox()
         self._grg_font_spin.setRange(8, 48)
         self._grg_font_spin.setValue(14)
-        self._grg_font_spin.setSuffix(' pt')
+        self._grg_font_spin.setSuffix(tr(' pt'))
         self._grg_font_spin.setMaximumWidth(80)
         font_lay.addWidget(self._grg_font_spin)
         font_lay.addStretch()
-        form.addRow('Cor do texto:', font_row)
+        form.addRow(tr('Cor do texto:'), font_row)
 
         layout.addWidget(self._grg_options_widget)
         layout.addStretch(1)
@@ -1277,14 +1281,14 @@ class GrgPage(QWizardPage):
         self._grg_check.toggled.connect(self._grg_options_widget.setVisible)
 
     def _pick_line_color(self):
-        color = QColorDialog.getColor(self._grg_line_color, self, 'Cor da linha GRG')
+        color = QColorDialog.getColor(self._grg_line_color, self, tr('Cor da linha GRG'))
         if color.isValid():
             self._grg_line_color = color
             self._grg_color_btn.setStyleSheet(
                 f'background-color: {color.name()}; border: 1px solid #666;')
 
     def _pick_font_color(self):
-        color = QColorDialog.getColor(self._grg_font_color, self, 'Cor do texto GRG')
+        color = QColorDialog.getColor(self._grg_font_color, self, tr('Cor do texto GRG'))
         if color.isValid():
             self._grg_font_color = color
             self._grg_font_color_btn.setStyleSheet(
@@ -1360,7 +1364,7 @@ class DestinationPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Nome do Arquivo' if wizard.is_upload_mode else 'Arquivo de Destino')
+        self.setTitle(tr('Nome do Arquivo') if wizard.is_upload_mode else tr('Arquivo de Destino'))
         self.output_edit = None
         self.name_edit = None
         self.open_check = None
@@ -1369,30 +1373,30 @@ class DestinationPage(QWizardPage):
 
         if wizard.is_upload_mode:
             self.setSubTitle(
-                'Escolha apenas o nome do arquivo que será enviado para a expedição.')
+                tr('Escolha apenas o nome do arquivo que será enviado para a expedição.'))
             self.name_edit = QLineEdit()
-            self.name_edit.setPlaceholderText('Ex.: minha-expedicao.tairudb')
+            self.name_edit.setPlaceholderText(tr('Ex.: minha-expedicao.tairudb'))
             self.name_edit.textChanged.connect(lambda _: self.completeChanged.emit())
             form = QFormLayout()
-            form.addRow('Nome do arquivo:', self.name_edit)
+            form.addRow(tr('Nome do arquivo:'), self.name_edit)
             layout.addLayout(form)
-            note = set_muted(QLabel(
+            note = set_muted(QLabel(tr(
                 'O plugin salva o arquivo temporariamente no workspace local e envia para a '
-                'expedição usando apenas este nome.'))
+                'expedição usando apenas este nome.')))
             note.setWordWrap(True)
             layout.addWidget(note)
         else:
-            self.setSubTitle('Escolha onde salvar o arquivo .tairudb gerado.')
+            self.setSubTitle(tr('Escolha onde salvar o arquivo .tairudb gerado.'))
             output_layout = QHBoxLayout()
             self.output_edit = QLineEdit()
-            self.output_edit.setPlaceholderText('Escolha onde salvar o arquivo .tairudb…')
+            self.output_edit.setPlaceholderText(tr('Escolha onde salvar o arquivo .tairudb…'))
             self.output_edit.textChanged.connect(lambda _: self.completeChanged.emit())
             output_layout.addWidget(self.output_edit, 1)
-            browse_btn = QPushButton('Procurar…')
+            browse_btn = QPushButton(tr('Procurar…'))
             browse_btn.clicked.connect(self._browse_output)
             output_layout.addWidget(browse_btn)
             layout.addLayout(output_layout)
-            self.open_check = QCheckBox('Abrir o arquivo no QGIS ao terminar')
+            self.open_check = QCheckBox(tr('Abrir o arquivo no QGIS ao terminar'))
             self.open_check.setChecked(_recall_open_after())
             self.open_check.toggled.connect(_remember_open_after)
             layout.addWidget(self.open_check)
@@ -1421,7 +1425,8 @@ class DestinationPage(QWizardPage):
                 else:
                     date_str = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
                     base = slugify_filename(self._wizard.tmap.nome or 'expedicao')
-                    self.name_edit.setText(f'{base}-{date_str}.tairudb')
+                    nome_arquivo = f'{base}-{date_str}.tairudb'   # nome de arquivo (dado), não texto
+                    self.name_edit.setText(nome_arquivo)
         elif self.output_edit is not None:
             if not self.output_edit.text().strip():
                 # Only reuse a path whose folder still exists — a remembered file
@@ -1450,7 +1455,7 @@ class DestinationPage(QWizardPage):
         current = self.output_edit.text().strip()
         start_dir = os.path.dirname(current) if current else os.path.expanduser('~/Documents')
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Salvar arquivo TairuDB', start_dir, 'TairuDB (*.tairudb)')
+            self, tr('Salvar arquivo TairuDB'), start_dir, tr('TairuDB (*.tairudb)'))
         if path:
             if not path.lower().endswith('.tairudb'):
                 path += '.tairudb'
@@ -1498,8 +1503,8 @@ class EstimatePage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Estimativa')
-        self.setSubTitle('Confira o tamanho estimado antes de gerar.')
+        self.setTitle(tr('Estimativa'))
+        self.setSubTitle(tr('Confira o tamanho estimado antes de gerar.'))
         self._ok = False
 
         layout = QVBoxLayout(self)
@@ -1517,7 +1522,7 @@ class EstimatePage(QWizardPage):
 
     def initializePage(self):
         self._ok = False
-        self.report.setPlainText('Calculando tiles da área selecionada…')
+        self.report.setPlainText(tr('Calculando tiles da área selecionada…'))
         self.gate_label.setText('')
         self.warn_label.setText('')   # senão o aviso da simulação anterior ressuscita
         self.warn_label.hide()
@@ -1528,12 +1533,11 @@ class EstimatePage(QWizardPage):
         if not wizard.visible_basemap_layers():
             self.report.setPlainText('')
             ocultas = _hidden_basemap_names(QgsProject.instance())
-            extra = (' Há camada de imagem oculta no painel do QGIS ('
-                     + ', '.join(ocultas) + '): marque-a lá para poder usá-la.'
-                     ) if ocultas else ''
+            extra = tr(' Há camada de imagem oculta no painel do QGIS ({nomes}): marque-a lá para poder usá-la.'
+                       ).format(nomes=', '.join(ocultas)) if ocultas else ''
             self.gate_label.setText(
-                'Nenhuma camada marcada para desenhar o mapa. Marque uma imagem em '
-                '"Área de interesse" ou o mapa de fundo do projeto em "Parâmetros".'
+                tr('Nenhuma camada marcada para desenhar o mapa. Marque uma imagem em '
+                   '"Área de interesse" ou o mapa de fundo do projeto em "Parâmetros".')
                 + extra)
             self.completeChanged.emit()
             return
@@ -1549,7 +1553,7 @@ class EstimatePage(QWizardPage):
             # Log com traceback: este caminho era mudo, e "nada nos logs" virou o
             # sintoma mais caro de diagnosticar deste assistente.
             detalhe = traceback.format_exc()
-            texto = f'Falha ao calcular a área: {e}'
+            texto = tr('Falha ao calcular a área: {e}').format(e=e)
             self.report.setPlainText(texto + '\n\n' + detalhe)
             self.gate_label.setText(texto)
             QgsMessageLog.logMessage(texto + '\n' + detalhe, 'TairuDB', Qgis.MessageLevel.Critical)
@@ -1563,17 +1567,18 @@ class EstimatePage(QWizardPage):
             # "a area nao virou tiles", e nao deixa rastro nenhum no log.
             n_poly = len(wizard.polygons_wgs84 or [])
             if wizard.region_result is None:
-                motivo = 'cálculo interrompido'
+                motivo = tr('cálculo interrompido')
             elif n_poly == 0:
-                motivo = ('nenhum polígono de área foi produzido — verifique a '
-                          'opção escolhida na etapa "Área de interesse"')
+                motivo = tr('nenhum polígono de área foi produzido — verifique a '
+                            'opção escolhida na etapa "Área de interesse"')
             else:
                 bb = wizard.region_result.wgs84_extent
-                motivo = (f'{n_poly} polígono(s), extensão WGS84 '
-                          f'{bb.xMinimum():.5f},{bb.yMinimum():.5f} → '
-                          f'{bb.xMaximum():.5f},{bb.yMaximum():.5f}')
-            texto = (f'Nenhum tile intersecta a área selecionada '
-                     f'(zoom {wizard.params_page.max_zoom()}; {motivo}).')
+                motivo = tr('{n} polígono(s), extensão WGS84 '
+                            '{x0:.5f},{y0:.5f} → {x1:.5f},{y1:.5f}').format(
+                                n=n_poly, x0=bb.xMinimum(), y0=bb.yMinimum(),
+                                x1=bb.xMaximum(), y1=bb.yMaximum())
+            texto = tr('Nenhum tile intersecta a área selecionada (zoom {zoom}; {motivo}).').format(
+                zoom=wizard.params_page.max_zoom(), motivo=motivo)
             self.gate_label.setText(texto)
             self.report.setPlainText(texto)
             QgsMessageLog.logMessage(texto, 'TairuDB', Qgis.MessageLevel.Warning)
@@ -1634,16 +1639,16 @@ class EstimatePage(QWizardPage):
         total_mb = wizard.estimate_result.avg_mb + elev_bytes / (1024 * 1024)
 
         if wizard.is_upload_mode and total_mb > _UPLOAD_SOFT_LIMIT_MB:
-            self.gate_label.setText(
-                f'Estimativa de {total_mb:.0f} MB excede o limite de '
-                f'{_UPLOAD_SOFT_LIMIT_MB} MB para envio (máximo do servidor: 100 MB). '
-                'Reduza a área, a resolução ou a qualidade.')
+            self.gate_label.setText(tr(
+                'Estimativa de {mb:.0f} MB excede o limite de {limite} MB para envio '
+                '(máximo do servidor: 100 MB). Reduza a área, a resolução ou a qualidade.').format(
+                    mb=total_mb, limite=_UPLOAD_SOFT_LIMIT_MB))
         elif total_mb > _LARGE_FILE_WARN_MB:
-            self.warn_label.setText(
-                f'⚠ Estimativa de {total_mb:.0f} MB. Arquivos grandes '
+            self.warn_label.setText(tr(
+                '⚠ Estimativa de {mb:.0f} MB. Arquivos grandes '
                 'demoram para gerar e consomem bastante memória ao abrir no Tairu Maps mobile, '
                 'e ultrapassam o limite de 100 MB para envio a uma expedição na nuvem. '
-                'Você ainda pode gerar e usar o arquivo localmente.')
+                'Você ainda pode gerar e usar o arquivo localmente.').format(mb=total_mb))
             self.warn_label.show()
             self._ok = True
         else:
@@ -1656,9 +1661,9 @@ class EstimatePage(QWizardPage):
         est = wizard.estimate_result
         if est.blank_samples and not est.measured_from:
             self.warn_label.setText(
-                ('⚠ Os tiles de amostra saíram sem imagem nenhuma: a camada marcada não '
-                 'cobre esta área (ou não chegou a baixar). Gerar agora produz um arquivo '
-                 'sem mapa.\n' + self.warn_label.text()).strip())
+                (tr('⚠ Os tiles de amostra saíram sem imagem nenhuma: a camada marcada não '
+                    'cobre esta área (ou não chegou a baixar). Gerar agora produz um arquivo '
+                    'sem mapa.') + '\n' + self.warn_label.text()).strip())
             self.warn_label.show()
         self.completeChanged.emit()
 
@@ -1673,14 +1678,14 @@ class RunPage(QWizardPage):
     def __init__(self, wizard):
         super().__init__()
         self._wizard = wizard
-        self.setTitle('Geração e envio' if wizard.is_upload_mode else 'Geração')
+        self.setTitle(tr('Geração e envio') if wizard.is_upload_mode else tr('Geração'))
         self._running = False
         self._done = False
 
         layout = QVBoxLayout(self)
-        self.notice = QLabel(
+        self.notice = QLabel(tr(
             '⏳ Em áreas grandes a geração pode levar vários minutos. Mantenha o QGIS '
-            'aberto — a janela pode parecer congelada durante a finalização; é normal.')
+            'aberto — a janela pode parecer congelada durante a finalização; é normal.'))
         self.notice.setWordWrap(True)
         try:
             set_warning_banner(self.notice)
@@ -1736,8 +1741,8 @@ class RunPage(QWizardPage):
         file_name = dest.file_name()
         vector_layers = wizard.vector_page.selected_vector_layers()
         for nome in wizard.vector_page.dropped_hidden:
-            self._append(f'Camada "{nome}" foi desmarcada no painel de camadas '
-                         f'depois de escolhida — não será incluída.')
+            self._append(tr('Camada "{nome}" foi desmarcada no painel de camadas '
+                            'depois de escolhida — não será incluída.').format(nome=nome))
 
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
 
@@ -1759,12 +1764,12 @@ class RunPage(QWizardPage):
             name=os.path.splitext(file_name)[0],
         )
 
-        self._append(f'Gerando {file_name} '
-                     f'({len(spec.filtered_tiles)} tiles, zoom {spec.max_zoom})…')
+        self._append(tr('Gerando {arquivo} ({n} tiles, zoom {zoom})…').format(
+            arquivo=file_name, n=len(spec.filtered_tiles), zoom=spec.max_zoom))
         # Qual camada desenhou o mapa é a primeira pergunta quando o arquivo sai
         # branco ou sem o fundo esperado — e não estava em lugar nenhum do log.
-        self._append('Mapa desenhado com: ' + ', '.join(
-            f'{lyr.name()} ({_layer_origin(lyr)})' for lyr in spec.layers))
+        self._append(tr('Mapa desenhado com: {camadas}').format(camadas=', '.join(
+            f'{lyr.name()} ({_layer_origin(lyr)})' for lyr in spec.layers)))
 
         # Off-ramp for genuinely large jobs: they hold the GUI thread for minutes and
         # the window can look frozen, so let the user opt in knowingly.
@@ -1772,14 +1777,15 @@ class RunPage(QWizardPage):
         est_mb = getattr(getattr(wizard, 'estimate_result', None), 'avg_mb', 0) or 0
         if n_tiles > 10000 or est_mb > 300:
             proceed = QMessageBox.question(
-                self, 'Geração de arquivo grande',
-                f'Este arquivo é grande (~{est_mb:.0f} MB, {n_tiles} tiles). A geração pode '
-                'levar vários minutos e a janela do QGIS pode parecer travada durante o '
-                'processo — isso é normal. Não feche o QGIS.\n\nDeseja continuar?',
+                self, tr('Geração de arquivo grande'),
+                tr('Este arquivo é grande (~{mb:.0f} MB, {n} tiles). A geração pode '
+                   'levar vários minutos e a janela do QGIS pode parecer travada durante o '
+                   'processo — isso é normal. Não feche o QGIS.\n\nDeseja continuar?').format(
+                       mb=est_mb, n=n_tiles),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes)
             if proceed != QMessageBox.StandardButton.Yes:
-                self._append('Geração cancelada pelo usuário.')
+                self._append(tr('Geração cancelada pelo usuário.'))
                 self._running = False
                 self._set_back_enabled(True)
                 return
@@ -1789,13 +1795,13 @@ class RunPage(QWizardPage):
         # freeze the window with no feedback; pre-fetching makes the download a live,
         # cancellable step and leaves the render instant (cache hit). Best-effort no-op
         # for offline/local basemaps.
-        self._append('Preparando o mapa base…')
+        self._append(tr('Preparando o mapa base…'))
         prefetched = prefetch_basemap_tiles(
             spec.layers, spec.filtered_tiles, spec.max_zoom, wizard.feedback)
         if prefetched:
-            self._append(f'Mapa base pré-carregado ({prefetched} tiles).')
+            self._append(tr('Mapa base pré-carregado ({n} tiles).').format(n=prefetched))
         if wizard.feedback.canceled:
-            self._append('Geração cancelada.')
+            self._append(tr('Geração cancelada.'))
             self._running = False
             self._set_back_enabled(True)
             return
@@ -1804,29 +1810,29 @@ class RunPage(QWizardPage):
         ok = engine.run()
         if not ok:
             engine.cleanup_resources()
-            self._append('Geração cancelada.' if engine.canceled
-                         else f'Falha na geração: {engine.error_message}')
+            self._append(tr('Geração cancelada.') if engine.canceled
+                         else tr('Falha na geração: {erro}').format(erro=engine.error_message))
             self._running = False
             self._set_back_enabled(True)
             return
 
         if vector_layers:
-            self._append(f'Exportando {len(vector_layers)} camada(s) vetorial(is)…')
+            self._append(tr('Exportando {n} camada(s) vetorial(is)…').format(n=len(vector_layers)))
             export_vector_layers(
                 engine.writer, vector_layers,
                 QgsProject.instance().transformContext(), wizard.feedback)
             if wizard.feedback.canceled:
                 engine.cleanup_resources()
-                self._append('Geração cancelada.')
+                self._append(tr('Geração cancelada.'))
                 self._running = False
                 self._set_back_enabled(True)
                 return
 
         if wizard.contour_page.contour_enabled():
-            self._append('Gerando curvas de nível…')
+            self._append(tr('Gerando curvas de nível…'))
             # Update the bar off the stale "Renderizando…" text and repaint before the
             # (blocking) DEM download starts, so the user sees the stage change.
-            wizard.feedback.heartbeat('Gerando curvas de nível — baixando elevação…')
+            wizard.feedback.heartbeat(tr('Gerando curvas de nível — baixando elevação…'))
             QCoreApplication.processEvents()
             try:
                 contour_layer = generate_contours(
@@ -1840,38 +1846,38 @@ class RunPage(QWizardPage):
                 )
                 if wizard.feedback.canceled:
                     engine.cleanup_resources()
-                    self._append('Geração cancelada.')
+                    self._append(tr('Geração cancelada.'))
                     self._running = False
                     self._set_back_enabled(True)
                     return
-                self._append(f'{contour_layer.featureCount()} curvas de nível geradas.')
-                self._append('Exportando curvas de nível…')
+                self._append(tr('{n} curvas de nível geradas.').format(n=contour_layer.featureCount()))
+                self._append(tr('Exportando curvas de nível…'))
                 export_vector_layers(
                     engine.writer, [contour_layer],
                     QgsProject.instance().transformContext(), wizard.feedback,
                     progress_start=85, progress_span=5)
                 if wizard.feedback.canceled:
                     engine.cleanup_resources()
-                    self._append('Geração cancelada.')
+                    self._append(tr('Geração cancelada.'))
                     self._running = False
                     self._set_back_enabled(True)
                     return
             except ContourError as exc:
-                self._append(f'Aviso: curvas de nível não incluídas — {exc}')
+                self._append(tr('Aviso: curvas de nível não incluídas — {exc}').format(exc=exc))
             except Exception as exc:
-                self._append(f'Aviso: erro ao gerar curvas de nível — {exc}')
+                self._append(tr('Aviso: erro ao gerar curvas de nível — {exc}').format(exc=exc))
 
         if wizard.grg_page.grg_enabled():
             grid_type, grg_opts = wizard.grg_page.grg_options()
-            self._append(f'Gerando grade GRG ({_GRG_TYPE_LABELS.get(grid_type, grid_type)})…')
+            self._append(tr('Gerando grade GRG ({tipo})…').format(tipo=_GRG_TYPE_LABELS.get(grid_type, grid_type)))
             bounds = wizard.region_result.wgs84_extent
             ok = engine.writer.writeGrg(bounds, grid_type, grg_opts)
             if not ok:
-                self._append('Aviso: falha ao gerar grade GRG (grade não incluída).')
+                self._append(tr('Aviso: falha ao gerar grade GRG (grade não incluída).'))
 
         if wizard.params_page.elevation_enabled():
-            self._append('Baixando dados de altitude do terreno…')
-            wizard.feedback.heartbeat('Baixando dados de altitude…')
+            self._append(tr('Baixando dados de altitude do terreno…'))
+            wizard.feedback.heartbeat(tr('Baixando dados de altitude…'))
             QCoreApplication.processEvents()
             try:
                 stored = write_elevation_tiles(
@@ -1880,43 +1886,43 @@ class RunPage(QWizardPage):
                     wizard.feedback,
                 )
                 if stored:
-                    self._append(f'{stored} tile(s) de altitude incluídos.')
+                    self._append(tr('{n} tile(s) de altitude incluídos.').format(n=stored))
                 else:
                     # Never fatal: a map without terrain is still a map, and the
                     # app falls back to fetching altitude itself when online.
-                    self._append('Aviso: nenhum tile de altitude baixado — '
-                                 'o app buscará a altitude quando houver internet.')
+                    self._append(tr('Aviso: nenhum tile de altitude baixado — '
+                                    'o app buscará a altitude quando houver internet.'))
             except Exception as exc:
-                self._append(f'Aviso: altitude não incluída — {exc}')
+                self._append(tr('Aviso: altitude não incluída — {exc}').format(exc=exc))
 
         # Repaint before the (main-thread) commit so the window shows the stage and
         # doesn't read as frozen while the file is written out.
-        self._append('Finalizando o arquivo…')
-        wizard.feedback.heartbeat('Finalizando o arquivo…')
+        self._append(tr('Finalizando o arquivo…'))
+        wizard.feedback.heartbeat(tr('Finalizando o arquivo…'))
         QCoreApplication.processEvents()
         if not engine.finalize() or not os.path.exists(output_file):
-            self._append('ERRO: não foi possível finalizar/publicar o arquivo gerado.')
+            self._append(tr('ERRO: não foi possível finalizar/publicar o arquivo gerado.'))
             self._running = False
             self._set_back_enabled(True)
             return
 
         size_mb = os.path.getsize(output_file) / (1024 * 1024)
         if wizard.is_upload_mode:
-            self._append(f'Arquivo gerado: {size_mb:.1f} MB')
+            self._append(tr('Arquivo gerado: {mb:.1f} MB').format(mb=size_mb))
             if os.path.getsize(output_file) > _UPLOAD_HARD_LIMIT_BYTES:
-                self._append('ERRO: o arquivo excede o limite de 100 MB do servidor. '
-                             'Reduza a área, a resolução ou a qualidade.')
+                self._append(tr('ERRO: o arquivo excede o limite de 100 MB do servidor. '
+                                'Reduza a área, a resolução ou a qualidade.'))
                 self._running = False
                 self._set_back_enabled(True)
                 return
             self._upload(output_file, file_name)
         else:
             self.progress.setValue(100)
-            self._append(f'Concluído! Arquivo gerado: {size_mb:.1f} MB')
-            self.output_label.setText(f'Salvo em: {output_file}')
+            self._append(tr('Concluído! Arquivo gerado: {mb:.1f} MB').format(mb=size_mb))
+            self.output_label.setText(tr('Salvo em: {caminho}').format(caminho=output_file))
             if dest.open_after():
                 # Se ja estava aberto, o grupo antigo da lugar ao novo (open_tairudb).
-                self._append('Abrindo o arquivo no QGIS…')
+                self._append(tr('Abrindo o arquivo no QGIS…'))
                 open_tairudb(wizard.iface, output_file)
             self._done = True
             self._running = False
@@ -1940,7 +1946,7 @@ class RunPage(QWizardPage):
         storage, fs = dock.storage, dock.fs
         object_path = TAIRUDB_OBJECT_PATH.format(map_id=tmap.map_id, file_name=file_name)
 
-        self._append('Enviando para o Tairu Maps…')
+        self._append(tr('Enviando para o Tairu Maps…'))
 
         def send(task):
             # A new file uses the Storage 'create' rule; overwriting an existing
@@ -1949,14 +1955,15 @@ class RunPage(QWizardPage):
             if storage.exists(object_path):
                 raise FirebaseError(
                     'ALREADY_EXISTS',
-                    f'Já existe um arquivo chamado "{file_name}" nesta expedição. '
-                    'Escolha outro nome.',
+                    tr('Já existe um arquivo chamado "{arquivo}" nesta expedição. '
+                       'Escolha outro nome.').format(arquivo=file_name),
                     http_status=409)
 
             def up_progress(done, total):
                 if total:
                     task.report(done / total,
-                                f'Enviando… {done // (1024*1024)} de {total // (1024*1024)} MB')
+                                tr('Enviando… {feito} de {total} MB').format(
+                                    feito=done // (1024*1024), total=total // (1024*1024)))
 
             storage.upload_resumable(output_file, object_path,
                                      progress_cb=up_progress, cancel_cb=task.isCanceled)
@@ -1970,15 +1977,15 @@ class RunPage(QWizardPage):
             if file_name not in tmap.tairudb_remote_files:
                 tmap.tairudb_remote_files.append(file_name)
             dock.detail_page.update_files(tmap)
-            self._append('Concluído! O arquivo já aparece na expedição do Tairu Maps.')
-            self.output_label.setText(f'Enviado para: {tmap.nome}')
+            self._append(tr('Concluído! O arquivo já aparece na expedição do Tairu Maps.'))
+            self.output_label.setText(tr('Enviado para: {nome}').format(nome=tmap.nome))
             self._done = True
             self._running = False
             self.completeChanged.emit()
-            dock.notify(f'{file_name} enviado para {tmap.nome}.')
+            dock.notify(tr('{arquivo} enviado para {nome}.').format(arquivo=file_name, nome=tmap.nome))
 
         def on_error(message):
-            self._append(f'Falha no envio: {message}')
+            self._append(tr('Falha no envio: {erro}').format(erro=message))
             self._running = False
             self._set_back_enabled(True)
 
@@ -1988,5 +1995,5 @@ class RunPage(QWizardPage):
                 if message:
                     self._append(message)
 
-        run_task(f'Tairu Maps: upload {file_name}', send,
+        run_task(tr('Tairu Maps: upload {arquivo}').format(arquivo=file_name), send,
                  on_success=on_success, on_error=on_error, on_progress=on_progress)

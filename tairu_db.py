@@ -36,6 +36,7 @@ from qgis.gui import QgsCustomDropHandler
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 from .tairu_db_provider import TairuDBProvider
+from .tairu_core.i18n import tr
 
 cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
@@ -81,16 +82,16 @@ class TairuDBPlugin(object):
 
         self.action = QAction(
             QIcon(self.icon_path),
-            'TairuDB',
+            tr('TairuDB'),
             self.iface.mainWindow()
         )
-        self.action.setToolTip('Abrir painel do Tairu Maps')
+        self.action.setToolTip(tr('Abrir painel do Tairu Maps'))
         self.action.triggered.connect(self._show_dock)
 
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu('TairuDB', self.action)
 
-        self.open_action = QAction('Abrir arquivo .tairudb…', self.iface.mainWindow())
+        self.open_action = QAction(tr('Abrir arquivo .tairudb…'), self.iface.mainWindow())
         self.open_action.triggered.connect(self._open_dialog)
         self.iface.addPluginToMenu('TairuDB', self.open_action)
         self.drop_handler = _TairuDBDropHandler(self._open_file)

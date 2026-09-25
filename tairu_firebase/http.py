@@ -10,6 +10,11 @@ import json as jsonlib
 import urllib.error
 import urllib.request
 
+try:
+    from ..tairu_core.i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 USER_AGENT = 'TairuDB-QGIS-Plugin'
 
 
@@ -33,32 +38,32 @@ class FirebaseError(Exception):
     def user_message(self):
         """Readable Portuguese message for the most common failure modes."""
         if self.is_permission_denied:
-            return ("Permissão negada pelo servidor. Verifique se sua conta possui plano "
-                    "Online ou Tempo Real e se você tem o papel necessário nesta expedição.")
+            return tr("Permissão negada pelo servidor. Verifique se sua conta possui plano "
+                      "Online ou Tempo Real e se você tem o papel necessário nesta expedição.")
         if 'App Check' in (self.message or ''):
-            return ("Verificação de segurança (App Check) falhou. "
-                    "Tente entrar novamente pelo navegador.")
+            return tr("Verificação de segurança (App Check) falhou. "
+                      "Tente entrar novamente pelo navegador.")
         if self.is_auth_error:
-            return "Sessão expirada. Entre novamente."
+            return tr("Sessão expirada. Entre novamente.")
         if self.code == 'ALREADY_EXISTS' or self.http_status == 409:
-            return self.message or 'Já existe um arquivo com esse nome nesta expedição.'
+            return self.message or tr('Já existe um arquivo com esse nome nesta expedição.')
         # Sequência de pares, NÃO um dict literal: o Bandit B105 (regra
         # bloqueante no plugins.qgis.org) lê um par cuja chave contém
         # 'PASSWORD' como senha embutida no código. São códigos de erro da API
         # do Firebase e mensagens ao usuário — nenhuma credencial. A busca
         # abaixo é a mesma.
         translations = (
-            ('EMAIL_NOT_FOUND', 'E-mail não cadastrado.'),
-            ('INVALID_PASSWORD', 'Senha incorreta.'),
-            ('INVALID_LOGIN_CREDENTIALS', 'E-mail ou senha incorretos.'),
-            ('USER_DISABLED', 'Esta conta foi desativada.'),
-            ('TOO_MANY_ATTEMPTS_TRY_LATER', 'Muitas tentativas. Tente novamente mais tarde.'),
-            ('NETWORK', 'Falha de rede. Verifique sua conexão com a internet.'),
+            ('EMAIL_NOT_FOUND', tr('E-mail não cadastrado.')),
+            ('INVALID_PASSWORD', tr('Senha incorreta.')),
+            ('INVALID_LOGIN_CREDENTIALS', tr('E-mail ou senha incorretos.')),
+            ('USER_DISABLED', tr('Esta conta foi desativada.')),
+            ('TOO_MANY_ATTEMPTS_TRY_LATER', tr('Muitas tentativas. Tente novamente mais tarde.')),
+            ('NETWORK', tr('Falha de rede. Verifique sua conexão com a internet.')),
         )
         for key, msg in translations:
             if key in (self.code or ''):
                 return msg
-        return f"Erro do servidor: {self.message or self.code}"
+        return tr('Erro do servidor: {detalhe}').format(detalhe=self.message or self.code)
 
 
 def _parse_error(status, body_bytes):

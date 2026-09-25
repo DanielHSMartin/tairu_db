@@ -27,6 +27,7 @@ from qgis.core import (
 
 try:
     from ..tairu_core.firestore_cache import FirestoreCache
+    from ..tairu_core.i18n import tr
     from ..tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -41,6 +42,7 @@ try:
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.firestore_cache import FirestoreCache
+    from tairu_core.i18n import tr
     from tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -106,16 +108,17 @@ class PushPlan:
         return sum(1 for i in self.items if i.send and i.action == action)
 
     def summary(self):
-        parts = [f'{self.count("new")} novos', f'{self.count("update")} atualizados',
-                 f'{self.count("unchanged")} inalterados']
+        parts = [tr('{n} novos').format(n=self.count('new')),
+                 tr('{n} atualizados').format(n=self.count('update')),
+                 tr('{n} inalterados').format(n=self.count('unchanged'))]
         if self.count('delete'):
-            parts.append(f'{self.count("delete")} exclusões')
+            parts.append(tr('{n} exclusões').format(n=self.count('delete')))
         if self.count('remote_changed'):
-            parts.append(f'{self.count("remote_changed")} alterados no Tairu')
+            parts.append(tr('{n} alterados no Tairu').format(n=self.count('remote_changed')))
         if self.count('conflict'):
-            parts.append(f'{self.count("conflict")} conflitos')
+            parts.append(tr('{n} conflitos').format(n=self.count('conflict')))
         if self.count('forbidden'):
-            parts.append(f'{self.count("forbidden")} sem permissão')
+            parts.append(tr('{n} sem permissão').format(n=self.count('forbidden')))
         return ', '.join(parts)
 
     def writable_items(self):
@@ -803,7 +806,7 @@ def _geometry_points(feature, transform):
         if geom.isMultipart():
             pts = geom.asMultiPoint()
             if len(pts) > 1:
-                warning = 'multiponto: usada apenas a primeira parte'
+                warning = tr('multiponto: usada apenas a primeira parte')
             pt = pts[0]
         else:
             pt = geom.asPoint()
@@ -814,7 +817,7 @@ def _geometry_points(feature, transform):
             lines = geom.asMultiPolyline()
             line = max(lines, key=len) if lines else []
             if len(lines) > 1:
-                warning = 'multilinha: usada a maior parte'
+                warning = tr('multilinha: usada a maior parte')
         else:
             line = geom.asPolyline()
         return [(p.y(), p.x()) for p in line], 'line', warning
@@ -825,7 +828,7 @@ def _geometry_points(feature, transform):
             rings = [p[0] for p in polys if p]
             ring = max(rings, key=len) if rings else []
             if len(polys) > 1:
-                warning = 'multipolígono: usada a maior parte'
+                warning = tr('multipolígono: usada a maior parte')
         else:
             poly = geom.asPolygon()
             ring = poly[0] if poly else []
@@ -837,7 +840,7 @@ def _geometry_points(feature, transform):
             ring = ring[:-1]
         return [(p.y(), p.x()) for p in ring], 'polygon', warning
 
-    return [], 'none', 'tipo de geometria não suportado'
+    return [], 'none', tr('tipo de geometria não suportado')
 
 
 def _geometry_is_lossy(geom):
@@ -1544,7 +1547,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
                 candidate.geometry_size = _default_geometry_size(candidate.geometry_type)
             warning = _append_warning(
                 warning,
-                f'cópia local de {duplicate_source_id}: enviada como novo registro')
+                tr('cópia local de {origem}: enviada como novo registro').format(origem=duplicate_source_id))
             plan.items.append(PushItem('new', candidate, feature.id(), [], warning))
             continue
 
@@ -1558,7 +1561,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             seen_ids.add(candidate.record_id)
             plan.items.append(PushItem(
                 'new', candidate, feature.id(), [],
-                _append_warning(warning, _COPY_FROM_OTHER_MAP)))
+                _append_warning(warning, tr(_COPY_FROM_OTHER_MAP))))
             continue
 
         if candidate.record_id:
@@ -1569,7 +1572,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             created_by = str(_attr(feature, 'createdBy') or '')
             if not is_admin and created_by and created_by != uid:
                 plan.items.append(PushItem('forbidden', candidate, feature.id(),
-                                           warning='criado por outro usuário'))
+                                           warning=tr('criado por outro usuário')))
                 continue
             # Restore pull-time creation metadata so push never overwrites it.
             candidate.created_by = created_by or candidate.created_by
@@ -1822,7 +1825,7 @@ def execute_push(dock, tmap, entries, group=None):
     for plan in plans:
         record_writes.extend(build_writes(fs, plan, uid))
     if not record_writes:
-        dock.notify('Nada para enviar — tudo já está sincronizado.')
+        dock.notify(tr('Nada para enviar — tudo já está sincronizado.'))
         return
 
     # O grupo vai na frente: os lotes sao comitados em ordem, entao nenhum registro
@@ -1831,7 +1834,7 @@ def execute_push(dock, tmap, entries, group=None):
     if group is not None:
         writes = [build_group_write(fs, tmap.map_id, group[0], group[1], uid)] + record_writes
 
-    page.set_busy(True, f'Enviando {len(writes)} alterações…')
+    page.set_busy(True, tr('Enviando {n} alterações…').format(n=len(writes)))
 
     def send(task):
         batch = 100
@@ -1840,7 +1843,8 @@ def execute_push(dock, tmap, entries, group=None):
                 break
             fs.commit(writes[start:start + batch])
             task.report(min(1.0, (start + batch) / len(writes)),
-                        f'{min(start + batch, len(writes))} de {len(writes)} enviados')
+                        tr('{feitos} de {total} enviados').format(
+                            feitos=min(start + batch, len(writes)), total=len(writes)))
         return len(writes)
 
     def on_success(total):
@@ -1862,8 +1866,8 @@ def execute_push(dock, tmap, entries, group=None):
                 now_millis(),
             )
         page.set_busy(False)
-        page.set_status(f'{total} alterações enviadas com sucesso. Atualizando registros…')
-        dock.notify(f'{tmap.nome}: {batch_summary(plans)} — enviado.')
+        page.set_status(tr('{n} alterações enviadas com sucesso. Atualizando registros…').format(n=total))
+        dock.notify(tr('{expedicao}: {resumo} — enviado.').format(expedicao=tmap.nome, resumo=batch_summary(plans)))
         if project_only:
             dock.notify(_aviso_identidade_no_projeto(project_only), error=True)
         try:
@@ -1874,8 +1878,8 @@ def execute_push(dock, tmap, entries, group=None):
             start_pull(dock, tmap)
         except Exception as e:
             page.set_status(
-                f'{total} alterações enviadas com sucesso, mas não foi possível '
-                f'atualizar os registros automaticamente: {e}',
+                tr('{n} alterações enviadas com sucesso, mas não foi possível '
+                   'atualizar os registros automaticamente: {erro}').format(n=total, erro=e),
                 error=True,
             )
 
@@ -1884,7 +1888,7 @@ def execute_push(dock, tmap, entries, group=None):
         page.set_status(message, error=True)
         dock.notify(message, error=True)
 
-    run_task(f'Tairu Maps: enviando registros para {tmap.nome}', send,
+    run_task(tr('Tairu Maps: enviando registros para {expedicao}').format(expedicao=tmap.nome), send,
              on_success=on_success, on_error=on_error,
              on_progress=lambda f, m: page.set_progress(f, m))
 
@@ -1915,20 +1919,21 @@ def _aviso_identidade_no_projeto(camadas):
     nomes = ', '.join(compactadas or [nome for nome, _l in camadas])
     plural = len(compactadas or camadas) > 1
     if compactadas:
-        causa = ('{} {} {} de DENTRO DE UM ARQUIVO ZIP, que é somente leitura, então '
-                 'não {} onde guardar os identificadores dos registros.').format(
-                     'As camadas' if plural else 'A camada', nomes,
-                     'estão sendo lidas' if plural else 'está sendo lida',
-                     'têm' if plural else 'tem')
-        conselho = (' Melhor ainda: extraia o .zip e abra o arquivo extraído, para o '
-                    'identificador passar a morar na própria camada.')
+        causa = (tr('As camadas {nomes} estão sendo lidas de DENTRO DE UM ARQUIVO ZIP, que é somente '
+                    'leitura, então não têm onde guardar os identificadores dos registros.') if plural
+                 else tr('A camada {nomes} está sendo lida de DENTRO DE UM ARQUIVO ZIP, que é somente '
+                         'leitura, então não tem onde guardar os identificadores dos registros.')
+                 ).format(nomes=nomes)
+        conselho = ' ' + tr('Melhor ainda: extraia o .zip e abra o arquivo extraído, para o '
+                            'identificador passar a morar na própria camada.')
     else:
-        causa = ('{} {} não {} os identificadores dos registros: o formato é somente '
-                 'leitura.').format('As camadas' if plural else 'A camada', nomes,
-                                    'guardam' if plural else 'guarda')
+        causa = (tr('As camadas {nomes} não guardam os identificadores dos registros: o formato é '
+                    'somente leitura.') if plural
+                 else tr('A camada {nomes} não guarda os identificadores dos registros: o formato é '
+                         'somente leitura.')).format(nomes=nomes)
         conselho = ''
-    return (causa + ' Eles ficaram no projeto, então SALVE o projeto antes do próximo '
-            'envio, senão os mesmos registros serão enviados de novo como duplicatas.'
+    return (causa + ' ' + tr('Eles ficaram no projeto, então SALVE o projeto antes do próximo '
+                             'envio, senão os mesmos registros serão enviados de novo como duplicatas.')
             + conselho)
 
 

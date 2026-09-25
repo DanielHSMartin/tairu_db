@@ -15,9 +15,11 @@ from qgis.PyQt.QtCore import QObject, pyqtSignal
 from qgis.core import QgsApplication, QgsTask, QgsMessageLog, Qgis
 
 try:
+    from ..tairu_core.i18n import tr
     from ..tairu_firebase.http import FirebaseError
     from ..tairu_firebase.storage import CanceledError
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
     from tairu_firebase.http import FirebaseError
     from tairu_firebase.storage import CanceledError
 
@@ -63,7 +65,7 @@ class FirebaseTask(QgsTask):
             QgsMessageLog.logMessage(
                 f'[{self.description()}] Unexpected error: {e}',
                 'Tairu Maps', Qgis.MessageLevel.Critical)
-            self._error = f'Erro inesperado: {e}'
+            self._error = tr('Erro inesperado: {erro}').format(erro=e)
             return False
 
     def finished(self, ok):
@@ -71,7 +73,7 @@ class FirebaseTask(QgsTask):
         if ok:
             self.reporter.finishedOk.emit(self._result)
         else:
-            self.reporter.failed.emit(self._error or 'Operação cancelada')
+            self.reporter.failed.emit(self._error or tr('Operação cancelada'))
 
 
 def run_task(description, fn, on_success=None, on_error=None, on_progress=None):

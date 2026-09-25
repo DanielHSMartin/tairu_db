@@ -37,11 +37,13 @@ try:
     from .tairudb_writer import TairuDBWriter, MetaTile
     from .map_identity import map_uuid_for_output
     from .elevation_tiles import ELEVATION_ZOOM
+    from .i18n import decimal, thousands, tr
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile
     from tairu_core.map_identity import map_uuid_for_output
     from tairu_core.elevation_tiles import ELEVATION_ZOOM
+    from tairu_core.i18n import decimal, thousands, tr
 
 # Debug mode - set to True for detailed logging, False for production
 DEBUG_MODE = False
@@ -227,14 +229,14 @@ class EstimateResult:
 
 
 _ZOOM_TO_LABEL = {
-    19: "Máxima (0,25 m/px) — zoom 19",
-    18: "Altíssima (0,5 m/px) — zoom 18",
-    17: "Alta (1 m/px) — zoom 17",
-    16: "Médio Alta (2 m/px) — zoom 16",
-    15: "Média (4 m/px) — zoom 15",
-    14: "Médio Baixa (8 m/px) — zoom 14",
-    13: "Baixa (16 m/px) — zoom 13",
-    12: "Muito Baixa (32 m/px) — zoom 12",
+    19: tr("Máxima (0,25 m/px) — zoom 19"),
+    18: tr("Altíssima (0,5 m/px) — zoom 18"),
+    17: tr("Alta (1 m/px) — zoom 17"),
+    16: tr("Médio Alta (2 m/px) — zoom 16"),
+    15: tr("Média (4 m/px) — zoom 15"),
+    14: tr("Médio Baixa (8 m/px) — zoom 14"),
+    13: tr("Baixa (16 m/px) — zoom 13"),
+    12: tr("Muito Baixa (32 m/px) — zoom 12"),
 }
 
 
@@ -359,9 +361,9 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
 
     est.blank_samples = sample.blank if sample is not None else 0
     if est.blank_samples and (sample is None or sample.count == 0):
-        est.warnings.append(
+        est.warnings.append(tr(
             'Os tiles de amostra saíram sem imagem nenhuma: a camada escolhida não '
-            'cobre a área (ou não chegou a baixar). O arquivo sairia sem mapa.')
+            'cobre a área (ou não chegou a baixar). O arquivo sairia sem mapa.'))
 
     if sample is not None and sample.count > 0:
         est.measured_from = sample.count
@@ -401,7 +403,7 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
     # desenha uma vez.
     est.secs = est.total_tiles * secs_per_tile / max(1, threads_number)
     if est.secs < 60:
-        est.time_str = f"~{est.secs:.0f} seg"
+        est.time_str = tr("~{secs:.0f} seg").format(secs=est.secs)
     elif est.secs < 3600:
         est.time_str = f"~{est.secs/60:.0f} min"
     else:
@@ -417,13 +419,13 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
     est.res_label = _ZOOM_TO_LABEL.get(max_zoom, f"zoom {max_zoom}")
 
     if est.total_tiles > 10000:
-        est.warnings.append("Mais de 10.000 tiles. Reduza a área ou use resolução menor.")
+        est.warnings.append(tr("Mais de 10.000 tiles. Reduza a área ou use resolução menor."))
     elif est.total_tiles > 5000:
-        est.warnings.append("Mais de 5.000 tiles. Verifique se área/resolução são adequadas.")
+        est.warnings.append(tr("Mais de 5.000 tiles. Verifique se área/resolução são adequadas."))
     if est.avg_mb > 1024:
-        est.warnings.append("Estimativa acima de 1 GB. Pode impactar desempenho no dispositivo.")
+        est.warnings.append(tr("Estimativa acima de 1 GB. Pode impactar desempenho no dispositivo."))
     elif est.avg_mb > 500:
-        est.warnings.append("Estimativa acima de 500 MB. Verifique o espaço no dispositivo.")
+        est.warnings.append(tr("Estimativa acima de 500 MB. Verifique o espaço no dispositivo."))
 
     return est
 
@@ -463,112 +465,118 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
                            elevation_mb=0.0):
     """Push the dry-run report through a feedback adapter."""
     num_regions = len(est.region_tile_counts)
-    quality_str = f" (qualidade {est.quality})" if est.fmt in ('JPG', 'WEBP') else ""
+    quality_str = tr(" (qualidade {q})").format(q=est.quality) if est.fmt in ('JPG', 'WEBP') else ""
     sep = "─" * 34
 
     def line(text=""):
         feedback.push_info(text)
 
     line()
-    line("[ SIMULAÇÃO] Nenhum arquivo foi gerado")
+    line(tr("[ SIMULAÇÃO] Nenhum arquivo foi gerado"))
     line("=" * 34)
     line()
-    line("O ARQUIVO CONTERÁ")
+    line(tr("O ARQUIVO CONTERÁ"))
     line(sep)
-    line((f"  Tiles raster    : {est.total_tiles:,} tiles · zoom {est.max_zoom} · "
-          f"{est.fmt}{quality_str} · ~{_fmt_size(est.avg_mb)}").replace(',', '.'))
+    line(thousands(tr("  Tiles raster    : {n:,} tiles · zoom {z} · {fmt}{q} · ~{size}").format(
+        n=est.total_tiles, z=est.max_zoom, fmt=est.fmt, q=quality_str,
+        size=_fmt_size(est.avg_mb))))
     if num_vector_layers > 0:
-        feat_s = 'ões' if vector_feature_count != 1 else 'ão'
-        line((f"  Vetoriais       : {num_vector_layers} camada{'s' if num_vector_layers != 1 else ''} "
-              f"· {vector_feature_count:,} feição{feat_s}").replace(',', '.'))
+        layers_txt = (tr("{n} camada") if num_vector_layers == 1
+                      else tr("{n} camadas")).format(n=num_vector_layers)
+        feats_txt = (tr("{n:,} feição") if vector_feature_count == 1
+                     else tr("{n:,} feições")).format(n=vector_feature_count)
+        line(thousands(tr("  Vetoriais       : {layers} · {features}").format(
+            layers=layers_txt, features=feats_txt)))
     if contour_enabled:
-        line(f"  Curvas de nível : {contour_source_label} · {contour_interval} m · {contour_smoothing}")
+        line(tr("  Curvas de nível : {source} · {interval} m · {smoothing}").format(
+            source=contour_source_label, interval=contour_interval, smoothing=tr(contour_smoothing)))
     if elevation_enabled:
-        line((f"  Altitude        : {elevation_tiles:,} tile(s) · zoom "
-              f"{ELEVATION_ZOOM} · ~{_fmt_size(elevation_mb)}").replace(',', '.'))
+        line(thousands(tr("  Altitude        : {n:,} tile(s) · zoom {z} · ~{size}").format(
+            n=elevation_tiles, z=ELEVATION_ZOOM, size=_fmt_size(elevation_mb))))
     if grg_enabled:
-        line(f"  Grade GRG       : {grg_type_label}")
+        line(tr("  Grade GRG       : {grid}").format(grid=grg_type_label))
     line()
-    line("CONFIGURAÇÃO")
+    line(tr("CONFIGURAÇÃO"))
     line(sep)
-    line(f"  Resolução  : {est.res_label}")
-    line(f"  Formato    : {est.fmt}{quality_str}")
-    line(f"  Regiões    : {num_regions} polígono{'s' if num_regions != 1 else ''}")
-    line(f"  Área (bbox): {est.area_km2:.1f} km²")
+    line(tr("  Resolução  : {res}").format(res=est.res_label))
+    line(tr("  Formato    : {fmt}{q}").format(fmt=est.fmt, q=quality_str))
+    line((tr("  Regiões    : {n} polígono") if num_regions == 1
+          else tr("  Regiões    : {n} polígonos")).format(n=num_regions))
+    line(tr("  Área (bbox): {km2:.1f} km²").format(km2=est.area_km2))
     line()
-    line("TILES RASTER")
+    line(tr("TILES RASTER"))
     line(sep)
-    line(f"  Total de tiles : {est.total_tiles:,}".replace(',', '.'))
+    line(thousands(tr("  Total de tiles : {n:,}").format(n=est.total_tiles)))
     for rid, count in sorted(est.region_tile_counts.items()):
-        line(f"    Região {rid + 1}: {count:,} tiles".replace(',', '.'))
+        line(thousands(tr("    Região {region}: {n:,} tiles").format(region=rid + 1, n=count)))
     if est.stored_tiles > est.total_tiles:
         # Regiões que se sobrepõem gravam o mesmo tile em cada uma delas.
-        line(f"  Gravados       : {est.stored_tiles:,} "
-             "(tile em mais de uma região entra em cada)".replace(',', '.'))
+        line(thousands(tr("  Gravados       : {n:,} "
+                          "(tile em mais de uma região entra em cada)").format(n=est.stored_tiles)))
     if est.edge_tiles:
-        line(f"  Em PNG (borda) : {est.edge_tiles:,}".replace(',', '.'))
+        line(thousands(tr("  Em PNG (borda) : {n:,}").format(n=est.edge_tiles)))
     line()
     total_mb = est.avg_mb + (elevation_mb if elevation_enabled else 0.0)
-    line("TAMANHO ESTIMADO")
+    line(tr("TAMANHO ESTIMADO"))
     line(sep)
-    line(f"  Estimativa : {_fmt_size(total_mb)}  (~{est.avg_kb:.0f} KB/tile)")
-    line(f"  Intervalo  : {_fmt_size(est.lo_mb)} – {_fmt_size(est.hi_mb)}")
+    line(tr("  Estimativa : {size}  (~{kb:.0f} KB/tile)").format(size=_fmt_size(total_mb), kb=est.avg_kb))
+    line(tr("  Intervalo  : {lo} – {hi}").format(lo=_fmt_size(est.lo_mb), hi=_fmt_size(est.hi_mb)))
     if est.measured_from:
-        line(f"  Medido em {est.measured_from} tile(s) renderizados de verdade.")
+        line(tr("  Medido em {n} tile(s) renderizados de verdade.").format(n=est.measured_from))
     else:
-        line("  Sem medição: tabela por formato, apenas ordem de grandeza.")
+        line(tr("  Sem medição: tabela por formato, apenas ordem de grandeza."))
     line()
-    line("TEMPO ESTIMADO")
+    line(tr("TEMPO ESTIMADO"))
     line(sep)
-    line(f"  {est.threads_number} "
-         f"thread{'s' if est.threads_number != 1 else ''} "
-         f"paralela{'s' if est.threads_number != 1 else ''} : {est.time_str}")
+    line((tr("  {n} thread paralela : {time}") if est.threads_number == 1
+          else tr("  {n} threads paralelas : {time}")).format(n=est.threads_number, time=est.time_str))
     if est.measured_from:
-        por_tile = f"{est.secs * est.threads_number / max(1, est.total_tiles):.2f}".replace('.', ',')
-        line(f"  ({por_tile} s/tile medidos nesta máquina)")
+        por_tile = decimal(f"{est.secs * est.threads_number / max(1, est.total_tiles):.2f}")
+        line(tr("  ({per_tile} s/tile medidos nesta máquina)").format(per_tile=por_tile))
     else:
-        line("  (~0,15 s/tile em hardware típico)")
+        line(tr("  (~0,15 s/tile em hardware típico)"))
     if num_vector_layers > 0:
         line()
-        line("CAMADAS VETORIAIS")
+        line(tr("CAMADAS VETORIAIS"))
         line(sep)
-        line(f"  Camadas  : {num_vector_layers}")
-        line(f"  Feições  : {vector_feature_count:,}".replace(',', '.'))
+        line(tr("  Camadas  : {n}").format(n=num_vector_layers))
+        line(thousands(tr("  Feições  : {n:,}").format(n=vector_feature_count)))
     if contour_enabled:
         master_interval = contour_interval * 5
         line()
-        line("CURVAS DE NÍVEL")
+        line(tr("CURVAS DE NÍVEL"))
         line(sep)
-        line(f"  Fonte       : {contour_source_label}")
+        line(tr("  Fonte       : {source}").format(source=contour_source_label))
         if 'INPE' in contour_source_label:
-            line("  Cobertura   : Brasil (6°N–34°S, 75°W–34.5°W)")
+            line(tr("  Cobertura   : Brasil (6°N–34°S, 75°W–34.5°W)"))
         else:
-            line("  Cobertura   : Global")
-        line(f"  Intervalo   : {contour_interval} m  ·  Curvas mestras: {master_interval} m")
-        line(f"  Suavização  : {contour_smoothing}")
-        line("  Requer internet. Tiles DEM são salvos em cache localmente.")
-        line("  Tempo de download não incluído nesta estimativa.")
+            line(tr("  Cobertura   : Global"))
+        line(tr("  Intervalo   : {interval} m  ·  Curvas mestras: {master} m").format(
+            interval=contour_interval, master=master_interval))
+        line(tr("  Suavização  : {smoothing}").format(smoothing=tr(contour_smoothing)))
+        line(tr("  Requer internet. Tiles DEM são salvos em cache localmente."))
+        line(tr("  Tempo de download não incluído nesta estimativa."))
     if elevation_enabled:
         line()
-        line("ALTITUDE DO TERRENO")
+        line(tr("ALTITUDE DO TERRENO"))
         line(sep)
-        line(f"  Tiles       : {elevation_tiles:,}".replace(',', '.'))
-        line(f"  Tamanho     : ~{_fmt_size(elevation_mb)}  (~36 KB/tile)")
-        line("  Resolução   : ~30 m  ·  1 tile cobre ~82 km²")
-        line("  Fonte       : USGS (SRTM, GMTED2010, 3DEP) · domínio público")
-        line("  Permite altitude e perfil de elevação no app sem internet.")
-        line("  Requer internet AGORA, para baixar. Tempo não incluído acima.")
+        line(thousands(tr("  Tiles       : {n:,}").format(n=elevation_tiles)))
+        line(tr("  Tamanho     : ~{size}  (~36 KB/tile)").format(size=_fmt_size(elevation_mb)))
+        line(tr("  Resolução   : ~30 m  ·  1 tile cobre ~82 km²"))
+        line(tr("  Fonte       : USGS (SRTM, GMTED2010, 3DEP) · domínio público"))
+        line(tr("  Permite altitude e perfil de elevação no app sem internet."))
+        line(tr("  Requer internet AGORA, para baixar. Tempo não incluído acima."))
     line()
 
     if est.warnings:
-        line("AVISOS")
+        line(tr("AVISOS"))
         line(sep)
         for w in est.warnings:
             feedback.report_error(f"  ⚠  {w}", False)
         line()
 
     if dry_run_footer:
-        line("Desmarque 'Dry Run' e execute novamente para gerar o arquivo.")
+        line(tr("Desmarque 'Dry Run' e execute novamente para gerar o arquivo."))
         line()
 
 
@@ -609,7 +617,7 @@ class TileRenderEngine:
     def debug_log(self, message):
         """Log debug messages only if DEBUG_MODE is enabled"""
         if DEBUG_MODE:
-            self.feedback.push_info(f"[DEBUG] {message}")
+            self.feedback.push_info(tr("[DEBUG] {msg}").format(msg=message))
 
     # ------------------------------------------------------------------ run
 
@@ -625,7 +633,7 @@ class TileRenderEngine:
 
         self.writer = TairuDBWriter(spec.output_file)
         if not self.writer.create():
-            self.error_message = f"Falha ao criar o arquivo GeoDB {spec.output_file}"
+            self.error_message = tr("Falha ao criar o arquivo GeoDB {path}").format(path=spec.output_file)
             return False
 
         if self.feedback.is_canceled():
@@ -636,7 +644,7 @@ class TileRenderEngine:
         self._write_metadata_and_regions()
 
         self.feedback.set_progress_text(
-            f"Preparando para renderizar {len(spec.filtered_tiles)} tiles..."
+            tr("Preparando para renderizar {n} tiles...").format(n=len(spec.filtered_tiles))
         )
 
         self.meta_tiles = []
@@ -661,7 +669,7 @@ class TileRenderEngine:
 
         self.debug_log(
             f"{len(self.meta_tiles)} metatiles preparados em {time.time() - prep_t0:.1f}s")
-        self.feedback.set_progress_text(f"Renderizando {len(self.meta_tiles)} tiles...")
+        self.feedback.set_progress_text(tr("Renderizando {n} tiles...").format(n=len(self.meta_tiles)))
         self.feedback.reset_progress()  # new phase: the render bar grows from 0
         self._render_t0 = time.time()
 
@@ -688,7 +696,7 @@ class TileRenderEngine:
         if self.feedback.is_canceled():
             self.cleanup_resources()
             self.canceled = True
-            self.feedback.push_info("Operação cancelada pelo usuário")
+            self.feedback.push_info(tr("Operação cancelada pelo usuário"))
             return False
 
         self._report_summary()
@@ -710,8 +718,9 @@ class TileRenderEngine:
             return
         elapsed = time.time() - (self._render_t0 or time.time())
         self.feedback.heartbeat(
-            f"Renderizando… {self.processed_tiles}/{self.total_tiles} tiles  ·  {elapsed:.0f}s "
-            "(aguardando o mapa base; na 1ª vez baixa os tiles da internet)")
+            tr("Renderizando… {done}/{total} tiles  ·  {secs:.0f}s "
+               "(aguardando o mapa base; na 1ª vez baixa os tiles da internet)").format(
+                done=self.processed_tiles, total=self.total_tiles, secs=elapsed))
         if not self.renderer_jobs:
             if self.meta_tiles or self.retry_queue:
                 self.start_jobs()
@@ -755,7 +764,7 @@ class TileRenderEngine:
                 bound_str       # bounds
             )
 
-        self.feedback.push_info(f"Regiões criadas na tabela de regiões: {len(spec.bounds_list)}")
+        self.feedback.push_info(tr("Regiões criadas na tabela de regiões: {n}").format(n=len(spec.bounds_list)))
 
         center_x = (spec.wgs84_extent.xMinimum() + spec.wgs84_extent.xMaximum()) / 2
         center_y = (spec.wgs84_extent.yMinimum() + spec.wgs84_extent.yMaximum()) / 2
@@ -779,36 +788,37 @@ class TileRenderEngine:
         # oco terminava anunciando sucesso completo.
         vazios = self.skipped_blank_tiles
         if vazios >= total_expected > 0:
-            self.feedback.report_error(
-                f'Nenhum dos {total_expected} tiles recebeu imagem: o arquivo saiu sem '
-                f'mapa. Verifique se a camada escolhida cobre a área e, se ela vem da '
-                f'internet, se o download funcionou.')
+            self.feedback.report_error(tr(
+                'Nenhum dos {total} tiles recebeu imagem: o arquivo saiu sem '
+                'mapa. Verifique se a camada escolhida cobre a área e, se ela vem da '
+                'internet, se o download funcionou.').format(total=total_expected))
         elif vazios:
-            self.feedback.push_info(
-                f'{vazios} de {total_expected} tiles ficaram sem imagem nenhuma e não '
-                f'foram gravados; nessas partes o app mostra o próprio mapa de fundo.')
+            self.feedback.push_info(tr(
+                '{blank} de {total} tiles ficaram sem imagem nenhuma e não '
+                'foram gravados; nessas partes o app mostra o próprio mapa de fundo.').format(
+                    blank=vazios, total=total_expected))
 
         # Clean, one-line summary on success; detail only when tiles actually failed.
         if self.failed_tiles == 0:
-            self.feedback.push_info(f"{self.processed_tiles} tiles renderizados.")
+            self.feedback.push_info(tr("{n} tiles renderizados.").format(n=self.processed_tiles))
             return
 
         success_rate = ((total_expected - self.failed_tiles) / total_expected * 100) if total_expected > 0 else 0
         self.feedback.push_info(
-            f"{self.processed_tiles} tiles renderizados, {self.failed_tiles} falharam "
-            f"({success_rate:.0f}% sucesso).")
+            tr("{n} tiles renderizados, {failed} falharam ({rate:.0f}% sucesso).").format(
+                n=self.processed_tiles, failed=self.failed_tiles, rate=success_rate))
         for fail_info in self.failed_tiles_info[:10]:
-            self.feedback.push_info(
-                f"  - Tile {fail_info['x']},{fail_info['y']}: {fail_info['reason']}")
+            self.feedback.push_info(tr("  - Tile {x},{y}: {reason}").format(
+                x=fail_info['x'], y=fail_info['y'], reason=fail_info['reason']))
         if len(self.failed_tiles_info) > 10:
             self.feedback.push_info(
-                f"  … e mais {len(self.failed_tiles_info) - 10} tiles falhados.")
+                tr("  … e mais {n} tiles falhados.").format(n=len(self.failed_tiles_info) - 10))
 
     def cleanup_resources(self):
         """Enhanced cleanup with better error handling"""
         try:
             self.debug_log("cleanup_resources: Iniciando limpeza")
-            self.feedback.push_info("Limpando recursos...")
+            self.feedback.push_info(tr("Limpando recursos..."))
 
             # Cancel and cleanup renderer jobs AGGRESSIVELY
             jobs_count = len(self.renderer_jobs)
@@ -843,7 +853,7 @@ class TileRenderEngine:
                         self.writer.conn.close()
                     self.writer.conn = None
                 except Exception as e:
-                    self.feedback.push_info(f"Aviso ao fechar banco de dados: {str(e)}")
+                    self.feedback.push_info(tr("Aviso ao fechar banco de dados: {err}").format(err=e))
 
             # Delete the partial work file so a canceled/failed run never leaves a
             # corrupt .part behind for the next attempt to merge into.
@@ -859,7 +869,7 @@ class TileRenderEngine:
             self.debug_log("cleanup_resources: Limpeza concluída")
 
         except Exception as e:
-            self.feedback.push_info(f"Aviso durante a limpeza: {str(e)}")
+            self.feedback.push_info(tr("Aviso durante a limpeza: {err}").format(err=e))
 
     def create_individual_metatile(self, z, tx, ty, n):
         try:
@@ -892,11 +902,11 @@ class TileRenderEngine:
 
             # Validate the created meta tile
             if not meta_tile.is_valid():
-                self.feedback.push_info(f"Aviso: Metatile inválido criado para {tx},{ty}")
+                self.feedback.push_info(tr("Aviso: Metatile inválido criado para {x},{y}").format(x=tx, y=ty))
 
             return meta_tile
         except Exception as e:
-            self.feedback.push_info(f"Erro ao criar metatile {tx},{ty}: {str(e)}")
+            self.feedback.push_info(tr("Erro ao criar metatile {x},{y}: {err}").format(x=tx, y=ty, err=e))
             # Return a basic metatile to avoid complete failure
             meta_tile = MetaTile()
             meta_tile.zoom = z
@@ -928,7 +938,8 @@ class TileRenderEngine:
 
             # Validate meta tile before processing
             if hasattr(meta_tile, 'is_valid') and not meta_tile.is_valid():
-                self.feedback.push_info(f"Pulando metatile inválido {meta_tile.tx},{meta_tile.ty}")
+                self.feedback.push_info(
+                    tr("Pulando metatile inválido {x},{y}").format(x=meta_tile.tx, y=meta_tile.ty))
                 continue
 
             try:
@@ -938,19 +949,21 @@ class TileRenderEngine:
                 actual_tile_height = spec.tile_height * size_y
 
                 if actual_tile_width <= 0 or actual_tile_height <= 0:
-                    self.feedback.push_info(f"Tamanho de tile inválido para tile {meta_tile.tx},{meta_tile.ty}")
+                    self.feedback.push_info(
+                        tr("Tamanho de tile inválido para tile {x},{y}").format(x=meta_tile.tx, y=meta_tile.ty))
                     continue
 
                 # Validate extent
                 if meta_tile.extent.isEmpty() or not meta_tile.extent.isFinite():
-                    self.feedback.push_info(f"Extensão inválida para tile {meta_tile.tx},{meta_tile.ty}")
+                    self.feedback.push_info(
+                        tr("Extensão inválida para tile {x},{y}").format(x=meta_tile.tx, y=meta_tile.ty))
                     continue
 
                 # Create map settings with error checking
                 map_settings = QgsMapSettings()
 
                 if not spec.layers:
-                    self.feedback.push_info("Nenhuma camada disponível para renderização")
+                    self.feedback.push_info(tr("Nenhuma camada disponível para renderização"))
                     continue
 
                 map_settings.setLayers(spec.layers)
@@ -982,7 +995,8 @@ class TileRenderEngine:
                 self._job_started[job] = time.time()
 
             except Exception as e:
-                self.feedback.push_info(f"Erro ao iniciar trabalho para tile {meta_tile.tx},{meta_tile.ty}: {str(e)}")
+                self.feedback.push_info(tr("Erro ao iniciar trabalho para tile {x},{y}: {err}").format(
+                    x=meta_tile.tx, y=meta_tile.ty, err=e))
 
                 # Add to failed tiles if not already retrying
                 if meta_tile.retry_count < self.max_retries:
@@ -993,7 +1007,7 @@ class TileRenderEngine:
                         'x': meta_tile.tx,
                         'y': meta_tile.ty,
                         'zoom': meta_tile.zoom,
-                        'reason': f'Erro ao iniciar trabalho: {str(e)}'
+                        'reason': tr('Erro ao iniciar trabalho: {err}').format(err=e)
                     })
                     self.failed_tiles += 1
 
@@ -1026,9 +1040,8 @@ class TileRenderEngine:
                     self.retry_queue.append(meta_tile)
                     self.retried_tiles += 1
                     self.feedback.push_info(
-                        f"Tentando tile novamente {meta_tile.tx},{meta_tile.ty} "
-                        f"(tentativa {meta_tile.retry_count}/"
-                        f"{self.max_retries})")
+                        tr("Tentando tile novamente {x},{y} (tentativa {n}/{max})").format(
+                            x=meta_tile.tx, y=meta_tile.ty, n=meta_tile.retry_count, max=self.max_retries))
                 else:
                     # Max retries reached — count as failed exactly once here (not on
                     # every attempt), so the success-rate report isn't corrupted.
@@ -1037,10 +1050,11 @@ class TileRenderEngine:
                         'x': meta_tile.tx,
                         'y': meta_tile.ty,
                         'zoom': meta_tile.zoom,
-                        'reason': 'Falha ao renderizar após tentativas máximas'
+                        'reason': tr('Falha ao renderizar após tentativas máximas')
                     })
                     self.feedback.push_info(
-                        f"Tile {meta_tile.tx},{meta_tile.ty} falhou após {self.max_retries} tentativas"
+                        tr("Tile {x},{y} falhou após {n} tentativas").format(
+                            x=meta_tile.tx, y=meta_tile.ty, n=self.max_retries)
                     )
 
                 del self.renderer_jobs[job]
@@ -1057,7 +1071,7 @@ class TileRenderEngine:
 
         except Exception as e:
             # Handle any unexpected errors during tile processing
-            self.feedback.push_info(f"Erro ao processar tile: {str(e)}")
+            self.feedback.push_info(tr("Erro ao processar tile: {err}").format(err=e))
 
             meta_tile = self.renderer_jobs.get(job)
             if meta_tile:
@@ -1065,7 +1079,7 @@ class TileRenderEngine:
                     'x': meta_tile.tx,
                     'y': meta_tile.ty,
                     'zoom': meta_tile.zoom,
-                    'reason': f'Erro ao processar tile: {str(e)}'
+                    'reason': tr('Erro ao processar tile: {err}').format(err=e)
                 })
                 self.failed_tiles += 1
         finally:
@@ -1132,7 +1146,7 @@ class TileRenderEngine:
                         'x': tile_x,
                         'y': tile_y,
                         'zoom': meta_tile.zoom,
-                        'reason': 'Falha ao converter ou salvar dados do tile'
+                        'reason': tr('Falha ao converter ou salvar dados do tile')
                     })
                     self.failed_tiles += 1
 
@@ -1178,7 +1192,7 @@ class TileRenderEngine:
                 success = tile_image.save(buffer, "WEBP", spec.jpg_quality)
             else:
                 success = tile_image.save(buffer, "PNG")
-                self.feedback.push_info("WebP não suportado, usando PNG em vez disso")
+                self.feedback.push_info(tr("WebP não suportado, usando PNG em vez disso"))
         buffer.close()
 
         if not success or tile_data.isEmpty():
@@ -1203,7 +1217,8 @@ class TileRenderEngine:
                     containing_regions.append(region_id)
 
             if not containing_regions:
-                self.feedback.push_info(f"Aviso: Tile {tile_x},{tile_y} não foi encontrado em nenhuma região")
+                self.feedback.push_info(
+                    tr("Aviso: Tile {x},{y} não foi encontrado em nenhuma região").format(x=tile_x, y=tile_y))
 
             interior_data = None
             for region_id in containing_regions:
@@ -1233,7 +1248,8 @@ class TileRenderEngine:
                 if self.writer and self.writer.saveTile(meta_tile.zoom, tile_x, tms_y, tile_data, region_id):
                     saved_to_regions += 1
                 else:
-                    self.feedback.push_info(f"Falha ao salvar tile {tile_x},{tile_y} na região {region_id}")
+                    self.feedback.push_info(tr("Falha ao salvar tile {x},{y} na região {region}").format(
+                        x=tile_x, y=tile_y, region=region_id))
 
             # Periodic commit every 100 tiles for data integrity
             if saved_to_regions > 0 and self.processed_tiles % 100 == 0:
@@ -1243,7 +1259,8 @@ class TileRenderEngine:
             return saved_to_regions > 0
 
         except Exception as e:
-            self.feedback.push_info(f"Erro ao converter/salvar tile {tile_x},{tile_y}: {str(e)}")
+            self.feedback.push_info(
+                tr("Erro ao converter/salvar tile {x},{y}: {err}").format(x=tile_x, y=tile_y, err=e))
             return False
 
     def check_completion(self):

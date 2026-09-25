@@ -34,6 +34,7 @@ import os
 from qgis.core import QgsProcessingProvider
 from qgis.PyQt.QtGui import QIcon
 from .tairu_db_algorithm import TairuDBAlgorithm
+from .tairu_core.i18n import tr
 
 
 class TairuDBProvider(QgsProcessingProvider):
@@ -74,7 +75,7 @@ class TairuDBProvider(QgsProcessingProvider):
 
         This string should be short (e.g. "Lastools") and localised.
         """
-        return self.tr('Tairu')
+        return tr('Tairu')
 
     def icon(self):
         return QIcon(os.path.join(os.path.dirname(__file__), 'icon.png'))

@@ -47,6 +47,7 @@ try:
     )
     from .tairu_core.vector_export import qvariant_to_python, export_vector_layers  # noqa: F401 (re-export)
     from .tairu_sync.record_convert import is_record_sync_layer
+    from .tairu_core import i18n
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from qgis_proxy import install_qgis_proxy
     from compat import _RASTER_LAYER_TYPE, _FLAG_NO_THREADING
@@ -62,6 +63,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     )
     from tairu_core.vector_export import qvariant_to_python, export_vector_layers  # noqa: F401
     from tairu_sync.record_convert import is_record_sync_layer
+    from tairu_core import i18n
 
 
 def TairuDBAlgorithm():
@@ -119,7 +121,7 @@ def TairuDBAlgorithm():
             return _FLAG_NO_THREADING
 
         def tr(self, text):
-            return text
+            return i18n.tr(text)
 
         def initAlgorithm(self, configuration=None):  # pylint: disable=unused-argument
             self.addParameter(QgsProcessingParameterBoolean(
@@ -183,7 +185,7 @@ def TairuDBAlgorithm():
             self.addParameter(QgsProcessingParameterFileDestination(
                 OUTPUT_FILE,
                 self.tr("Arquivo de saída"),
-                fileFilter="Arquivo TairuDB (*.tairudb)",
+                fileFilter=self.tr("Arquivo TairuDB (*.tairudb)"),
                 optional=True,
             ))
 
@@ -244,7 +246,7 @@ def TairuDBAlgorithm():
             # Set zoom level based on map resolution
             map_resolution_formats = [18, 17, 16, 15, 14, 13, 12]
             self.max_zoom = map_resolution_formats[map_resolution_idx]
-            feedback.pushInfo(self.tr(f"Zoom máximo selecionado: {self.max_zoom}"))
+            feedback.pushInfo(self.tr("Zoom máximo selecionado: {zoom}").format(zoom=self.max_zoom))
 
             # Set tile format
             tile_formats = ["PNG", "JPG", "WEBP"]
@@ -264,7 +266,7 @@ def TairuDBAlgorithm():
             self.transform_context = context.transformContext()
             source_crs = source.sourceCrs() if hasattr(source, "sourceCrs") else context.project().crs()
 
-            feedback.pushInfo(self.tr(f"CRS do polígono: {source_crs.authid()}"))
+            feedback.pushInfo(self.tr("CRS do polígono: {crs}").format(crs=source_crs.authid()))
 
             # Transform each feature's polygon to WGS84 and compute its tile set
             polygons_wgs84 = []
@@ -291,17 +293,16 @@ def TairuDBAlgorithm():
                 return False
 
             total_region_tiles = sum(len(tiles) for tiles in self.region_result.region_tiles.values())
+            feedback.pushInfo(self.tr("Encontrados {tiles} tiles em {regions} regiões").format(
+                tiles=total_region_tiles, regions=len(self.region_result.region_tiles)))
             feedback.pushInfo(self.tr(
-                f"Encontrados {total_region_tiles} tiles em "
-                f"{len(self.region_result.region_tiles)} regiões"))
-            feedback.pushInfo(self.tr(
-                f"Encontrados {self.region_result.total_tiles} tiles únicos que "
-                f"intersectam com os polígonos selecionados."))
+                "Encontrados {tiles} tiles únicos que intersectam com os polígonos selecionados.").format(
+                    tiles=self.region_result.total_tiles))
 
             for region_id, tiles in self.region_result.region_tiles.items():
-                feedback.pushInfo(self.tr(f"Região {region_id}: {len(tiles)} tiles"))
+                feedback.pushInfo(self.tr("Região {region}: {tiles} tiles").format(region=region_id, tiles=len(tiles)))
 
-            feedback.pushInfo(self.tr(f"Bounds criados: {len(self.region_result.bounds_list)} entradas"))
+            feedback.pushInfo(self.tr("Bounds criados: {n} entradas").format(n=len(self.region_result.bounds_list)))
 
             if not self.region_result.filtered_tiles:
                 feedback.reportError(self.tr("Nenhum tile intersecta a extensão do polígono selecionado."))
@@ -318,7 +319,7 @@ def TairuDBAlgorithm():
                 if proxy_status:
                     feedback.pushInfo(proxy_status)
             except Exception as e:
-                feedback.pushInfo('Falha ao aplicar proxy do QGIS: {}'.format(e))
+                feedback.pushInfo(self.tr('Falha ao aplicar proxy do QGIS: {error}').format(error=e))
 
             fb = ProcessingFeedbackAdapter(feedback)
             dry_run = self.parameterAsBool(parameters, DRY_RUN, context)
@@ -368,7 +369,7 @@ def TairuDBAlgorithm():
             if not engine.run():
                 if engine.canceled:
                     return {}
-                raise QgsProcessingException(self.tr(engine.error_message or "Falha na geração do arquivo TairuDB"))
+                raise QgsProcessingException(engine.error_message or self.tr("Falha na geração do arquivo TairuDB"))
 
             # --- Write vector layers into database ---
             if feedback.isCanceled():

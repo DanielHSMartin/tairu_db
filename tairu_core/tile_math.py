@@ -13,6 +13,11 @@ from dataclasses import dataclass, field
 
 from qgis.core import QgsRectangle, QgsGeometry, QgsCoordinateTransform
 
+try:
+    from .i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 
 def to_wgs84(geom, src, wgs84, ctx):
     """Reprojeta `geom` para WGS84, ou levanta dizendo por que nao deu.
@@ -29,23 +34,24 @@ def to_wgs84(geom, src, wgs84, ctx):
     do nome do enum de retorno, e pega qualquer saida que nao esteja em graus.
     """
     if not src.isValid():
-        raise ValueError(
+        raise ValueError(tr(
             'A área selecionada não tem sistema de coordenadas válido — nem o '
             'canvas nem o projeto informaram um SRC. Defina o SRC do projeto '
-            '(canto inferior direito da janela do QGIS) e tente de novo.')
+            '(canto inferior direito da janela do QGIS) e tente de novo.'))
     transform = QgsCoordinateTransform(src, wgs84, ctx)
-    origem = src.authid() or src.description() or 'origem desconhecida'
+    origem = src.authid() or src.description() or tr('origem desconhecida')
     if not transform.isValid():
         raise ValueError(
-            f'Não há transformação de {origem} para WGS84 (EPSG:4326) neste projeto.')
+            tr('Não há transformação de {origin} para WGS84 (EPSG:4326) neste projeto.').format(origin=origem))
     geom.transform(transform)
     bb = geom.boundingBox()
     if (-180.0 <= bb.xMinimum() and bb.xMaximum() <= 180.0
             and -90.0 <= bb.yMinimum() and bb.yMaximum() <= 90.0):
         return geom
-    raise ValueError(
-        f'A área não foi reprojetada de {origem} para WGS84 — os valores '
-        f'continuam fora de graus ({bb.toString(2)}). {_crs_hint(bb, origem)}')
+    raise ValueError(tr(
+        'A área não foi reprojetada de {origin} para WGS84 — os valores '
+        'continuam fora de graus ({bbox}). {hint}').format(
+            origin=origem, bbox=bb.toString(2), hint=_crs_hint(bb, origem)))
 
 
 def _crs_hint(bb, origem):
@@ -59,21 +65,21 @@ def _crs_hint(bb, origem):
     """
     x, y = abs(bb.xMinimum()), abs(bb.yMinimum())
     if x <= 180.0 and y <= 90.0:
-        return 'Verifique o SRC do projeto e as transformações de datum.'
+        return tr('Verifique o SRC do projeto e as transformações de datum.')
     if x < 20037509.0 and y < 20048967.0:
         provavel = 'Web Mercator (EPSG:3857)'
     elif x < 1000000.0:
-        provavel = 'uma projeção UTM local'
+        provavel = tr('uma projeção UTM local')
     else:
-        provavel = 'alguma projeção métrica'
+        provavel = tr('alguma projeção métrica')
     if origem.upper().endswith('4326'):
-        return (f'Os valores têm a grandeza de {provavel}, mas a origem está '
-                f'declarada como {origem} — nesse caso a conversão vira '
-                'identidade e nada é reprojetado. Corrija o SRC declarado da '
-                'camada/projeto (clique com o botão direito na camada → '
-                'Propriedades → Fonte → SRC) e tente de novo.')
-    return (f'Os valores têm a grandeza de {provavel}. Confirme se o SRC '
-            f'declarado ({origem}) corresponde de fato aos dados.')
+        return tr('Os valores têm a grandeza de {likely}, mas a origem está '
+                  'declarada como {origin} — nesse caso a conversão vira '
+                  'identidade e nada é reprojetado. Corrija o SRC declarado da '
+                  'camada/projeto (clique com o botão direito na camada → '
+                  'Propriedades → Fonte → SRC) e tente de novo.').format(likely=provavel, origin=origem)
+    return tr('Os valores têm a grandeza de {likely}. Confirme se o SRC '
+              'declarado ({origin}) corresponde de fato aos dados.').format(likely=provavel, origin=origem)
 
 
 def lon2tilex(lon, n):
@@ -168,7 +174,7 @@ def compute_region_tiles(polygons_wgs84, max_zoom, feedback):
             feedback.set_progress(50 * idx / len(polygons_wgs84))  # Use first 50% for polygon processing
 
         if polygon_geom_wgs84 is None or polygon_geom_wgs84.isEmpty():
-            feedback.report_error(f"Feature {idx} geometry is empty or invalid.")
+            feedback.report_error(tr("A geometria da feição {idx} está vazia ou é inválida.").format(idx=idx))
             continue
 
         valid_polygons.append(polygon_geom_wgs84)

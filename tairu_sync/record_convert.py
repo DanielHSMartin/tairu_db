@@ -74,12 +74,14 @@ try:
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _WRITER_NO_ERROR,
         _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL,
     )
+    from ..tairu_core.i18n import tr
     from ..tairu_firebase.models import TairuRecord, points_to_json, now_millis
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _WRITER_NO_ERROR,
         _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL,
     )
+    from tairu_core.i18n import tr
     from tairu_firebase.models import TairuRecord, points_to_json, now_millis
 
 # (layer name, memory-provider geometry, display label)
@@ -844,7 +846,8 @@ def ensure_gpkg(gpkg_path):
         error = result[0] if isinstance(result, (tuple, list)) else result
         if error != _WRITER_NO_ERROR:
             message = result[1] if isinstance(result, (tuple, list)) and len(result) > 1 else str(error)
-            raise RuntimeError(f'Falha ao criar {layer_name} em {gpkg_path}: {message}')
+            raise RuntimeError(tr('Falha ao criar {camada} em {arquivo}: {erro}').format(
+                camada=layer_name, arquivo=gpkg_path, erro=message))
         first = False
 
 
@@ -870,7 +873,8 @@ def _check_provider(ok, provider, what, result):
     detail = ''
     with contextlib.suppress(Exception):
         detail = '; '.join(provider.errors() or [])
-    result.errors.append(('*', f'{what} nao gravado(s): {detail or "provedor recusou"}'))
+    result.errors.append(('*', tr('{what} nao gravado(s): {detalhe}').format(
+        what=what, detalhe=detail or tr('provedor recusou'))))
 
 
 def apply_pull(gpkg_path, records, remove_missing=True, keep_unpushed=False):
@@ -906,7 +910,7 @@ def apply_pull(gpkg_path, records, remove_missing=True, keep_unpushed=False):
     for spec_key, recs in by_spec.items():
         layer = open_gpkg_layer(gpkg_path, spec_key)
         if layer is None:
-            result.errors.append(('*', f'Camada {LAYER_SPECS[spec_key][0]} inacessível'))
+            result.errors.append(('*', tr('Camada {camada} inacessível').format(camada=LAYER_SPECS[spec_key][0])))
             continue
         ensure_record_layer_fields(layer)
         provider = layer.dataProvider()
@@ -1008,16 +1012,17 @@ def apply_pull(gpkg_path, records, remove_missing=True, keep_unpushed=False):
         label = LAYER_SPECS[spec_key][2]
         if attr_changes:
             _check_provider(provider.changeAttributeValues(attr_changes),
-                            provider, f'{label}: atributos', result)
+                            provider, tr('{camada}: atributos').format(camada=label), result)
         if geom_changes:
             _check_provider(provider.changeGeometryValues(geom_changes),
-                            provider, f'{label}: geometrias', result)
+                            provider, tr('{camada}: geometrias').format(camada=label), result)
         if additions:
             _check_provider(provider.addFeatures(additions),
-                            provider, f'{label}: {len(additions)} registro(s)', result)
+                            provider, tr('{camada}: {n} registro(s)').format(camada=label, n=len(additions)),
+                            result)
         if removals:
             _check_provider(provider.deleteFeatures(removals),
-                            provider, f'{label}: remocoes', result)
+                            provider, tr('{camada}: remocoes').format(camada=label), result)
         layer.updateExtents()
 
     return result

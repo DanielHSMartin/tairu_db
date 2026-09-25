@@ -17,8 +17,10 @@ import urllib.parse
 import urllib.request
 
 try:
+    from ..tairu_core.i18n import tr
     from .http import AuthorizedSession, FirebaseError, USER_AGENT
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
     from tairu_firebase.http import AuthorizedSession, FirebaseError, USER_AGENT
 
 _STORAGE_HOST = 'https://firebasestorage.googleapis.com/v0'
@@ -130,7 +132,7 @@ class StorageClient:
             raise FirebaseError('NETWORK', str(e.reason)) from e
 
         if not upload_url:
-            raise FirebaseError('UPLOAD', 'Servidor não retornou URL de upload')
+            raise FirebaseError('UPLOAD', tr('Servidor não retornou URL de upload'))
 
         # 2) Send chunks
         offset = 0

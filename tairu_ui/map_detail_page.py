@@ -11,6 +11,7 @@ from qgis.PyQt.QtWidgets import (
 
 try:
     from ..compat import _USER_ROLE
+    from ..tairu_core.i18n import tr
     # INFO/INFO_CONTAINER/badge_style: selo de papel (ver linha comentada abaixo)
     from .style import (  # noqa: F401
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
@@ -19,6 +20,7 @@ try:
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _USER_ROLE
+    from tairu_core.i18n import tr
     from tairu_ui.style import (  # noqa: F401 - idem
         INFO, INFO_CONTAINER, ON_SURFACE, ON_SURFACE_VARIANT, apply_tairu_style,
         badge_style, set_action_button, set_muted, set_plain_button,
@@ -45,7 +47,7 @@ class MapDetailPage(QWidget):
         layout.setSpacing(10)
 
         header = QHBoxLayout()
-        self.back_btn = QPushButton('← Expedições')
+        self.back_btn = QPushButton(tr('← Expedições'))
         self.back_btn.clicked.connect(self.backRequested.emit)
         header.addWidget(self.back_btn)
         self.title_label = set_title(QLabel(''))
@@ -58,45 +60,45 @@ class MapDetailPage(QWidget):
 
         # ---------------- Pull actions
         layout.addSpacing(8)
-        pull_title = set_section_title(QLabel('Receber do Tairu Maps'))
+        pull_title = set_section_title(QLabel(tr('Receber do Tairu Maps')))
         layout.addWidget(pull_title)
 
         pull_layout = QVBoxLayout()
         pull_layout.setContentsMargins(0, 0, 0, 0)
         pull_layout.setSpacing(8)
 
-        self.pull_records_btn = set_action_button(QPushButton('Receber Registros'))
+        self.pull_records_btn = set_action_button(QPushButton(tr('Receber Registros')))
         self.pull_records_btn.setToolTip(
-            'Baixa os registros da expedição e os carrega como camadas (GeoPackage) no projeto.')
+            tr('Baixa os registros da expedição e os carrega como camadas (GeoPackage) no projeto.'))
         self.pull_records_btn.clicked.connect(
             lambda: self._map and self.pullRecordsRequested.emit(self._map.map_id))
         pull_layout.addWidget(self.pull_records_btn)
 
-        self.files_btn = set_action_button(QPushButton('Receber arquivos TairuDB'))
+        self.files_btn = set_action_button(QPushButton(tr('Receber arquivos TairuDB')))
         self.files_btn.setToolTip(
-            'Abre a lista de arquivos TairuDB disponíveis para baixar e adicionar ao projeto.')
+            tr('Abre a lista de arquivos TairuDB disponíveis para baixar e adicionar ao projeto.'))
         self.files_btn.clicked.connect(self._open_files_dialog)
         pull_layout.addWidget(self.files_btn)
         layout.addLayout(pull_layout)
         layout.addSpacing(18)
 
         # ---------------- Push actions
-        push_title = set_section_title(QLabel('Enviar para o Tairu Maps'))
+        push_title = set_section_title(QLabel(tr('Enviar para o Tairu Maps')))
         layout.addWidget(push_title)
 
         push_layout = QVBoxLayout()
         push_layout.setContentsMargins(0, 0, 0, 0)
         push_layout.setSpacing(8)
 
-        self.push_records_btn = set_action_button(QPushButton('Enviar camadas vetoriais'))
-        self.push_records_btn.setToolTip(
+        self.push_records_btn = set_action_button(QPushButton(tr('Enviar camadas vetoriais')))
+        self.push_records_btn.setToolTip(tr(
             'Converte feições de camadas vetoriais em registros da expedição, em três '
-            'etapas: camadas, feições e grupo.')
+            'etapas: camadas, feições e grupo.'))
         self.push_records_btn.clicked.connect(
             lambda: self._map and self.pushRecordsRequested.emit(self._map.map_id))
         push_layout.addWidget(self.push_records_btn)
 
-        self.push_raster_btn = set_action_button(QPushButton('Enviar arquivo TairuDB'))
+        self.push_raster_btn = set_action_button(QPushButton(tr('Enviar arquivo TairuDB')))
         self.push_raster_btn.clicked.connect(
             lambda: self._map and self.pushRasterRequested.emit(self._map.map_id))
         push_layout.addWidget(self.push_raster_btn)
@@ -119,15 +121,15 @@ class MapDetailPage(QWidget):
     def set_map(self, tmap, uid):
         self._map = tmap
         self._uid = uid
-        self.title_label.setText(tmap.nome or '(sem nome)')
+        self.title_label.setText(tmap.nome or tr('(sem nome)'))
         # role = tmap.role_label(uid)
         # self.role_label.setText(f'Seu papel: {role}')
         # self.role_label.setStyleSheet(badge_style(INFO, INFO_CONTAINER))
         can_edit_files = tmap.can_edit_files(uid)
         self.push_raster_btn.setEnabled(can_edit_files)
         self.push_raster_btn.setToolTip(
-            'Gera um arquivo TairuDB da área escolhida e envia para a expedição.' if can_edit_files
-            else 'Requer papel de proprietário ou administrador da expedição.')
+            tr('Gera um arquivo TairuDB da área escolhida e envia para a expedição.') if can_edit_files
+            else tr('Requer papel de proprietário ou administrador da expedição.'))
         self.set_busy(False)
         self.set_status('')
         self.update_files(tmap)
@@ -135,7 +137,7 @@ class MapDetailPage(QWidget):
     def update_files(self, tmap):
         self._map = tmap
         count = len(tmap.tairudb_remote_files)
-        self.files_btn.setText(f'Arquivos TairuDB ({count})')
+        self.files_btn.setText(tr('Arquivos TairuDB ({n})').format(n=count))
         self.files_btn.setEnabled(count > 0)
 
     def set_busy(self, busy, message=None):
@@ -180,19 +182,19 @@ class TairuDbFilesDialog(QDialog):
     def __init__(self, tmap, parent=None):
         super().__init__(parent)
         self._selected_name = None
-        self.setWindowTitle(f'Arquivos TairuDB · {tmap.nome or "(sem nome)"}')
+        self.setWindowTitle(tr('Arquivos TairuDB · {nome}').format(nome=tmap.nome or tr('(sem nome)')))
         self.resize(520, 420)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        layout.addWidget(set_title(QLabel('Arquivos TairuDB')))
-        subtitle = set_muted(QLabel(tmap.nome or '(sem nome)'))
+        layout.addWidget(set_title(QLabel(tr('Arquivos TairuDB'))))
+        subtitle = set_muted(QLabel(tmap.nome or tr('(sem nome)')))
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
 
         self.files_list = QListWidget()
         self.files_list.setSpacing(8)
-        self.files_list.setToolTip('Clique duas vezes para baixar e adicionar ao projeto.')
+        self.files_list.setToolTip(tr('Clique duas vezes para baixar e adicionar ao projeto.'))
         self.files_list.itemDoubleClicked.connect(self._on_file_activated)
         layout.addWidget(self.files_list, 1)
 
@@ -206,10 +208,10 @@ class TairuDbFilesDialog(QDialog):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        self.download_btn = set_primary_button(QPushButton('Receber e adicionar ao projeto'))
+        self.download_btn = set_primary_button(QPushButton(tr('Receber e adicionar ao projeto')))
         self.download_btn.clicked.connect(self._on_download_clicked)
         buttons.addWidget(self.download_btn)
-        cancel_btn = set_plain_button(QPushButton('Cancelar'))
+        cancel_btn = set_plain_button(QPushButton(tr('Cancelar')))
         cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(cancel_btn)
         layout.addLayout(buttons)
@@ -260,7 +262,7 @@ class TairuDbFileItemWidget(QWidget):
         )
         text_area.addWidget(title)
 
-        subtitle = QLabel('Arquivo TairuDB pronto para adicionar ao projeto')
+        subtitle = QLabel(tr('Arquivo TairuDB pronto para adicionar ao projeto'))
         subtitle.setStyleSheet(
             f'color: {ON_SURFACE_VARIANT}; font-size: 11px; background: transparent;'
         )

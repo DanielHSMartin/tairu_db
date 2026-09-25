@@ -11,6 +11,7 @@ from qgis.PyQt.QtWidgets import (
 
 try:
     from ..compat import _USER_ROLE
+    from ..tairu_core.i18n import tr
     from ..tairu_core.workspace import map_last_opened_ms
     from .style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
@@ -20,6 +21,7 @@ try:
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _USER_ROLE
+    from tairu_core.i18n import tr
     from tairu_core.workspace import map_last_opened_ms
     from tairu_ui.style import (
         ERROR, ON_PRIMARY, SECONDARY_CONTAINER, ON_SECONDARY_CONTAINER,
@@ -70,12 +72,12 @@ class MapsPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
-        layout.addWidget(set_title(QLabel('Gerar TairuDB')))
+        layout.addWidget(set_title(QLabel(tr('Gerar TairuDB'))))
         gen_desc = set_muted(QLabel(
-            'Cria um arquivo .tairudb no seu computador, sem enviar para uma expedição.'))
+            tr('Cria um arquivo .tairudb no seu computador, sem enviar para uma expedição.')))
         gen_desc.setWordWrap(True)
         layout.addWidget(gen_desc)
-        self.generate_local_btn = set_primary_button(QPushButton('Gerar arquivo…'))
+        self.generate_local_btn = set_primary_button(QPushButton(tr('Gerar arquivo…')))
         self.generate_local_btn.clicked.connect(self.generateLocalRequested.emit)
         layout.addWidget(self.generate_local_btn)
 
@@ -88,15 +90,15 @@ class MapsPage(QWidget):
         layout.addSpacing(18)
 
         header = QHBoxLayout()
-        title = set_title(QLabel('Minhas expedições'))
+        title = set_title(QLabel(tr('Minhas expedições')))
         header.addWidget(title)
         header.addStretch(1)
-        self.refresh_btn = set_primary_button(QPushButton('Atualizar'))
+        self.refresh_btn = set_primary_button(QPushButton(tr('Atualizar')))
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
         header.addWidget(self.refresh_btn)
         layout.addLayout(header)
 
-        self.archived_check = QCheckBox('Mostrar expedições arquivadas')
+        self.archived_check = QCheckBox(tr('Mostrar expedições arquivadas'))
         self.archived_check.toggled.connect(lambda _: self._rebuild())
         layout.addWidget(self.archived_check)
 
@@ -170,13 +172,13 @@ class MapsPage(QWidget):
             widget = MapListItemWidget(tmap, self._uid, files, count)
             item = QListWidgetItem()
             item.setData(_USER_ROLE, tmap.map_id)
-            item.setToolTip('Clique para abrir esta expedição.')
+            item.setToolTip(tr('Clique para abrir esta expedição.'))
             item.setSizeHint(QSize(0, 128))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, widget)
         if visible == 0:
             self.set_status(
-                'Nenhuma expedição encontrada. Crie uma expedição no aplicativo Tairu Maps.')
+                tr('Nenhuma expedição encontrada. Crie uma expedição no aplicativo Tairu Maps.'))
         else:
             self.set_status('')
 
@@ -230,12 +232,12 @@ class MapListItemWidget(QWidget):
         top.addStretch(1)
         top.addWidget(self._badge(tmap.role_label(uid), ON_PRIMARY, 'rgba(0, 0, 0, 90)'))
         if tmap.status == 'archived':
-            top.addWidget(self._badge('Arquivado', '#4B5563', SURFACE_CONTAINER))
+            top.addWidget(self._badge(tr('Arquivado'), '#4B5563', SURFACE_CONTAINER))
         layout.addLayout(top)
 
         title_area = QVBoxLayout()
         title_area.setSpacing(3)
-        title = QLabel(tmap.nome or '(sem nome)')
+        title = QLabel(tmap.nome or tr('(sem nome)'))
         title.setWordWrap(True)
         title.setStyleSheet(
             f'color: {ON_PRIMARY}; font-weight: 800; font-size: 16px;'
@@ -267,10 +269,10 @@ class MapListItemWidget(QWidget):
         member_count = tmap.member_count()
         limit = self._member_limit(tmap.plan_version)
         if member_count > 1 and limit is not None:
-            return f'Compartilhado com {member_count}/{limit}'
+            return tr('Compartilhado com {n}/{limite}').format(n=member_count, limite=limit)
         if member_count > 1:
-            return f'Compartilhado com {member_count}'
-        return 'Privado'
+            return tr('Compartilhado com {n}').format(n=member_count)
+        return tr('Privado')
 
     def _member_limit(self, plan_version):
         return {'online': 20, 'realtime': 50}.get((plan_version or '').lower())
@@ -278,21 +280,21 @@ class MapListItemWidget(QWidget):
     def _alerts_text(self, tmap):
         count = int(tmap.active_alert_count or 0)
         if count == 1:
-            return '1 alerta ativo'
-        return f'{count} alertas ativos'
+            return tr('1 alerta ativo')
+        return tr('{n} alertas ativos').format(n=count)
 
     def _plan_text(self, tmap):
         label = {
-            'offline': 'Offline',
-            'online': 'Online',
-            'realtime': 'Realtime',
-        }.get((tmap.plan_version or '').lower(), tmap.plan_version or 'Online')
-        return f'Plano: {label}'
+            'offline': tr('Offline'),
+            'online': tr('Online'),
+            'realtime': tr('Realtime'),
+        }.get((tmap.plan_version or '').lower(), tmap.plan_version or tr('Online'))
+        return tr('Plano: {plano}').format(plano=label)
 
     def _files_text(self, count):
-        return f'{count} arquivo TairuDB' if count == 1 else f'{count} arquivos TairuDB'
+        return (tr('{n} arquivo TairuDB') if count == 1 else tr('{n} arquivos TairuDB')).format(n=count)
 
     def _records_text(self, count):
         if count is None:
-            return 'Registros: —'
-        return f'{count} registro' if count == 1 else f'{count} registros'
+            return tr('Registros: —')
+        return (tr('{n} registro') if count == 1 else tr('{n} registros')).format(n=count)

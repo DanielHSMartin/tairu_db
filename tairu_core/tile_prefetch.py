@@ -18,6 +18,11 @@ skipped and generation proceeds exactly as before.
 import contextlib
 import urllib.parse
 
+try:
+    from .i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 
 def _xyz_url_template(layer):
     """The '{x}/{y}/{z}' URL template of an XYZ (WMS type=xyz) raster layer, or None."""
@@ -77,9 +82,9 @@ def prefetch_basemap_tiles(layers, tiles, zoom, feedback):
         return _download_all(urls, feedback)
     except Exception as e:
         with contextlib.suppress(Exception):
-            feedback.push_info(
-                f"Aviso: pré-download do mapa base falhou ({e}); "
-                "seguindo com renderização direta.")
+            feedback.push_info(tr(
+                "Aviso: pré-download do mapa base falhou ({err}); "
+                "seguindo com renderização direta.").format(err=e))
         return 0
 
 
@@ -95,7 +100,7 @@ def _download_all(urls, feedback, concurrency=8):
     # um import de topo puxando compat->qgis quebra isso.
     nam = QgsNetworkAccessManager.instance()
     total = len(urls)
-    feedback.push_info(f"Baixando {total} tiles do mapa base…")
+    feedback.push_info(tr("Baixando {n} tiles do mapa base…").format(n=total))
     feedback.reset_progress()  # this phase grows 0 -> 100 as tiles arrive
     st = {'idx': 0, 'done': 0, 'inflight': 0}
     loop = QEventLoop()
@@ -121,7 +126,8 @@ def _download_all(urls, feedback, concurrency=8):
                     r.deleteLater()
                 with contextlib.suppress(Exception):
                     feedback.set_progress(int(100 * st['done'] / total))
-                    feedback.heartbeat(f"Baixando mapa base… {st['done']}/{total} tiles")
+                    feedback.heartbeat(
+                        tr("Baixando mapa base… {done}/{total} tiles").format(done=st['done'], total=total))
                 if all_dispatched_and_drained():
                     loop.quit()
                 else:

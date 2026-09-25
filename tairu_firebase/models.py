@@ -19,92 +19,97 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+try:
+    from ..tairu_core.i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 
 # Record type / subtype / situation catalogs (from record_model.dart enums).
 # Keys are the enum names stored in Firestore; values are display labels.
 
 RECORD_TYPES = {
-    'pessoa': 'Pessoa',
-    'local': 'Local',
-    'equipamento': 'Equipamento',
-    'veiculo': 'Veículo',
-    'acao': 'Ação',
-    'ocorrencia': 'Ocorrência',
-    'trilha': 'Trilha',
-    'pontoDeInteresse': 'Ponto de Interesse',
-    'desenho': 'Desenho',
-    'curvaNivel': 'Curva de Nível',
-    'planoEvacuacao': 'Plano de Evacuação',
-    'alerta': 'Alerta',
+    'pessoa': tr('Pessoa'),
+    'local': tr('Local'),
+    'equipamento': tr('Equipamento'),
+    'veiculo': tr('Veículo'),
+    'acao': tr('Ação'),
+    'ocorrencia': tr('Ocorrência'),
+    'trilha': tr('Trilha'),
+    'pontoDeInteresse': tr('Ponto de Interesse'),
+    'desenho': tr('Desenho'),
+    'curvaNivel': tr('Curva de Nível'),
+    'planoEvacuacao': tr('Plano de Evacuação'),
+    'alerta': tr('Alerta'),
 }
 
 RECORD_SUBTYPES = {
     # Pessoa
-    'usuario': 'Usuário', 'pessoa': 'Pessoa', 'outraPessoa': 'Outro',
+    'usuario': tr('Usuário'), 'pessoa': tr('Pessoa'), 'outraPessoa': tr('Outro'),
     # Local
-    'residencia': 'Residência', 'empresa': 'Empresa', 'comercio': 'Comércio',
-    'industria': 'Indústria', 'rural': 'Rural', 'ponte': 'Ponte',
-    'trajeto': 'Trajeto', 'rota': 'Rota', 'outroLocal': 'Outro',
+    'residencia': tr('Residência'), 'empresa': tr('Empresa'), 'comercio': tr('Comércio'),
+    'industria': tr('Indústria'), 'rural': tr('Rural'), 'ponte': tr('Ponte'),
+    'trajeto': tr('Trajeto'), 'rota': tr('Rota'), 'outroLocal': tr('Outro'),
     # Local — natureza
-    'cachoeira': 'Cachoeira', 'mirante': 'Mirante', 'gruta': 'Gruta / Caverna',
-    'fonteDeAgua': "Fonte d'Água", 'porteira': 'Porteira / Acesso',
-    'bifurcacao': 'Bifurcação de Trilha', 'travessiaDeRio': 'Travessia de Rio',
-    'areaDeAcampamento': 'Área de Acampamento', 'abrigo': 'Abrigo / Rancho',
-    'pico': 'Pico / Cume',
+    'cachoeira': tr('Cachoeira'), 'mirante': tr('Mirante'), 'gruta': tr('Gruta / Caverna'),
+    'fonteDeAgua': tr("Fonte d'Água"), 'porteira': tr('Porteira / Acesso'),
+    'bifurcacao': tr('Bifurcação de Trilha'), 'travessiaDeRio': tr('Travessia de Rio'),
+    'areaDeAcampamento': tr('Área de Acampamento'), 'abrigo': tr('Abrigo / Rancho'),
+    'pico': tr('Pico / Cume'),
     # Local — operacional
-    'baseOperacional': 'Base Operacional', 'pontoDeControle': 'Ponto de Controle',
-    'areaEmbargada': 'Área Embargada', 'areaDePreservacao': 'Área de Preservação',
+    'baseOperacional': tr('Base Operacional'), 'pontoDeControle': tr('Ponto de Controle'),
+    'areaEmbargada': tr('Área Embargada'), 'areaDePreservacao': tr('Área de Preservação'),
     # Equipamento
-    'draga': 'Draga', 'motor': 'Motor', 'escavadeira': 'Escavadeira',
-    'trator': 'Trator', 'britador': 'Britador', 'gerador': 'Gerador',
-    'motobomba': 'Motobomba', 'motosserra': 'Motosserra', 'outroEquipamento': 'Outro',
+    'draga': tr('Draga'), 'motor': tr('Motor'), 'escavadeira': tr('Escavadeira'),
+    'trator': tr('Trator'), 'britador': tr('Britador'), 'gerador': tr('Gerador'),
+    'motobomba': tr('Motobomba'), 'motosserra': tr('Motosserra'), 'outroEquipamento': tr('Outro'),
     # Equipamento adicionais
-    'drone': 'Drone / VANT', 'armadilhaFotografica': 'Armadilha Fotográfica',
-    'barraca': 'Barraca de Camping', 'kitPrimeirosSocorros': 'Kit de Primeiros Socorros',
-    'compressor': 'Compressor',
+    'drone': tr('Drone / VANT'), 'armadilhaFotografica': tr('Armadilha Fotográfica'),
+    'barraca': tr('Barraca de Camping'), 'kitPrimeirosSocorros': tr('Kit de Primeiros Socorros'),
+    'compressor': tr('Compressor'),
     # Veículo
-    'motocicleta': 'Motocicleta', 'carro': 'Carro', 'caminhonete': 'Caminhonete',
-    'barco': 'Barco', 'quadriciclo': 'Quadriciclo', 'outroVeiculo': 'Outro',
+    'motocicleta': tr('Motocicleta'), 'carro': tr('Carro'), 'caminhonete': tr('Caminhonete'),
+    'barco': tr('Barco'), 'quadriciclo': tr('Quadriciclo'), 'outroVeiculo': tr('Outro'),
     # Veículo adicionais
-    'bicicleta': 'Bicicleta / MTB', 'caiaqueCanoa': 'Caiaque / Canoa',
-    'aeronave': 'Aeronave / Avião', 'caminhao': 'Caminhão',
+    'bicicleta': tr('Bicicleta / MTB'), 'caiaqueCanoa': tr('Caiaque / Canoa'),
+    'aeronave': tr('Aeronave / Avião'), 'caminhao': tr('Caminhão'),
     # Ação
-    'busca': 'Busca', 'rastreamento': 'Rastreamento', 'encontro': 'Encontro',
-    'pernoite': 'Pernoite', 'descanso': 'Descanso', 'outraAcao': 'Outra',
+    'busca': tr('Busca'), 'rastreamento': tr('Rastreamento'), 'encontro': tr('Encontro'),
+    'pernoite': tr('Pernoite'), 'descanso': tr('Descanso'), 'outraAcao': tr('Outra'),
     # Ação — operacional
-    'vistoria': 'Vistoria', 'patrulhamento': 'Patrulhamento', 'embargo': 'Embargo',
-    'coletaDeEvidencias': 'Coleta de Evidências',
+    'vistoria': tr('Vistoria'), 'patrulhamento': tr('Patrulhamento'), 'embargo': tr('Embargo'),
+    'coletaDeEvidencias': tr('Coleta de Evidências'),
     # Ação — recreativo
-    'trilhagem': 'Trilhagem', 'campismo': 'Campismo', 'escalada': 'Escalada / Rapel',
-    'canoagem': 'Canoagem / Caiaque',
+    'trilhagem': tr('Trilhagem'), 'campismo': tr('Campismo'), 'escalada': tr('Escalada / Rapel'),
+    'canoagem': tr('Canoagem / Caiaque'),
     # Ocorrência
-    'desmatamento': 'Desmatamento', 'incendioFlorestal': 'Incêndio Florestal',
-    'garimpIlegal': 'Garimpo Ilegal', 'pescaIlegal': 'Pesca Ilegal',
-    'cacaIlegal': 'Caça Ilegal', 'extracaoIlegal': 'Extração Ilegal',
-    'descarte': 'Descarte Irregular', 'construcaoIrregular': 'Construção Irregular',
-    'outraOcorrencia': 'Outra Ocorrência',
+    'desmatamento': tr('Desmatamento'), 'incendioFlorestal': tr('Incêndio Florestal'),
+    'garimpIlegal': tr('Garimpo Ilegal'), 'pescaIlegal': tr('Pesca Ilegal'),
+    'cacaIlegal': tr('Caça Ilegal'), 'extracaoIlegal': tr('Extração Ilegal'),
+    'descarte': tr('Descarte Irregular'), 'construcaoIrregular': tr('Construção Irregular'),
+    'outraOcorrencia': tr('Outra Ocorrência'),
     # Trilha
-    'trilhaPedestre': 'Trilha Pedestre', 'trilhaMTB': 'Trilha MTB',
-    'trilhaCavalo': 'Trilha Equestre', 'rotaDeRio': 'Rota de Rio / Canoagem',
-    'trilhaMista': 'Trilha Mista',
+    'trilhaPedestre': tr('Trilha Pedestre'), 'trilhaMTB': tr('Trilha MTB'),
+    'trilhaCavalo': tr('Trilha Equestre'), 'rotaDeRio': tr('Rota de Rio / Canoagem'),
+    'trilhaMista': tr('Trilha Mista'),
     # Ponto de Interesse
-    'paisagem': 'Paisagem', 'floraPoI': 'Flora', 'faunaPoI': 'Fauna',
-    'perigoPoI': 'Ponto de Perigo', 'artefato': 'Artefato / Sítio',
-    'referenciaPoI': 'Referência', 'outroPoI': 'Outro',
+    'paisagem': tr('Paisagem'), 'floraPoI': tr('Flora'), 'faunaPoI': tr('Fauna'),
+    'perigoPoI': tr('Ponto de Perigo'), 'artefato': tr('Artefato / Sítio'),
+    'referenciaPoI': tr('Referência'), 'outroPoI': tr('Outro'),
     # Desenho
-    'desenhoPonto': 'Ponto', 'desenhoLinha': 'Linha',
-    'desenhoPoligono': 'Polígono', 'desenhoCirculo': 'Círculo',
+    'desenhoPonto': tr('Ponto'), 'desenhoLinha': tr('Linha'),
+    'desenhoPoligono': tr('Polígono'), 'desenhoCirculo': tr('Círculo'),
     # Curva de Nível
-    'curvaMestra': 'Curva Mestra', 'curvaNormal': 'Curva Normal',
+    'curvaMestra': tr('Curva Mestra'), 'curvaNormal': tr('Curva Normal'),
     # Plano de Evacuação
-    'localAtendimento': 'Local de Atendimento', 'zonaPouso': 'Zona de Pouso',
-    'pontoComunicacao': 'Ponto de Comunicação', 'rotaEvacuacao': 'Rota de Evacuação',
-    'centralApoio': 'Central de Apoio',
+    'localAtendimento': tr('Local de Atendimento'), 'zonaPouso': tr('Zona de Pouso'),
+    'pontoComunicacao': tr('Ponto de Comunicação'), 'rotaEvacuacao': tr('Rota de Evacuação'),
+    'centralApoio': tr('Central de Apoio'),
     # Alerta
-    'alertaIncidente': 'Incidente', 'alertaIncendio': 'Incêndio',
-    'alertaAnimal': 'Animal Perigoso', 'alertaClima': 'Clima',
-    'alertaTrilha': 'Trilha Interditada', 'alertaInundacao': 'Inundação',
-    'outroAlerta': 'Outro',
+    'alertaIncidente': tr('Incidente'), 'alertaIncendio': tr('Incêndio'),
+    'alertaAnimal': tr('Animal Perigoso'), 'alertaClima': tr('Clima'),
+    'alertaTrilha': tr('Trilha Interditada'), 'alertaInundacao': tr('Inundação'),
+    'outroAlerta': tr('Outro'),
 }
 
 SUBTYPES_BY_TYPE = {
@@ -294,7 +299,8 @@ class TairuMap:
         return self.role_for(uid) in ('owner', 'admin')
 
     def role_label(self, uid):
-        return {'owner': 'Proprietário', 'admin': 'Admin', 'user': 'Integrante'}.get(self.role_for(uid), '—')
+        return {'owner': tr('Proprietário'), 'admin': tr('Admin'),
+                'user': tr('Integrante')}.get(self.role_for(uid), '—')
 
 
 def _decode_role_map(value):

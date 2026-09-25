@@ -45,6 +45,7 @@ def _install_stubs():
         sys.modules[name] = mod
 
     _stub('tairu_core')
+    _stub('tairu_core.i18n', tr=lambda text: text)
     _stub('tairu_core.firestore_cache', FirestoreCache=type('FirestoreCache', (), {}))
     _stub('tairu_firebase')
     _stub('tairu_firebase.models',

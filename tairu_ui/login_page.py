@@ -8,11 +8,13 @@ from qgis.PyQt.QtWidgets import (
 )
 
 try:
+    from ..tairu_core.i18n import tr
     from .style import (
         apply_tairu_style, set_muted, set_primary_button, set_title,
         status_style, success_style,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
     from tairu_ui.style import (
         apply_tairu_style, set_muted, set_primary_button, set_title,
         status_style, success_style,
@@ -30,18 +32,18 @@ class LoginPage(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        title = set_title(QLabel('Tairu Maps'))
+        title = set_title(QLabel(tr('Tairu Maps')))
         subtitle = set_muted(QLabel(
-            'Entre com sua conta do Tairu Maps para acessar suas expedições.'))
+            tr('Entre com sua conta do Tairu Maps para acessar suas expedições.')))
         subtitle.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
-        self.remember_check = QCheckBox('Manter conectado')
+        self.remember_check = QCheckBox(tr('Manter conectado'))
         self.remember_check.setChecked(True)
         layout.addWidget(self.remember_check)
 
-        self.login_btn = set_primary_button(QPushButton('Entrar pelo navegador'))
+        self.login_btn = set_primary_button(QPushButton(tr('Entrar pelo navegador')))
         self.login_btn.clicked.connect(
             lambda: self.browserLogin.emit(self.remember_check.isChecked()))
         layout.addWidget(self.login_btn)
@@ -57,16 +59,16 @@ class LoginPage(QWidget):
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         layout.addWidget(separator)
 
-        local_title = set_title(QLabel('TairuDB'))
+        local_title = set_title(QLabel(tr('TairuDB')))
         layout.addWidget(local_title)
 
-        local_desc = set_muted(QLabel(
+        local_desc = set_muted(QLabel(tr(
             'Gere um arquivo .tairudb diretamente no seu computador, '
-            'sem necessidade de login.'))
+            'sem necessidade de login.')))
         local_desc.setWordWrap(True)
         layout.addWidget(local_desc)
 
-        self.generate_local_btn = set_primary_button(QPushButton('Gerar arquivo TairuDB'))
+        self.generate_local_btn = set_primary_button(QPushButton(tr('Gerar arquivo TairuDB')))
         self.generate_local_btn.clicked.connect(self.generateLocalRequested.emit)
         layout.addWidget(self.generate_local_btn)
 

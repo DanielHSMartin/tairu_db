@@ -21,19 +21,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from qgis.PyQt.QtCore import QObject, pyqtSignal
 
+try:
+    from ..tairu_core.i18n import language, tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import language, tr
+
 TIMEOUT_SECONDS = 300
 
-_SUCCESS_HTML = """<!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="utf-8"><title>Tairu Maps</title></head>
+_PAGE_HTML = """<!DOCTYPE html>
+<html lang="{lang}"><head><meta charset="utf-8"><title>Tairu Maps</title></head>
 <body style="font-family: sans-serif; text-align: center; padding-top: 4em; background:#f4f4f4">
-<h2>Login concluído ✔</h2>
-<p>Você já pode fechar esta janela e voltar ao QGIS.</p>
-</body></html>"""
-
-_ERROR_HTML = """<!DOCTYPE html>
-<html lang="pt-BR"><head><meta charset="utf-8"><title>Tairu Maps</title></head>
-<body style="font-family: sans-serif; text-align: center; padding-top: 4em; background:#f4f4f4">
-<h2>Falha no login</h2>
+<h2>{heading}</h2>
 <p>{reason}</p>
 </body></html>"""
 
@@ -72,6 +70,10 @@ class LoopbackServer(QObject):
                 # Chrome Private Network Access preflight
                 self.send_header('Access-Control-Allow-Private-Network', 'true')
 
+            def _respond_error(self, status, reason):
+                self._respond_html(status, _PAGE_HTML.format(
+                    lang=language(), heading=tr('Falha no login'), reason=reason))
+
             def _respond_html(self, status, html):
                 body = html.encode('utf-8')
                 self.send_response(status)
@@ -87,8 +89,7 @@ class LoopbackServer(QObject):
                 self.end_headers()
 
             def do_GET(self):
-                self._respond_html(200, _ERROR_HTML.format(
-                    reason='Aguardando o envio das credenciais pela página de login…'))
+                self._respond_error(200, tr('Aguardando o envio das credenciais pela página de login…'))
 
             def do_POST(self):
                 try:
@@ -101,23 +102,25 @@ class LoopbackServer(QObject):
                         parsed = urllib.parse.parse_qs(raw.decode('utf-8'))
                         data = {k: v[0] for k, v in parsed.items()}
                 except Exception:
-                    self._respond_html(400, _ERROR_HTML.format(reason='Requisição inválida.'))
+                    self._respond_error(400, tr('Requisição inválida.'))
                     return
 
                 if outer._used:
-                    self._respond_html(410, _ERROR_HTML.format(reason='Código já utilizado.'))
+                    self._respond_error(410, tr('Código já utilizado.'))
                     return
                 if data.get('state') != outer.state:
-                    self._respond_html(403, _ERROR_HTML.format(reason='Código de segurança inválido.'))
-                    outer.failed.emit('Código de segurança (state) inválido — tente novamente.')
+                    self._respond_error(403, tr('Código de segurança inválido.'))
+                    outer.failed.emit(tr('Código de segurança (state) inválido — tente novamente.'))
                     return
                 if not data.get('refreshToken'):
-                    self._respond_html(400, _ERROR_HTML.format(reason='Credenciais ausentes.'))
-                    outer.failed.emit('A página de login não enviou as credenciais.')
+                    self._respond_error(400, tr('Credenciais ausentes.'))
+                    outer.failed.emit(tr('A página de login não enviou as credenciais.'))
                     return
 
                 outer._used = True
-                self._respond_html(200, _SUCCESS_HTML)
+                self._respond_html(200, _PAGE_HTML.format(
+                    lang=language(), heading=tr('Login concluído ✔'),
+                    reason=tr('Você já pode fechar esta janela e voltar ao QGIS.')))
                 outer.credentialsReceived.emit({
                     'refreshToken': data.get('refreshToken'),
                     'idToken': data.get('idToken'),
@@ -139,7 +142,7 @@ class LoopbackServer(QObject):
 
     def _on_timeout(self):
         if not self._used and self._server is not None:
-            self.failed.emit('Tempo esgotado aguardando o login no navegador.')
+            self.failed.emit(tr('Tempo esgotado aguardando o login no navegador.'))
         self.stop()
 
     def stop(self):

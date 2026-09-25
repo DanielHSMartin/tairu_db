@@ -15,6 +15,11 @@ from urllib.parse import quote
 
 from qgis.core import QgsApplication, QgsAuthMethodConfig, QgsSettings
 
+try:
+    from .tairu_core.i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 
 def install_qgis_proxy():
     """Install a global urllib opener matching QGIS's proxy settings.
@@ -38,8 +43,8 @@ def install_qgis_proxy():
         return None
     if proxy_type not in ('HttpProxy', 'HttpCachingProxy'):
         # ponytail: Socks5/FTP proxies need extra deps urllib lacks
-        return ('Tipo de proxy "{}" não suportado para as requisições do '
-                'TairuDB; use um proxy HTTP.'.format(proxy_type))
+        return tr('Tipo de proxy "{kind}" não suportado para as requisições do '
+                  'TairuDB; use um proxy HTTP.').format(kind=proxy_type)
 
     port = settings.value('proxy/proxyPort', '', type=str)
     user = settings.value('proxy/proxyUser', '', type=str)
@@ -72,5 +77,6 @@ def install_qgis_proxy():
         handlers.append(urllib.request.ProxyBasicAuthHandler(password_mgr))
     urllib.request.install_opener(urllib.request.build_opener(*handlers))
 
-    suffix = ' (usuário: {})'.format(user) if user else ''
-    return 'Usando proxy do QGIS: {}{}'.format(netloc, suffix)
+    if user:
+        return tr('Usando proxy do QGIS: {proxy} (usuário: {user})').format(proxy=netloc, user=user)
+    return tr('Usando proxy do QGIS: {proxy}').format(proxy=netloc)

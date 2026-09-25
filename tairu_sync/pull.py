@@ -14,6 +14,7 @@ from qgis.core import QgsMessageLog
 
 try:
     from ..compat import _MSG_WARNING
+    from ..tairu_core.i18n import tr
     from ..tairu_core.firestore_cache import (
         FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from ..tairu_core.reentrancy_guard import run_or_defer
@@ -30,6 +31,7 @@ try:
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
+    from tairu_core.i18n import tr
     from tairu_core.firestore_cache import (
         FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from tairu_core.reentrancy_guard import run_or_defer
@@ -100,7 +102,7 @@ def start_pull(dock, tmap):
         since_millis = 0
     is_incremental = since_millis > 0
 
-    page.set_busy(True, 'Baixando registros…')
+    page.set_busy(True, tr('Baixando registros…'))
 
     def fetch(task):
         # Os grupos vem SEMPRE inteiros, nunca por delta: sao dezenas de documentos
@@ -109,10 +111,10 @@ def start_pull(dock, tmap):
         if is_incremental:
             query_since = max(0, since_millis - _PULL_CLOCK_SKEW_MS)
             rows = fs.list_records_since(tmap.map_id, query_since, cancel_cb=task.isCanceled)
-            task.report(1.0, f'{len(rows)} registros recebidos (delta)')
+            task.report(1.0, tr('{n} registros recebidos (delta)').format(n=len(rows)))
         else:
             rows = fs.list_records(tmap.map_id, cancel_cb=task.isCanceled)
-            task.report(1.0, f'{len(rows)} registros recebidos')
+            task.report(1.0, tr('{n} registros recebidos').format(n=len(rows)))
         return rows, group_rows
 
     # NOTE: apply_pull creates QgsVectorLayer / QgsVectorFileWriter and reads
@@ -146,7 +148,7 @@ def start_pull(dock, tmap):
             )
         except Exception as e:
             page.set_busy(False)
-            page.set_status(f'Falha ao gravar GeoPackage: {e}', error=True)
+            page.set_status(tr('Falha ao gravar GeoPackage: {erro}').format(erro=e), error=True)
             return None
 
         # NEVER mutate QgsProject re-entrantly while a generation is pumping its nested
@@ -158,22 +160,23 @@ def start_pull(dock, tmap):
 
         page.set_busy(False)
         if from_cache:
-            prefix = 'Cache local'
+            prefix = tr('Cache local')
         else:
-            prefix = 'Delta' if is_incremental else 'Registros'
-        summary = (f'{prefix}: {result.added} novos, {result.updated} atualizados, '
-                   f'{result.removed} removidos.')
+            prefix = tr('Delta') if is_incremental else tr('Registros')
+        summary = tr('{origem}: {novos} novos, {atualizados} atualizados, {removidos} removidos.').format(
+            origem=prefix, novos=result.added, atualizados=result.updated, removidos=result.removed)
         errors = result.errors + parse_errors
         if errors:
-            summary += f' {len(errors)} com problema (ignorados).'
+            summary += ' ' + tr('{n} com problema (ignorados).').format(n=len(errors))
             for record_id, reason in errors[:20]:
                 QgsMessageLog.logMessage(f'Registro {record_id}: {reason}',
                                          'Tairu Maps', _MSG_WARNING)
             if len(errors) > 20:
                 QgsMessageLog.logMessage(f'... e mais {len(errors) - 20} erros',
                                          'Tairu Maps', _MSG_WARNING)
-            page.set_status(f'{summary}\nPrimeiro erro: {errors[0][1]} '
-                            '(detalhes no painel Mensagens de Log, aba "Tairu Maps")',
+            page.set_status(tr('{resumo}\nPrimeiro erro: {erro} '
+                               '(detalhes no painel Mensagens de Log, aba "Tairu Maps")').format(
+                                   resumo=summary, erro=errors[0][1]),
                             error=(result.added + result.updated == 0))
         else:
             page.set_status(summary)
@@ -246,15 +249,15 @@ def start_pull(dock, tmap):
             result = apply_rows(cached_rows, cached_groups, from_cache=True)
             if result is not None:
                 page.set_status(
-                    f'Falha ao atualizar online. Usando cache local.\n{message}',
+                    tr('Falha ao atualizar online. Usando cache local.\n{erro}').format(erro=message),
                     error=False,
                 )
-                dock.notify(f'{tmap.nome}: registros carregados do cache local.')
+                dock.notify(tr('{expedicao}: registros carregados do cache local.').format(expedicao=tmap.nome))
                 return
         page.set_busy(False)
         page.set_status(message, error=True)
 
-    run_task(f'Tairu Maps: registros de {tmap.nome}', fetch,
+    run_task(tr('Tairu Maps: registros de {expedicao}').format(expedicao=tmap.nome), fetch,
              on_success=on_success, on_error=on_error,
              on_progress=lambda f, m: page.set_progress(f, m))
 
@@ -267,17 +270,17 @@ def start_tairudb_download(dock, tmap, file_name):
     local_path = os.path.join(paths['downloads'], file_name)
     object_path = TAIRUDB_OBJECT_PATH.format(map_id=tmap.map_id, file_name=file_name)
 
-    page.set_busy(True, f'Baixando {file_name}…')
+    page.set_busy(True, tr('Baixando {arquivo}…').format(arquivo=file_name))
 
     def fetch(task):
         def dl_progress(done, total):
             if total:
-                task.report(0.7 * done / total, f'Baixando {file_name}… '
-                            f'{done // (1024*1024)} de {total // (1024*1024)} MB')
+                task.report(0.7 * done / total, tr('Baixando {arquivo}… {feitos} de {total} MB').format(
+                    arquivo=file_name, feitos=done // (1024*1024), total=total // (1024*1024)))
 
         storage.download(object_path, local_path,
                          progress_cb=dl_progress, cancel_cb=task.isCanceled)
-        task.report(0.75, 'Convertendo para MBTiles…')
+        task.report(0.75, tr('Convertendo para MBTiles…'))
         results = tairudb_to_mbtiles(
             local_path, paths['mbtiles'],
             progress_cb=lambda f: task.report(0.75 + 0.25 * f))
@@ -293,15 +296,15 @@ def start_tairudb_download(dock, tmap, file_name):
                 if add_raster_to_project(mbtiles_path, name,
                                          tmap.nome or tmap.map_id, tmap.map_id):
                     added += 1
-            page.set_status(f'{file_name}: {added} camada(s) raster adicionada(s).')
+            page.set_status(tr('{arquivo}: {n} camada(s) raster adicionada(s).').format(arquivo=file_name, n=added))
         page.set_busy(False)
         run_or_defer(add_layers)
-        dock.notify(f'{file_name} adicionado ao projeto.')
+        dock.notify(tr('{arquivo} adicionado ao projeto.').format(arquivo=file_name))
 
     def on_error(message):
         page.set_busy(False)
         page.set_status(message, error=True)
 
-    run_task(f'Tairu Maps: download {file_name}', fetch,
+    run_task(tr('Tairu Maps: download {arquivo}').format(arquivo=file_name), fetch,
              on_success=on_success, on_error=on_error,
              on_progress=lambda f, m: page.set_progress(f, m))

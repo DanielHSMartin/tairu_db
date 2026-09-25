@@ -79,6 +79,11 @@ assert p.get('general', 'version'), 'no version'
 print('metadata OK: version', p.get('general', 'version'))
 PY
 
+# ---- CHECK 3b: traducao (en/es) completa ----
+# Chave ausente nao quebra nada: o texto aparece em pt para quem usa o QGIS em
+# ingles/espanhol, em silencio. Por isso recusa aqui, e nao no usuario.
+"$PYTHON" "$SRC/tools/i18n_audit.py" || fail "i18n: texto sem tr() ou chave ausente em tairu_core/l10n/*.json"
+
 # ---- CHECK 4: detect-secrets (QGIS "Secrets Detection") ----
 # Mark intentional public values (e.g. the Firebase web API key) with a trailing
 # '# pragma: allowlist secret' comment, which detect-secrets honours.

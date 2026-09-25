@@ -25,6 +25,11 @@ except ImportError:
 from qgis.core import QgsGeometry, QgsVectorLayer
 from qgis.PyQt.QtCore import QCoreApplication
 
+try:
+    from .i18n import tr
+except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.i18n import tr
+
 SOURCE_INPE = 0
 SOURCE_COPERNICUS = 1
 
@@ -68,83 +73,83 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
         ContourError on any failure.
     """
     if not _GDAL_AVAILABLE:
-        raise ContourError(
+        raise ContourError(tr(
             'GDAL não está disponível. '
-            'Instale o pacote GDAL/osgeo para gerar curvas de nível.')
+            'Instale o pacote GDAL/osgeo para gerar curvas de nível.'))
 
     run_id = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     temp_dir = os.path.join(tempfile.gettempdir(), 'TairuDB_Curvas', run_id)
     os.makedirs(temp_dir, exist_ok=True)
 
     try:
-        feedback.push_info('Baixando tiles de elevação…')
+        feedback.push_info(tr('Baixando tiles de elevação…'))
         tile_paths = _download_tiles(bbox_wgs84, dem_source, temp_dir, feedback)
         if not tile_paths:
             if dem_source == SOURCE_INPE:
-                raise ContourError(
+                raise ContourError(tr(
                     'Nenhum tile INPE TOPODATA baixado com sucesso. '
                     'O servidor pode estar indisponível, ou a área está fora da cobertura do Brasil '
                     '(6°N–34°S, 75°W–34.5°W). '
-                    'Tente usar "Copernicus GLO-30 (Mundial)" como fonte de dados.')
+                    'Tente usar "Copernicus GLO-30 (Mundial)" como fonte de dados.'))
             else:
-                raise ContourError(
+                raise ContourError(tr(
                     'Nenhum tile Copernicus GLO-30 baixado com sucesso. '
-                    'Verifique a conexão com a internet e tente novamente.')
+                    'Verifique a conexão com a internet e tente novamente.'))
 
         if feedback.is_canceled():
-            raise ContourError('Cancelado pelo usuário.')
+            raise ContourError(tr('Cancelado pelo usuário.'))
 
-        feedback.push_info(f'Recortando {len(tile_paths)} tile(s) para a área de interesse…')
-        feedback.heartbeat(f'Curvas: recortando {len(tile_paths)} tile(s) de elevação…')
+        feedback.push_info(tr('Recortando {n} tile(s) para a área de interesse…').format(n=len(tile_paths)))
+        feedback.heartbeat(tr('Curvas: recortando {n} tile(s) de elevação…').format(n=len(tile_paths)))
         QCoreApplication.processEvents()
         cutline_path = _write_cutline(clip_polygons, temp_dir) if clip_polygons else None
         if cutline_path:
-            feedback.push_info('  Máscara de polígono aplicada — curvas recortadas à área.')
+            feedback.push_info(tr('  Máscara de polígono aplicada — curvas recortadas à área.'))
         clipped = _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path)
         if not clipped:
-            raise ContourError(
-                'Nenhum tile de elevação intersecta a área selecionada após recorte.')
+            raise ContourError(tr(
+                'Nenhum tile de elevação intersecta a área selecionada após recorte.'))
 
-        feedback.push_info('Mesclando tiles…')
-        feedback.heartbeat('Curvas: mesclando tiles de elevação…')
+        feedback.push_info(tr('Mesclando tiles…'))
+        feedback.heartbeat(tr('Curvas: mesclando tiles de elevação…'))
         QCoreApplication.processEvents()
         merged_path = os.path.join(temp_dir, 'merged.tif')
         _merge_tiles(clipped, merged_path)
 
         if feedback.is_canceled():
-            raise ContourError('Cancelado pelo usuário.')
+            raise ContourError(tr('Cancelado pelo usuário.'))
 
         if smoothing != SMOOTHING_NONE:
-            feedback.push_info(f'Suavizando terreno ({smoothing})…')
+            feedback.push_info(tr('Suavizando terreno ({level})…').format(level=tr(smoothing)))
             try:
                 _smooth_terrain(merged_path, smoothing, temp_dir)
             except Exception as exc:
-                feedback.push_info(f'Aviso: suavização falhou ({exc}), usando terreno original.')
+                feedback.push_info(tr('Aviso: suavização falhou ({err}), usando terreno original.').format(err=exc))
 
         if feedback.is_canceled():
-            raise ContourError('Cancelado pelo usuário.')
+            raise ContourError(tr('Cancelado pelo usuário.'))
 
-        feedback.push_info(f'Gerando curvas de nível (intervalo: {interval} m)…')
-        feedback.heartbeat(f'Curvas: traçando linhas (intervalo {interval} m)…')
+        feedback.push_info(tr('Gerando curvas de nível (intervalo: {interval} m)…').format(interval=interval))
+        feedback.heartbeat(tr('Curvas: traçando linhas (intervalo {interval} m)…').format(interval=interval))
         QCoreApplication.processEvents()
         contour_path = os.path.join(temp_dir, 'contours.gpkg')
         _run_contour_generate(merged_path, interval, contour_path, feedback)
 
         if feedback.is_canceled():
-            raise ContourError('Cancelado pelo usuário.')
+            raise ContourError(tr('Cancelado pelo usuário.'))
 
         layer = QgsVectorLayer(
             contour_path + '|layername=contours', 'Curvas de Nível', 'ogr')
         if not layer.isValid():
             raise ContourError(
-                f'Falha ao carregar a camada de curvas de nível: {contour_path}')
+                tr('Falha ao carregar a camada de curvas de nível: {path}').format(path=contour_path))
 
         if layer.featureCount() == 0:
-            feedback.push_info(
-                'Aviso: nenhuma curva gerada (terreno plano ou intervalo muito grande?).')
+            feedback.push_info(tr(
+                'Aviso: nenhuma curva gerada (terreno plano ou intervalo muito grande?).'))
 
         _apply_renderer(layer, interval, color)
-        feedback.push_info('Curvas de nível geradas com sucesso.')
+        feedback.push_info(tr('Curvas de nível geradas com sucesso.'))
 
         # Free the intermediate DEM rasters (merged/smoothed/clipped tiles, cutline,
         # vrt) — the bulk of the temp footprint. Only contours.gpkg is still needed,
@@ -160,7 +165,7 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
     except ContourError:
         raise
     except Exception as exc:
-        raise ContourError(f'Erro ao gerar curvas de nível: {exc}') from exc
+        raise ContourError(tr('Erro ao gerar curvas de nível: {err}').format(err=exc)) from exc
 
 
 # ---------------------------------------------------------------------------- download
@@ -228,13 +233,13 @@ def _download_inpe_tiles(bbox_wgs84, temp_dir, feedback):
         lat_norte -= 1.0
 
     if not tiles_to_fetch:
-        feedback.push_info(
+        feedback.push_info(tr(
             '  Nenhum tile INPE cobre a área selecionada. '
-            'Verifique se a área está no Brasil (6°N–34°S, 75°W–34.5°W).')
+            'Verifique se a área está no Brasil (6°N–34°S, 75°W–34.5°W).'))
         return []
 
     n_total = len(tiles_to_fetch)
-    feedback.push_info(f'  {n_total} tile(s) INPE TOPODATA necessário(s).')
+    feedback.push_info(tr('  {n} tile(s) INPE TOPODATA necessário(s).').format(n=n_total))
 
     tile_paths = []
     n_cached = n_downloaded = n_failed = 0
@@ -258,12 +263,12 @@ def _download_inpe_tiles(bbox_wgs84, temp_dir, feedback):
 
     parts = []
     if n_downloaded:
-        parts.append(f'{n_downloaded} baixado(s)')
+        parts.append(tr('{n} baixado(s)').format(n=n_downloaded))
     if n_cached:
-        parts.append(f'{n_cached} do cache')
+        parts.append(tr('{n} do cache').format(n=n_cached))
     if n_failed:
-        parts.append(f'{n_failed} falhou — verifique a conexão ou use Copernicus GLO-30')
-    feedback.push_info(f'  Resultado: {", ".join(parts)}.')
+        parts.append(tr('{n} falhou — verifique a conexão ou use Copernicus GLO-30').format(n=n_failed))
+    feedback.push_info(tr('  Resultado: {parts}.').format(parts=', '.join(parts)))
     return tile_paths
 
 
@@ -290,7 +295,7 @@ def _download_dem_file(url, dest, feedback, label, progress_base=0.0, progress_s
             got = 0
             while True:
                 if feedback.is_canceled():
-                    raise RuntimeError('cancelado')
+                    raise RuntimeError(tr('cancelado'))
                 chunk = resp.read(262144)  # 256 KB
                 if not chunk:
                     break
@@ -299,9 +304,10 @@ def _download_dem_file(url, dest, feedback, label, progress_base=0.0, progress_s
                 mb = got / (1024 * 1024)
                 if total:
                     feedback.set_progress(int(progress_base + (got / total) * progress_span))
-                    feedback.heartbeat(f'{label}… {mb:.0f}/{total / (1024 * 1024):.0f} MB')
+                    feedback.heartbeat(tr('{label}… {mb:.0f}/{total:.0f} MB').format(
+                        label=label, mb=mb, total=total / (1024 * 1024)))
                 else:
-                    feedback.heartbeat(f'{label}… {mb:.0f} MB')
+                    feedback.heartbeat(tr('{label}… {mb:.0f} MB').format(label=label, mb=mb))
                 QCoreApplication.processEvents()
         os.replace(tmp, dest)
     except Exception:
@@ -330,14 +336,14 @@ def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback, progress_base=0.
 
     tile6 = nome[:-2]
     url = _INPE_BASE_URL + tile6[:3] + '/' + tile6[3:6] + '/' + fn
-    feedback.push_info(f'  Baixando {fn}…')
+    feedback.push_info(tr('  Baixando {fn}…').format(fn=fn))
     try:
-        _download_dem_file(url, tif_path, feedback, f'Baixando elevação {fn}',
+        _download_dem_file(url, tif_path, feedback, tr('Baixando elevação {fn}').format(fn=fn),
                            progress_base, progress_span)
         if os.path.getsize(tif_path) == 0:
-            raise ValueError('Resposta vazia do servidor')
+            raise ValueError(tr('Resposta vazia do servidor'))
     except Exception as exc:
-        feedback.push_info(f'  Falha: {fn}: {exc}')
+        feedback.push_info(tr('  Falha: {fn}: {err}').format(fn=fn, err=exc))
         if os.path.exists(tif_path):
             os.remove(tif_path)
         return None
@@ -366,7 +372,7 @@ def _download_copernicus_tiles(bbox_wgs84, temp_dir, feedback):
         for lon in range(lon_start, lon_end + 1)
     ]
     n_total = len(tiles_to_fetch)
-    feedback.push_info(f'  {n_total} tile(s) Copernicus GLO-30 necessário(s).')
+    feedback.push_info(tr('  {n} tile(s) Copernicus GLO-30 necessário(s).').format(n=n_total))
 
     tile_paths = []
     n_cached = n_downloaded = n_failed = 0
@@ -392,12 +398,12 @@ def _download_copernicus_tiles(bbox_wgs84, temp_dir, feedback):
 
     parts = []
     if n_downloaded:
-        parts.append(f'{n_downloaded} baixado(s)')
+        parts.append(tr('{n} baixado(s)').format(n=n_downloaded))
     if n_cached:
-        parts.append(f'{n_cached} do cache')
+        parts.append(tr('{n} do cache').format(n=n_cached))
     if n_failed:
-        parts.append(f'{n_failed} falhou')
-    feedback.push_info(f'  Resultado: {", ".join(parts)}.')
+        parts.append(tr('{n} falhou').format(n=n_failed))
+    feedback.push_info(tr('  Resultado: {parts}.').format(parts=', '.join(parts)))
     return tile_paths
 
 
@@ -412,12 +418,12 @@ def _fetch_copernicus_tile(lat, lon, cache_dir, feedback, progress_base=0.0, pro
         return tif_path
 
     url = _COPERNICUS_BASE_URL + name + '/' + fn
-    feedback.push_info(f'  Baixando {fn}…')
+    feedback.push_info(tr('  Baixando {fn}…').format(fn=fn))
     try:
-        _download_dem_file(url, tif_path, feedback, f'Baixando elevação {fn}',
+        _download_dem_file(url, tif_path, feedback, tr('Baixando elevação {fn}').format(fn=fn),
                            progress_base, progress_span)
     except Exception as exc:
-        feedback.push_info(f'  Falha: {fn}: {exc}')
+        feedback.push_info(tr('  Falha: {fn}: {err}').format(fn=fn, err=exc))
         return None
 
     return tif_path if os.path.exists(tif_path) else None
@@ -493,7 +499,7 @@ def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path=None):
             ds = None
         except Exception as exc:
             feedback.push_info(
-                f'  Aviso: falha ao recortar {os.path.basename(tp)}: {exc}')
+                tr('  Aviso: falha ao recortar {name}: {err}').format(name=os.path.basename(tp), err=exc))
     return clipped
 
 
@@ -548,7 +554,7 @@ def _smooth_terrain(merged_path, smoothing, temp_dir):
 def _run_contour_generate(merged_path, interval, contour_path, feedback):
     ds_raster = gdal.Open(merged_path)
     if ds_raster is None:
-        raise ContourError(f'Não foi possível abrir o DEM mesclado: {merged_path}')
+        raise ContourError(tr('Não foi possível abrir o DEM mesclado: {path}').format(path=merged_path))
 
     band = ds_raster.GetRasterBand(1)
     nodata = band.GetNoDataValue()
@@ -581,7 +587,7 @@ def _run_contour_generate(merged_path, interval, contour_path, feedback):
     ds_raster = None
 
     if result != 0:
-        raise ContourError(f'gdal.ContourGenerate falhou com código {result}')
+        raise ContourError(tr('gdal.ContourGenerate falhou com código {code}').format(code=result))
 
 
 def _apply_renderer(layer, interval, color):
