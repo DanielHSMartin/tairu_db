@@ -44,7 +44,7 @@ _MAX_MASK_PIXELS = 64_000_000
 _MAX_PARTS = 5000
 
 # 0 continua 0; 1..255 viram 1. bytes.translate faz a binarização da máscara sem
-# numpy — que este plugin não usa em lugar nenhum, e ReadAsArray exigiria.
+# numpy — que o plugin só usa, e opcional, na suavização das curvas; ReadAsArray exigiria.
 _BINARIZE = bytes([0] + [1] * 255)
 
 # A tabela de imagens do assistente remonta a CADA visita à página, uma linha por

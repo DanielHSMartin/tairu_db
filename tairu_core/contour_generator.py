@@ -4,10 +4,9 @@ Contour line generation from DEM data sources for inclusion in .tairudb files.
 Logic adapted from CurvaDeNivel (github.com/DanielHSMartin/CurvaDeNivel).
 """
 
+import html
 import math
 import os
-import re
-import shutil
 import tempfile
 import urllib.request
 from datetime import datetime
@@ -119,10 +118,13 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
         if feedback.is_canceled():
             raise ContourError(tr('Cancelado pelo usuário.'))
 
+        dem_path = merged_path
         if smoothing != SMOOTHING_NONE:
             feedback.push_info(tr('Suavizando terreno ({level})…').format(level=tr(smoothing)))
+            feedback.heartbeat(tr('Curvas: suavizando terreno ({level})…').format(level=tr(smoothing)))
+            QCoreApplication.processEvents()
             try:
-                _smooth_terrain(merged_path, smoothing, temp_dir)
+                dem_path = _smooth_terrain(merged_path, smoothing, temp_dir)
             except Exception as exc:
                 feedback.push_info(tr('Aviso: suavização falhou ({err}), usando terreno original.').format(err=exc))
 
@@ -133,7 +135,7 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
         feedback.heartbeat(tr('Curvas: traçando linhas (intervalo {interval} m)…').format(interval=interval))
         QCoreApplication.processEvents()
         contour_path = os.path.join(temp_dir, 'contours.gpkg')
-        _run_contour_generate(merged_path, interval, contour_path, feedback)
+        _run_contour_generate(dem_path, interval, contour_path, feedback)
 
         if feedback.is_canceled():
             raise ContourError(tr('Cancelado pelo usuário.'))
@@ -151,8 +153,8 @@ def generate_contours(bbox_wgs84, dem_source, interval, smoothing, color, feedba
         _apply_renderer(layer, interval, color)
         feedback.push_info(tr('Curvas de nível geradas com sucesso.'))
 
-        # Free the intermediate DEM rasters (merged/smoothed/clipped tiles, cutline,
-        # vrt) — the bulk of the temp footprint. Only contours.gpkg is still needed,
+        # Free the intermediate DEM rasters (merged/smoothed/TPI/clipped tiles,
+        # cutline) — the bulk of the temp footprint. Only contours.gpkg is still needed,
         # backing the returned layer; the DEM tile cache lives elsewhere and is kept.
         for name in os.listdir(temp_dir):
             if not name.startswith('contours.gpkg'):
@@ -508,47 +510,149 @@ def _merge_tiles(clipped_paths, merged_path):
     gdal.Warp(merged_path, clipped_paths, options=opts)
 
 
+# Núcleos gaussianos do suavizaTerreno do CurvaDeNivel, copiados como estão: mesmos
+# pesos, mesmas curvas. O 3x3, o 7x7 e o 9x9 são a mesma gaussiana (σ≈1 px) em
+# tamanhos diferentes; só o 13x13 é mais larga (σ=2). (tamanho, coeficientes)
+_GAUSS_3 = (3, '0.077847 0.123317 0.077847 0.123317 0.195346 0.123317 0.077847 0.123317 0.077847')
+_GAUSS_7 = (7, (
+    '0.000036 0.000363 0.001446 0.002291 0.001446 0.000363 0.000036 0.000363 0.003676 0.014662 '
+    '0.023226 0.014662 0.003676 0.000363 0.001446 0.014662 0.058488 0.092651 0.058488 0.014662 '
+    '0.001446 0.002291 0.023226 0.092651 0.146768 0.092651 0.023226 0.002291 0.001446 0.014662 '
+    '0.058488 0.092651 0.058488 0.014662 0.001446 0.000363 0.003676 0.014662 0.023226 0.014662 '
+    '0.003676 0.000363 0.000036 0.000363 0.001446 0.002291 0.001446 0.000363 0.000036'))
+_GAUSS_9 = (9, (
+    '0 0.000001 0.000014 0.000055 0.000088 0.000055 0.000014 0.000001 0 0.000001 0.000036 0.000362 '
+    '0.001445 0.002289 0.001445 0.000362 0.000036 0.000001 0.000014 0.000362 0.003672 0.014648 '
+    '0.023205 0.014648 0.003672 0.000362 0.000014 0.000055 0.001445 0.014648 0.058434 0.092566 '
+    '0.058434 0.014648 0.001445 0.000055 0.000088 0.002289 0.023205 0.092566 0.146634 0.092566 '
+    '0.023205 0.002289 0.000088 0.000055 0.001445 0.014648 0.058434 0.092566 0.058434 0.014648 '
+    '0.001445 0.000055 0.000014 0.000362 0.003672 0.014648 0.023205 0.014648 0.003672 0.000362 '
+    '0.000014 0.000001 0.000036 0.000362 0.001445 0.002289 0.001445 0.000362 0.000036 0.000001 0 '
+    '0.000001 0.000014 0.000055 0.000088 0.000055 0.000014 0.000001 0'))
+_GAUSS_13 = (13, (
+    '0.000005 0.000019 0.000060 0.000144 0.000269 0.000391 0.000443 0.000391 0.000269 0.000144 '
+    '0.000060 0.000019 0.000005 0.000019 0.000077 0.000237 0.000569 0.001063 0.001546 0.001752 '
+    '0.001546 0.001063 0.000569 0.000237 0.000077 0.000019 0.000060 0.000237 0.000730 0.001752 '
+    '0.003273 0.004762 0.005396 0.004762 0.003273 0.001752 0.000730 0.000237 0.000060 0.000144 '
+    '0.000569 0.001752 0.004202 0.007851 0.011423 0.012944 0.011423 0.007851 0.004202 0.001752 '
+    '0.000569 0.000144 0.000269 0.001063 0.003273 0.007851 0.014667 0.021341 0.024183 0.021341 '
+    '0.014667 0.007851 0.003273 0.001063 0.000269 0.000391 0.001546 0.004762 0.011423 0.021341 '
+    '0.031051 0.035185 0.031051 0.021341 0.011423 0.004762 0.001546 0.000391 0.000443 0.001752 '
+    '0.005396 0.012944 0.024183 0.035185 0.039870 0.035185 0.024183 0.012944 0.005396 0.001752 '
+    '0.000443 0.000391 0.001546 0.004762 0.011423 0.021341 0.031051 0.035185 0.031051 0.021341 '
+    '0.011423 0.004762 0.001546 0.000391 0.000269 0.001063 0.003273 0.007851 0.014667 0.021341 '
+    '0.024183 0.021341 0.014667 0.007851 0.003273 0.001063 0.000269 0.000144 0.000569 0.001752 '
+    '0.004202 0.007851 0.011423 0.012944 0.011423 0.007851 0.004202 0.001752 0.000569 0.000144 '
+    '0.000060 0.000237 0.000730 0.001752 0.003273 0.004762 0.005396 0.004762 0.003273 0.001752 '
+    '0.000730 0.000237 0.000060 0.000019 0.000077 0.000237 0.000569 0.001063 0.001546 0.001752 '
+    '0.001546 0.001063 0.000569 0.000237 0.000077 0.000019 0.000005 0.000019 0.000060 0.000144 '
+    '0.000269 0.000391 0.000443 0.000391 0.000269 0.000144 0.000060 0.000019 0.000005'))
+
+# O núcleo pesado de cada nível, que o TPI mistura ao 3x3. Baixo não tem: é o 3x3 puro.
+_HEAVY_KERNEL = {SMOOTHING_LOW: None, SMOOTHING_MEDIUM: _GAUSS_7, SMOOTHING_HIGH: _GAUSS_13}
+
+# Linhas por faixa nas passadas com numpy: a memória não cresce com a área de interesse.
+_STRIP_ROWS = 256
+
+
+def _kernel_vrt(path, kernel):
+    """`path` visto através da convolução normalizada `kernel` (VRT em memória, Float32).
+
+    O XML é escrito do zero, nunca editando a saída do gdal.BuildVRT: ela chama a fonte
+    de <ComplexSource> quando há nodata e grava o caminho relativo ao VRT, e o port, que
+    procurava <SimpleSource> e reescrevia o caminho, fez da suavização uma cópia muda da
+    2.0.10 à 2.0.26. Sem <NODATA> na fonte, de propósito: assim o GDAL pula o nodata da
+    banda na soma e o devolve como nodata; com <NODATA> (como no CurvaDeNivel) ele o lê
+    como 0 e puxa para o nível do mar a borda de uma área em polígono.
+    """
+    size, coefs = kernel
+    ds = gdal.Open(path)
+    w, h = ds.RasterXSize, ds.RasterYSize
+    nodata = ds.GetRasterBand(1).GetNoDataValue()
+    ds = None
+    nd = '' if nodata is None else f'<NoDataValue>{nodata!r}</NoDataValue>'
+    src = html.escape(os.path.abspath(path), quote=False)
+    rect = f'xOff="0" yOff="0" xSize="{w}" ySize="{h}"'
+    return gdal.Open(
+        f'<VRTDataset rasterXSize="{w}" rasterYSize="{h}">'
+        f'<VRTRasterBand dataType="Float32" band="1">{nd}<KernelFilteredSource>'
+        f'<SourceFilename relativeToVRT="0">{src}</SourceFilename><SourceBand>1</SourceBand>'
+        f'<SrcRect {rect}/><DstRect {rect}/>'
+        f'<Kernel normalized="1"><Size>{size}</Size><Coefs>{coefs}</Coefs></Kernel>'
+        '</KernelFilteredSource></VRTRasterBand></VRTDataset>')
+
+
 def _smooth_terrain(merged_path, smoothing, temp_dir):
-    """Apply a uniform box blur via VRT KernelFilteredSource (GDAL built-in)."""
-    kernel_size_map = {SMOOTHING_LOW: 3, SMOOTHING_MEDIUM: 5, SMOOTHING_HIGH: 9}
-    sz = kernel_size_map.get(smoothing, 5)
-    coefs = ' '.join(['1'] * (sz * sz))
+    """Suaviza o DEM como o suavizaTerreno do CurvaDeNivel; devolve o caminho do novo DEM.
 
-    vrt_path = os.path.join(temp_dir, 'blur.vrt')
-    gdal.BuildVRT(vrt_path, [merged_path])
+    Gaussiana 3x3 misturada a uma mais pesada (7x7 no Médio, 13x13 no Alto) pelo |TPI|
+    borrado e normalizado: onde o relevo quebra — crista, vale — pesa o 3x3 e a forma
+    fica; onde é liso, o pesado limpa o ruído. Baixo é o 3x3 puro. merged_path fica
+    intacto: nada de sobrescrever um arquivo que o VRT ainda segura aberto no Windows.
 
-    with open(vrt_path, 'r', encoding='utf-8') as f:
-        vrt_xml = f.read()
+    Diferenças deliberadas do original: o TPI é calculado também na margem
+    (computeEdges), onde o CurvaDeNivel perdia o pixel da borda; o nodata é pulado em
+    vez de lido como 0; e o máximo do TPI vem do GDAL, não de um regex sobre o gdal.Info.
+    """
+    import numpy as np  # só aqui: sem numpy a suavização falha com aviso e as curvas saem
 
-    # Extract the key elements from the generated SimpleSource
-    src_fn_match = re.search(r'<SourceFilename[^>]*>(.*?)</SourceFilename>', vrt_xml, re.DOTALL)
-    src_fn = src_fn_match.group(1).strip() if src_fn_match else os.path.abspath(merged_path)
-    src_band_match = re.search(r'<SourceBand>(.*?)</SourceBand>', vrt_xml)
-    src_band = src_band_match.group(1).strip() if src_band_match else '1'
-    src_rect_match = re.search(r'<SrcRect[^/]*/>', vrt_xml)
-    src_rect = src_rect_match.group(0) if src_rect_match else ''
-    dst_rect_match = re.search(r'<DstRect[^/]*/>', vrt_xml)
-    dst_rect = dst_rect_match.group(0) if dst_rect_match else ''
+    heavy = _HEAVY_KERNEL[smoothing]
+    dem = gdal.Open(merged_path)
+    band = dem.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    w, h = dem.RasterXSize, dem.RasterYSize
+    lo, hi = band.ComputeRasterMinMax(False)
 
-    kernel_block = (
-        '<KernelFilteredSource>\n'
-        f'      <SourceFilename relativeToVRT="0">{src_fn}</SourceFilename>\n'
-        f'      <SourceBand>{src_band}</SourceBand>\n'
-        f'      {src_rect}\n'
-        f'      {dst_rect}\n'
-        f'      <Kernel normalized="1"><Size>{sz}</Size>'
-        f'<Coefs>{coefs}</Coefs></Kernel>\n'
-        '    </KernelFilteredSource>'
-    )
-    vrt_xml = re.sub(
-        r'<SimpleSource>.*?</SimpleSource>', kernel_block, vrt_xml, flags=re.DOTALL)
+    light = _kernel_vrt(merged_path, _GAUSS_3)
+    tpi_blur = heavy_vrt = None
+    tpi_max = 0.0
+    if heavy:
+        tpi_path = os.path.join(temp_dir, 'tpi.tif')
+        gdal.DEMProcessing(tpi_path, merged_path, 'TPI', computeEdges=True)
+        tpi = gdal.Open(tpi_path, gdal.GA_Update)
+        tb = tpi.GetRasterBand(1)
+        tnd = tb.GetNoDataValue()
+        for y in range(0, h, _STRIP_ROWS):
+            a = tb.ReadAsArray(0, y, w, min(_STRIP_ROWS, h - y))
+            tb.WriteArray(np.where(a == tnd, a, np.abs(a)), 0, y)
+        tb = tpi = None
+        tpi_blur = _kernel_vrt(tpi_path, _GAUSS_9)
+        # O máximo sai da leitura. ComputeRasterMinMax num VRT de kernel devolve o da
+        # FONTE, sem o filtro — 32,6 em vez de 14,2 num DEM real —, e a mistura pendia
+        # para o núcleo pesado: 2,3x mais liso que o CurvaDeNivel.
+        # ponytail: o 9x9 roda duas vezes (aqui e na mistura), ~1/3 do tempo (12 s no
+        # Médio para 1°x1°); gravar o TPI borrado num .tif se área grande pesar.
+        for y in range(0, h, _STRIP_ROWS):
+            t = tpi_blur.ReadAsArray(0, y, w, min(_STRIP_ROWS, h - y))
+            tpi_max = max(tpi_max, float(t[t != tnd].max(initial=0.0)))
+            QCoreApplication.processEvents()
+        heavy_vrt = _kernel_vrt(merged_path, heavy)
 
-    with open(vrt_path, 'w', encoding='utf-8') as f:
-        f.write(vrt_xml)
-
-    smooth_path = os.path.join(temp_dir, 'smooth.tif')
-    gdal.Translate(smooth_path, vrt_path, format='GTiff')
-    shutil.copy2(smooth_path, merged_path)
+    out_path = os.path.join(temp_dir, 'smooth.tif')
+    out = gdal.GetDriverByName('GTiff').Create(out_path, w, h, 1, gdal.GDT_Float32)
+    out.SetGeoTransform(dem.GetGeoTransform())
+    out.SetProjection(dem.GetProjection())
+    ob = out.GetRasterBand(1)
+    if nodata is not None:
+        ob.SetNoDataValue(nodata)
+    for y in range(0, h, _STRIP_ROWS):
+        n = min(_STRIP_ROWS, h - y)
+        d = band.ReadAsArray(0, y, w, n)
+        valid = np.isfinite(d) if nodata is None else np.isfinite(d) & (d != nodata)
+        s = light.ReadAsArray(0, y, w, n)
+        if heavy_vrt is not None:
+            a = np.clip(tpi_blur.ReadAsArray(0, y, w, n) / tpi_max, 0, 1) if tpi_max > 0 else 0.0
+            s = a * s + (1 - a) * heavy_vrt.ReadAsArray(0, y, w, n)
+        # Média ponderada normalizada não sai da faixa do dado. Se saiu, entrou nodata na
+        # soma (outra versão do GDAL?): melhor o terreno original com aviso do que um anel
+        # de curvas falsas na borda da área.
+        v = s[valid]
+        if v.size and (v.min() < lo - 0.01 or v.max() > hi + 0.01):
+            raise ContourError(tr('o terreno suavizado saiu da faixa de elevação do original'))
+        ob.WriteArray(np.where(valid, s, d), 0, y)
+        QCoreApplication.processEvents()
+    ob = out = None
+    return out_path
 
 
 def _run_contour_generate(merged_path, interval, contour_path, feedback):
