@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 from qgis.core import QgsRectangle, QgsGeometry, QgsCoordinateTransform
 
 try:
+    from .datum_context import datum_context
     from .i18n import tr
 except ImportError:  # standalone usage with the plugin dir on sys.path
+    from tairu_core.datum_context import datum_context
     from tairu_core.i18n import tr
 
 
@@ -38,7 +40,9 @@ def to_wgs84(geom, src, wgs84, ctx):
             'A área selecionada não tem sistema de coordenadas válido — nem o '
             'canvas nem o projeto informaram um SRC. Defina o SRC do projeto '
             '(canto inferior direito da janela do QGIS) e tente de novo.'))
-    transform = QgsCoordinateTransform(src, wgs84, ctx)
+    # A operação de datum do app para esta área (ver datum_context): sem ela a
+    # região sairia deslocada do tile e do dado que o plugin grava.
+    transform = QgsCoordinateTransform(src, wgs84, datum_context(ctx, [(src, geom.boundingBox())]))
     origem = src.authid() or src.description() or tr('origem desconhecida')
     if not transform.isValid():
         raise ValueError(

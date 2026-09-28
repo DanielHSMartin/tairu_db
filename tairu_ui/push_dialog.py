@@ -14,7 +14,7 @@ try:
     from ..tairu_core.i18n import tr
     from ..tairu_core.layer_tree import layer_is_visible
     from ..tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
-    from ..tairu_sync.record_convert import layer_origin_map_id
+    from ..tairu_sync.record_convert import has_pending_edits, layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from ..tairu_sync.push import (
         apply_group_to_plan, batch_summary, build_push_plan, execute_push,
@@ -29,7 +29,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.i18n import tr
     from tairu_core.layer_tree import layer_is_visible
     from tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
-    from tairu_sync.record_convert import layer_origin_map_id
+    from tairu_sync.record_convert import has_pending_edits, layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
     from tairu_sync.push import (
         apply_group_to_plan, batch_summary, build_push_plan, execute_push,
@@ -186,7 +186,7 @@ class PushDialog(QDialog):
         self._empty_layers = []
         self._group_name_touched = False
         self._hidden_unchanged_count = 0
-        self._truncated_preview_count = 0
+        self._beyond_items = []   # os itens além das linhas da tabela
         self._preview_generation = 0
         self.setWindowTitle(tr('Enviar camadas vetoriais · {nome}').format(nome=tmap.nome))
         self.resize(1120, 640)
@@ -348,6 +348,17 @@ class PushDialog(QDialog):
         self.summary_label = set_muted(QLabel(tr('Calculando prévia…')))
         self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
+
+        # Conflito nasce desmarcado, e além das linhas da tabela não havia como marcá-lo: um
+        # Shapefile grande (sem a coluna do hash) nem podia ser enviado. Vale para todos,
+        # dentro e fora da tabela.
+        self.mark_conflicts_btn = set_plain_button(QPushButton(tr('Marcar todos os conflitos')))
+        self.mark_conflicts_btn.setToolTip(tr('Grava a versão do QGIS por cima da do Tairu em todos '
+                                              'os registros em conflito, inclusive os que não '
+                                              'cabem na tabela.'))
+        self.mark_conflicts_btn.clicked.connect(self._mark_all_conflicts)
+        self.mark_conflicts_btn.hide()
+        layout.addWidget(self.mark_conflicts_btn, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.table = QTableWidget(0, len(_HEADERS))
         self.table.setHorizontalHeaderLabels(_HEADERS)
@@ -541,12 +552,23 @@ class PushDialog(QDialog):
         generation = self._preview_generation
         self.entries = []
         self._row_items = []
+        self._beyond_items = []
+        self.mark_conflicts_btn.hide()
         self.table.setRowCount(0)
         self._update_roundtrip_banner()
 
         layers = self.selected_layers()
         self._empty_layers = []
         empty = self._empty_layers
+        # A prévia lê o buffer, e o carimbo gravado depois do envio não sobrevive a um
+        # "Descartar": a base guardada passaria a valer por uma feição que não é mais a dela.
+        dirty = [layer.name() for layer in layers if has_pending_edits(layer)]
+        if dirty:
+            self.summary_label.setText(
+                tr('Edições não salvas em {camadas}: feche esta janela, salve ou descarte as '
+                   'edições e envie de novo.').format(camadas=', '.join('«%s»' % n for n in dirty)))
+            self._update_buttons()
+            return
         for layer in layers:
             if layer.featureCount() == 0:
                 empty.append(layer.name())
@@ -556,7 +578,8 @@ class PushDialog(QDialog):
                 plan = build_push_plan(
                     layer, self._mapping(layer), self.tmap, self.dock.tokens.uid,
                     propagate_deletions=include_deletions,
-                    progress=self._preview_progress(generation, layer.name()))
+                    progress=self._preview_progress(generation, layer.name()),
+                    cache=self.dock._cache())
             except _PreviewAborted:
                 return
             except Exception as e:
@@ -598,11 +621,22 @@ class PushDialog(QDialog):
         extras = []
         if self._hidden_unchanged_count:
             extras.append(tr('{n} inalterados ocultos').format(n=self._hidden_unchanged_count))
-        if self._truncated_preview_count:
+        # Fora da tabela ninguém muda a caixa: vai o que já está marcado. Conflito (nasce
+        # desmarcado), sem permissão e inalterado com aviso ficam de fora e contam à parte.
+        sent_beyond = sum(1 for item in self._beyond_items
+                          if item.send and item.action in ('new', 'update', 'delete', 'conflict'))
+        if sent_beyond:
             extras.append(tr('{n} itens além do limite da tabela (enviados assim mesmo)').format(
-                n=self._truncated_preview_count))
+                n=sent_beyond))
+        if len(self._beyond_items) > sent_beyond:
+            extras.append(tr('{n} itens além do limite da tabela (não enviados)').format(
+                n=len(self._beyond_items) - sent_beyond))
+        self.mark_conflicts_btn.setVisible(any(
+            item.action == 'conflict' and not item.send for plan, _layer in self.entries for item in plan.items))
         for name in self._empty_layers:
             extras.append(tr('«{camada}» não possui feições').format(camada=name))
+        extras.extend(plan.datum_warning.rstrip('.') for plan, _layer in self.entries
+                      if plan.datum_warning)
         suffix = f' {"; ".join(extras)}.' if extras else ''
         plans = [plan for plan, _layer in self.entries]
         if not plans:
@@ -649,7 +683,7 @@ class PushDialog(QDialog):
         shown = visible[:_MAX_PREVIEW_ROWS]
         self._row_items = [item for item, _plan in shown]
         self._hidden_unchanged_count = len(items) - len(visible)
-        self._truncated_preview_count = max(0, len(visible) - len(shown))
+        self._beyond_items = [item for item, _plan in visible[len(shown):]]
         self.table.blockSignals(True)
         self.table.setRowCount(len(shown))
         for row, (item, plan) in enumerate(shown):
@@ -691,9 +725,9 @@ class PushDialog(QDialog):
         Item não gravável (inalterado, sem permissão) fica com um traço em vez de
         uma caixa desmarcada: uma caixa desligada convida a ligá-la, e o estado
         dela não diria a verdade — um inalterado ENTRA no envio se a etapa 3
-        escolher um grupo.
+        escolher um grupo. Conflito nasce desmarcado: marcá-lo grava a versão do QGIS.
         """
-        if item.action not in ('new', 'update', 'delete'):
+        if item.action not in ('new', 'update', 'delete', 'conflict'):
             cell = self._readonly_item('—')
             cell.setToolTip(tr('Este item não é enviado por si só.'))
             return cell
@@ -709,9 +743,24 @@ class PushDialog(QDialog):
         if row >= len(self._row_items):
             return
         item = self._row_items[row]
-        if item.action not in ('new', 'update', 'delete'):
+        if item.action not in ('new', 'update', 'delete', 'conflict'):
             return
         item.send = cell.checkState() == _CHECKED
+        self._refresh_summary()
+        self._update_buttons()
+
+    def _mark_all_conflicts(self):
+        for plan, _layer in self.entries:
+            for item in plan.items:
+                if item.action == 'conflict':
+                    item.send = True
+        # Só as caixas: refazer a tabela jogaria fora os valores editados nas células.
+        self.table.blockSignals(True)
+        for row, item in enumerate(self._row_items):
+            cell = self.table.item(row, _SEND_COL)
+            if item.action == 'conflict' and cell is not None:
+                cell.setCheckState(_CHECKED)
+        self.table.blockSignals(False)
         self._refresh_summary()
         self._update_buttons()
 
@@ -768,7 +817,9 @@ class PushDialog(QDialog):
         if kind in ('float', 'float_optional'):
             if kind == 'float_optional' and value is None:
                 return ''
-            return ('%f' % float(value or 0.0)).rstrip('0').rstrip('.')
+            # 15 dígitos significativos: '%f' cortava em 6 casas, e a célula que ninguém
+            # editou voltava arredondada e subia por cima do valor do app.
+            return '%.15g' % float(value or 0.0)
         return str(value)
 
     def _type_combo(self, value, editable):
@@ -799,7 +850,9 @@ class PushDialog(QDialog):
         for key, label in options:
             combo.addItem(label, key)
             keys.append(key)
-        if value not in (None, '') and value not in keys:
+        # '' também (situação vazia de um registro recebido): trocá-lo pela 1ª opção punha a
+        # situação na máscara e ela subia por cima da do app.
+        if value is not None and value not in keys:
             combo.addItem(str(value), value)
         index = combo.findData(value)
         if index < 0 and combo.count():

@@ -469,8 +469,38 @@ def _write_cutline(clip_polygons, temp_dir):
     return path if os.path.exists(path) else None
 
 
+def _grid_bounds(gt, bbox):
+    """The bbox snapped to the nearest pixel edges of geotransform `gt`.
+
+    Bounds taken straight from the bbox anchor the output grid on an arbitrary
+    corner: gdal.Warp then picks a slightly different resolution and copies the
+    nearest source pixel, shifting the surface by up to half a pixel (~15 m at
+    1 arc-second) and the contours by 6-20 m, silently.
+    """
+    x0, rx, y0, ry = gt[0], gt[1], gt[3], -gt[5]
+    c0 = round((bbox.xMinimum() - x0) / rx)
+    c1 = max(round((bbox.xMaximum() - x0) / rx), c0 + 1)
+    r0 = round((y0 - bbox.yMaximum()) / ry)
+    r1 = max(round((y0 - bbox.yMinimum()) / ry), r0 + 1)
+    return (x0 + c0 * rx, y0 - r1 * ry, x0 + c1 * rx, y0 - r0 * ry)
+
+
+def _same_grid(gt, ref):
+    """True when `gt` has the pixel size of `ref` and an origin a whole number
+    of pixels away: a nearest-neighbour warp onto `ref` is then a copy.
+
+    The slack is for INPE TOPODATA, whose neighbouring tiles sit 0.014 px apart
+    (a pixel of 1.5000038°/5400, not 1"): copying them misplaces nothing by more
+    than ~0.4 m, while resampling would blend values for no gain."""
+    fx = (gt[0] - ref[0]) / ref[1]
+    fy = (gt[3] - ref[3]) / ref[5]
+    return (math.isclose(gt[1], ref[1], rel_tol=1e-5) and math.isclose(gt[5], ref[5], rel_tol=1e-5)
+            and abs(fx - round(fx)) < 0.05 and abs(fy - round(fy)) < 0.05)
+
+
 def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path=None):
     clipped = []
+    ref_gt = bounds = None
     for i, tp in enumerate(tile_paths):
         out = os.path.join(temp_dir, f'clip_{i}.tif')
         try:
@@ -478,15 +508,26 @@ def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path=None):
             if ds is None:
                 continue
             nodata = ds.GetRasterBand(1).GetNoDataValue()
+            gt = ds.GetGeoTransform()
             ds = None
+
+            # Every clip lands on the pixel grid of the first tile, at its native
+            # resolution, so _merge_tiles only mosaics. A tile on another grid
+            # (another product, or Copernicus's coarser longitude step past 50°)
+            # is really resampled, and bilinear is then the right kernel.
+            # ponytail: first tile sets the grid, not the finest one; pick the
+            # finest if a region mixing Copernicus latitude zones needs it.
+            if ref_gt is None:
+                ref_gt = gt
+                bounds = _grid_bounds(gt, bbox_wgs84)
 
             # cutlineDSName masks pixels outside the AOI polygon to dstNodata
             # (cropToCutline stays off → the bbox extent is preserved). gdal.Warp
             # ignores cutlineDSName=None, so the no-polygon path is unchanged.
             opts = gdal.WarpOptions(
-                outputBounds=(
-                    bbox_wgs84.xMinimum(), bbox_wgs84.yMinimum(),
-                    bbox_wgs84.xMaximum(), bbox_wgs84.yMaximum()),
+                outputBounds=bounds,
+                xRes=ref_gt[1], yRes=-ref_gt[5],
+                resampleAlg='near' if _same_grid(gt, ref_gt) else 'bilinear',
                 srcSRS='EPSG:4326', dstSRS='EPSG:4326',
                 format='GTiff',
                 srcNodata=nodata,
@@ -506,8 +547,10 @@ def _clip_tiles(tile_paths, bbox_wgs84, temp_dir, feedback, cutline_path=None):
 
 
 def _merge_tiles(clipped_paths, merged_path):
-    opts = gdal.WarpOptions(format='GTiff', srcSRS='EPSG:4326', dstSRS='EPSG:4326')
-    gdal.Warp(merged_path, clipped_paths, options=opts)
+    # The clips share one pixel grid and extent (_clip_tiles): a mosaic copies
+    # them. A warp here would choose its own resolution and resample again.
+    vrt = gdal.BuildVRT('', clipped_paths)
+    gdal.Translate(merged_path, vrt, format='GTiff')
 
 
 # Núcleos gaussianos do suavizaTerreno do CurvaDeNivel, copiados como estão: mesmos

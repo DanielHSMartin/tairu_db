@@ -134,3 +134,5 @@ tairu_firebase/config.py
 
 # Local knowledge-graph output (dev tooling, never publish)
 graphify-out/
+# QgsStyle creates it in the cwd when the tests start QgsApplication
+symbology-style.db

@@ -99,6 +99,19 @@ class TestFirestoreCache(unittest.TestCase):
             )
             self.assertEqual(cache.record_counts()['full'], 0)
 
+    def test_load_records_by_id_returns_only_the_requested_docs_of_that_map(self):
+        # Linha de base do envio: um erro aqui cai em silêncio no "a geometria mudou".
+        with tempfile.TemporaryDirectory(dir='/private/tmp') as settings_dir:
+            _install_qgis_stub(settings_dir)
+            from tairu_core.firestore_cache import FirestoreCache
+
+            cache = FirestoreCache('prod', 'user-a')
+            cache.store_records('map-a', [('a', {'recordId': 'a', 'nome': 'A'}),
+                                          ('b', {'recordId': 'b', 'nome': 'B'})], 1000)
+            cache.store_records('map-b', [('c', {'recordId': 'c', 'nome': 'C'})], 1000)
+            self.assertEqual(cache.load_records_by_id('map-a', ['a', 'c', 'x']),
+                             {'a': {'recordId': 'a', 'nome': 'A'}})
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -22,7 +22,9 @@ criptografado do QGIS. **Recursos de nuvem exigem plano Online ou Tempo Real.**
 - *Registros → camadas*: os registros do mapa viram camadas editáveis em um GeoPackage por
   mapa (`tairu_workspace/` na pasta de perfil do QGIS), separadas por geometria
   (pontos, linhas, polígonos, círculos e sem geometria), com cores do app aplicadas.
-  Repetir o pull atualiza as camadas pela chave `recordId`, sem duplicar.
+  Repetir o pull atualiza as camadas pela chave `recordId`, sem duplicar. Feição editada no
+  QGIS e ainda não enviada não é regravada nem apagada, e o que foi desenhado e não enviado
+  fica: o envio seguinte junta a edição com o que mudou no app (ou mostra o conflito).
 - *Arquivos TairuDB*: baixe qualquer arquivo do mapa; cada região vira uma camada raster
   (MBTiles) georreferenciada no grupo `Tairu/{mapa}`.
 
@@ -31,7 +33,12 @@ criptografado do QGIS. **Recursos de nuvem exigem plano Online ou Tempo Real.**
   registros (camadas desmarcadas no painel de camadas não são oferecidas), com
   mapeamento de campos (nome/descrição), tipo/subtipo e **prévia das alterações**
   (novos / atualizados / inalterados / sem permissão) antes de enviar. Camadas baixadas
-  pelo pull fazem ida-e-volta preservando os atributos por feição.
+  pelo pull fazem ida-e-volta preservando os atributos por feição. Um registro atualizado
+  grava só os campos que mudaram no QGIS desde o último recebimento ou envio (a linha de
+  base, guardada no cache local por camada e registro): o que foi editado no app continua
+  valendo. O mesmo campo mudado nos dois lados, registro apagado no app ou fora do cache
+  local aparece como **conflito**, desmarcado, com os campos no aviso; marcar "Enviar" (ou
+  "Marcar todos os conflitos") grava a versão do QGIS neles.
 - *Copiar registros entre expedições*: receba os registros de uma expedição e envie a
   camada para **outra** — eles são criados lá como registros novos, em nome de quem
   copiou, mantendo o identificador de origem (reenviar a mesma camada atualiza as cópias

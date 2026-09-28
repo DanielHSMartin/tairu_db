@@ -33,6 +33,9 @@ RECORDS_COLLECTION = 'records'
 # sem isso, abrir o painel sem rede mostraria a arvore de grupos vazia com os registros
 # todos em "Sem grupo" — pior que nao mostrar grupo nenhum, porque parece perda de dado.
 RECORD_GROUPS_COLLECTION = 'recordGroups'
+# Linha de base do sincronismo campo a campo (record_convert.sync_fields): o que o último
+# recebimento ou envio deixou em cada campo de cada registro, por camada. Só local.
+BASELINE_COLLECTION = 'syncBaseline'
 
 
 def _collection_path(map_id=None, collection=None):
@@ -230,6 +233,36 @@ class FirestoreCache:
             rows = conn.execute(sql, params).fetchall()
         return [(doc_id, json.loads(payload_json)) for doc_id, payload_json in rows]
 
+    def load_records_by_id(self, map_id, doc_ids, collection=RECORDS_COLLECTION):
+        """{doc_id: fields} dos documentos pedidos que estão no cache.
+
+        Uma conexão e uma consulta por id: o envio precisa só dos registros alterados,
+        e load_records decodificaria a expedição inteira para achar meia dúzia.
+        """
+        collection_path = _collection_path(map_id, collection)
+        found = {}
+        with closing(self._connect()) as conn:
+            for doc_id in doc_ids:
+                row = conn.execute(
+                    "SELECT payload_json FROM firestore_entities"
+                    " WHERE env_key = ? AND user_id = ? AND collection_path = ? AND doc_id = ?",
+                    (self.env_key, self.user_id, collection_path, doc_id),
+                ).fetchone()
+                if row:
+                    found[doc_id] = json.loads(row[0])
+        return found
+
+    def load_baselines(self, map_id, layer_key, record_ids):
+        """{recordId: campos} da linha de base de cada registro nesta camada (record_convert.layer_key)."""
+        docs = self.load_records_by_id(map_id, ['%s|%s' % (rid, layer_key) for rid in record_ids],
+                                       collection=BASELINE_COLLECTION)
+        return {doc_id.rsplit('|', 1)[0]: fields for doc_id, fields in docs.items()}
+
+    def store_baselines(self, map_id, layer_key, rows):
+        """Grava a linha de base [(recordId, campos)] desta camada."""
+        self.store_records(map_id, [('%s|%s' % (rid, layer_key), fields) for rid, fields in rows], 0,
+                           collection=BASELINE_COLLECTION)
+
     def store_records(self, map_id, rows, fetched_at_ms, full_snapshot=False,
                       collection=RECORDS_COLLECTION):
         collection_path = _collection_path(map_id, collection)
@@ -272,17 +305,6 @@ class FirestoreCache:
                                 """,
                                 (self.env_key, self.user_id, collection_path, doc_id),
                             )
-
-    def store_record_models(self, map_id, records, fetched_at_ms):
-        rows = []
-        for rec in records:
-            if not rec or not getattr(rec, 'record_id', ''):
-                continue
-            # geometryWkb is raw bytes — not JSON-serializable for the cache, and
-            # not needed here (the cache is points-based for offline display/diff).
-            fields = {k: v for k, v in rec.to_fields().items() if k != 'geometryWkb'}
-            rows.append((rec.record_id, fields))
-        self.store_records(map_id, rows, fetched_at_ms, full_snapshot=False)
 
     def record_counts(self):
         collection_suffix = '/records'

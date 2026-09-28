@@ -218,6 +218,39 @@ class TestExtentSummary(unittest.TestCase):
         self.assertTrue(page.isComplete())
 
 
+class TestDrawnRectangleKeepsItsCrs(unittest.TestCase):
+    """O assistente não é modal: trocar a SRC do projeto depois de desenhar não
+    pode mover a área. Os números eram lidos na SRC do momento do cálculo — de
+    UTM 23S para 22S a área andava 642 km, e to_wgs84 aceitava (seguia em graus)."""
+
+    def test_area_stays_put_when_project_crs_changes_after_drawing(self):
+        from pyproj import Geod, Transformer
+        page = _build_page()
+        project, canvas = QgsProject.instance(), page._canvas
+        utm23s = QgsCoordinateReferenceSystem('EPSG:31983')  # SIRGAS 2000 / UTM 23S
+        project.setCrs(utm23s)
+        canvas.setDestinationCrs(utm23s)
+        page.draw_radio.setChecked(True)
+        page._on_extent_picked(QgsRectangle(190000, 8250000, 195000, 8255000))  # Brasília
+
+        to_wgs = Transformer.from_crs(31983, 4326, always_xy=True)
+        lons, lats = zip(*(to_wgs.transform(x, y) for x in (190000, 195000) for y in (8250000, 8255000)))
+        ref = [(min(lons), min(lats)), (max(lons), max(lats))]
+        geod = Geod(ellps='WGS84')
+
+        # Projected first: 4326 fails loudly without the fix and would stop the loop
+        # before the silent shifts (642 km to 31982, 61 m to 29193) the fix is about.
+        for authid in ('EPSG:31983', 'EPSG:31982', 'EPSG:29193', 'EPSG:4326'):
+            new = QgsCoordinateReferenceSystem(authid)
+            project.setCrs(new)
+            canvas.setDestinationCrs(new)   # o QGIS faz o canvas seguir o projeto
+            bb = page.polygons_wgs84()[0].boundingBox()
+            got = [(bb.xMinimum(), bb.yMinimum()), (bb.xMaximum(), bb.yMaximum())]
+            for (lon0, lat0), (lon1, lat1) in zip(ref, got):
+                dist = geod.inv(lon0, lat0, lon1, lat1)[2]
+                self.assertLess(dist, 1.0, f'{authid}: canto a {dist:.1f} m')
+
+
 class TestBasemapSelection(unittest.TestCase):
     """Uma lista só, a da primeira tela — e mapas de fundo online ficam de fora.
 

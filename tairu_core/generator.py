@@ -37,12 +37,14 @@ try:
     from .tairudb_writer import TairuDBWriter, MetaTile
     from .map_identity import map_uuid_for_output
     from .elevation_tiles import ELEVATION_ZOOM
+    from .datum_context import datum_context
     from .i18n import decimal, thousands, tr
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _OPEN_WRITE_ONLY, _FMT_ARGB32
     from tairu_core.tairudb_writer import TairuDBWriter, MetaTile
     from tairu_core.map_identity import map_uuid_for_output
     from tairu_core.elevation_tiles import ELEVATION_ZOOM
+    from tairu_core.datum_context import datum_context
     from tairu_core.i18n import decimal, thousands, tr
 
 # Debug mode - set to True for detailed logging, False for production
@@ -160,6 +162,7 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
         settings.setExtent(QgsRectangle(min(p1.x(), p2.x()), min(p1.y(), p2.y()),
                                         max(p1.x(), p2.x()), max(p1.y(), p2.y())))
         settings.setDestinationCrs(mercator)
+        settings.setTransformContext(transform_context)
         settings.setBackgroundColor(QColor(Qt.GlobalColor.transparent))
         settings.setFlag(Qgis.MapSettingsFlag.Antialiasing, antialias)  # type: ignore
         settings.setFlag(Qgis.MapSettingsFlag.RenderMapTile, True)  # type: ignore
@@ -355,9 +358,12 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
     est.fmt = fmt
 
     if sample is None and layers:
+        # O mesmo contexto que o motor vai usar (ver TileRenderEngine), e o aviso de
+        # grade ausente já aqui, na prévia.
         sample = sample_tile_sizes(
             layers, region_result.filtered_tiles, max_zoom, fmt, jpg_quality,
-            transform_context, dpi=dpi, tile_size=tile_size)
+            datum_context(transform_context, layers, warn=est.warnings.append),
+            dpi=dpi, tile_size=tile_size)
 
     est.blank_samples = sample.blank if sample is not None else 0
     if est.blank_samples and (sample is None or sample.count == 0):
@@ -589,8 +595,13 @@ class TileRenderEngine:
 
         self.wgs84_crs = QgsCoordinateReferenceSystem("EPSG:4326")
         self.mercator_crs = QgsCoordinateReferenceSystem("EPSG:3857")
+        # A operação de datum do app para cada camada (ver datum_context). Sem
+        # setTransformContext o QgsMapSettings nem via o contexto do projeto: o
+        # render usava a escolha do QGIS, não a do usuário nem a do app.
+        self.transform_context = datum_context(
+            spec.transform_context, spec.layers, warn=lambda text: feedback.push_info(f'⚠ {text}'))
         self.wgs2mercator = QgsCoordinateTransform(
-            self.wgs84_crs, self.mercator_crs, spec.transform_context
+            self.wgs84_crs, self.mercator_crs, self.transform_context
         )
 
         self.writer: Optional[TairuDBWriter] = None
@@ -971,6 +982,7 @@ class TileRenderEngine:
                 map_settings.setOutputSize(QSize(actual_tile_width, actual_tile_height))
                 map_settings.setExtent(meta_tile.extent)
                 map_settings.setDestinationCrs(self.mercator_crs)
+                map_settings.setTransformContext(self.transform_context)
                 # Fundo TRANSPARENTE, nao o branco opaco que QgsMapSettings traz de
                 # fabrica: onde a imagem de origem nao cobre — borda da area, buraco
                 # de nodata, tile XYZ que nao chegou a tempo — o tile saia branco

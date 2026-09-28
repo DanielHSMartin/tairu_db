@@ -27,7 +27,7 @@ try:
         TairuRecord, TairuRecordGroup, now_millis, parse_millis)
     from .record_convert import (
         RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
-        add_raster_to_project)
+        add_raster_to_project, layers_with_pending_edits)
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
@@ -44,7 +44,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         TairuRecord, TairuRecordGroup, now_millis, parse_millis)
     from tairu_sync.record_convert import (
         RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
-        add_raster_to_project)
+        add_raster_to_project, layers_with_pending_edits)
     from tairu_sync.tasks import run_task
 
 # Safety margin subtracted from the Firestore serverTimestamp cursor to absorb
@@ -81,6 +81,15 @@ def start_pull(dock, tmap):
     fs = dock.fs
     page = dock.detail_page
     paths = map_workspace(dock.env.key, tmap.map_id)
+    # O recebimento grava o GeoPackage por fora do buffer de edição (layers_with_pending_edits).
+    dirty = layers_with_pending_edits(paths['gpkg'])
+    if dirty:
+        message = tr('Registros não atualizados: há edições não salvas em {camadas}. Salve ou '
+                     'descarte as edições e use Receber Registros.').format(
+                         camadas=', '.join('«%s»' % layer.name() for layer in dirty))
+        page.set_status(message, error=True)
+        dock.notify(message, error=True)
+        return
     cache = FirestoreCache(dock.env.key, dock.tokens.uid)
     pull_started_at = now_millis()
     try:
@@ -140,11 +149,14 @@ def start_pull(dock, tmap):
                 paths['gpkg'],
                 records,
                 remove_missing=from_cache or not is_incremental,
-                # No pull de migracao, NAO levar junto o que o usuario desenhou e ainda
-                # nao enviou: o pull completo normal limpa essas feicoes de proposito
-                # (o estado local e refeito), mas este aqui so precisa preencher a coluna
-                # do grupo, e ate ontem o mesmo clique era incremental e inofensivo.
-                keep_unpushed=backfilling,
+                # O que o usuario desenhou e ainda nao enviou nunca e apagado por um
+                # recebimento: o completo acontece tambem com cache apagado e, sem rede,
+                # pelo cache local logo depois de um envio.
+                keep_unpushed=True,
+                # A linha de base de cada feição, e a copia local ainda do recebimento
+                # anterior (o cache e gravado depois deste).
+                cache=cache,
+                map_id=tmap.map_id,
             )
         except Exception as e:
             page.set_busy(False)
@@ -165,6 +177,9 @@ def start_pull(dock, tmap):
             prefix = tr('Delta') if is_incremental else tr('Registros')
         summary = tr('{origem}: {novos} novos, {atualizados} atualizados, {removidos} removidos.').format(
             origem=prefix, novos=result.added, atualizados=result.updated, removidos=result.removed)
+        if result.kept:
+            summary += ' ' + tr('{n} mantidos com edição do QGIS ainda não enviada: envie a camada para '
+                                'juntar as duas.').format(n=result.kept)
         errors = result.errors + parse_errors
         if errors:
             summary += ' ' + tr('{n} com problema (ignorados).').format(n=len(errors))
@@ -192,6 +207,12 @@ def start_pull(dock, tmap):
                 rows,
                 empty_fallback_ms=pull_started_at,
             )
+        # O cache DEPOIS da camada: apply_pull lê nele a cópia de onde a feição saiu, e à
+        # frente de uma camada que não foi gravada ele diria que a nuvem não mudou. Sem gravar
+        # a camada, nem ele nem o cursor andam, e o próximo recebimento traz o mesmo lote.
+        result = apply_rows(rows, group_rows)
+        if result is None:
+            return
         cache_stored = False
         with contextlib.suppress(Exception):
             cache.store_records(
@@ -206,9 +227,6 @@ def start_pull(dock, tmap):
         with contextlib.suppress(Exception):
             cache.store_records(tmap.map_id, group_rows, pull_started_at,
                                 full_snapshot=True, collection=RECORD_GROUPS_COLLECTION)
-        result = apply_rows(rows, group_rows)
-        if result is None:
-            return
         # Advance the sync cursor ONLY when the cache actually captured this batch.
         # If store_records failed, the cache is now missing rows the GeoPackage has;
         # advancing the watermark would make the next pull skip past them, and a later

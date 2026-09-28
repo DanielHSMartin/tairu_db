@@ -3,9 +3,11 @@
 """
 Push: QGIS vector features → /maps/{id}/records documents.
 
-build_push_plan() classifies every feature against its pull-time baseline (the
-stored tairuSyncHash) as new / update / unchanged / forbidden (and optional
-deletions), so the user approves an explicit diff before anything is written.
+build_push_plan() classifies every feature against the field-by-field baseline of its
+last sync (record_convert.sync_fields, kept in the local cache) as new / update /
+unchanged / conflict / forbidden (and optional deletions), so the user approves an
+explicit diff before anything is written. An update writes only the fields changed in
+QGIS (see _against_baseline).
 No fresh remote read is performed. execute_push() turns an approved plan into
 batched Firestore commits (≤100 writes per commit).
 
@@ -13,21 +15,25 @@ Geometry comparison ignores the per-point 'ts' values (they change on every
 serialization); only coordinates and radius/colors/styling matter.
 """
 
+import base64
 import contextlib
 import json
 import math
+import struct
 import uuid
 from dataclasses import dataclass, field
 
 from qgis.core import (
     QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsExpressionContext,
-    QgsExpressionContextUtils, QgsFeatureRequest, QgsProject, QgsRenderContext,
-    QgsVectorLayer,
+    QgsExpressionContextUtils, QgsFeatureRequest, QgsGeometry, QgsProject,
+    QgsRenderContext, QgsSymbol, QgsVectorLayer,
 )
 
 try:
     from ..tairu_core.firestore_cache import FirestoreCache
     from ..tairu_core.i18n import tr
+    from ..tairu_core.tile_math import to_wgs84
+    from ..tairu_core.datum_context import datum_context
     from ..tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -36,13 +42,18 @@ try:
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
         FIELD_DEFS,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
-        sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        sync_record_hash, sync_fields, classify_fields, baseline_from_stamp, layer_key, stamped,
+        matching_baselines,
+        STYLE_LABEL, STYLE_REST, STYLE_STROKE, UNKNOWN, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
         SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
+        ensure_points_from_wkb, geometry_from_wkb, geometry_rings, normalized_geometry_points,
     )
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.firestore_cache import FirestoreCache
     from tairu_core.i18n import tr
+    from tairu_core.tile_math import to_wgs84
+    from tairu_core.datum_context import datum_context
     from tairu_firebase.models import (
         TairuRecord, SITUATIONS_BY_TYPE, now_millis, points_to_json,
         bounds_json_from_points,
@@ -51,8 +62,11 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         hex_to_argb, configure_record_layer_fields, ensure_record_layer_fields,
         FIELD_DEFS,
         layer_origin_map_id, layer_sync_snapshot, record_to_attribute_map,
-        sync_record_hash, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
+        sync_record_hash, sync_fields, classify_fields, baseline_from_stamp, layer_key, stamped,
+        matching_baselines,
+        STYLE_LABEL, STYLE_REST, STYLE_STROKE, UNKNOWN, SYNC_HASH_FIELD, SYNC_LAST_MODIFIED_FIELD,
         SYNC_MAP_ID_PROPERTY, layer_feature_record_ids, set_layer_feature_record_ids,
+        ensure_points_from_wkb, geometry_from_wkb, geometry_rings, normalized_geometry_points,
     )
     from tairu_sync.tasks import run_task
 
@@ -91,6 +105,20 @@ class PushItem:
     # gravado. Um item fora do plano se perderia tambem para a escrita de volta na
     # camada e para o cache, entao o filtro mora aqui, em writable_items().
     send: bool = True
+    # 'update' que tem de APAGAR a geometryWkb da nuvem: a geometria mudou e não vai WKB
+    # nova, e a velha, que o recebimento prefere, desfaria a edição. Ver _against_baseline.
+    clear_wkb: bool = False
+    # styleJson a gravar num 'update' resolvido contra a linha de base (_against_baseline):
+    # '' = o QGIS não mudou o estilo e ele não sobe. None = sem linha de base (plano sem
+    # cache, registro fora do cache): sobe o do candidato, como antes.
+    style_json: str = None
+    # Linha de base montada do carimbo (camada de versão anterior) de um 'unchanged': vai
+    # para o cache no envio (_write_back_records_to_source_layer), e a prévia seguinte não a
+    # monta de novo.
+    baseline: dict = None
+    # {campo: valor} que build_writes mandou ao Firestore (num 'update', só a máscara):
+    # é o que vai para a cópia local depois do envio (_store_pushed_records).
+    written: dict = None
 
 
 @dataclass
@@ -101,11 +129,15 @@ class PushPlan:
     # Expedição de onde a camada veio, quando o envio é uma CÓPIA para outra (ver
     # layer_origin_map_id). Vazio no caso normal.
     copied_from_map_id: str = ''
+    # Grade de datum ausente neste QGIS (ver datum_context): a prévia mostra.
+    datum_warning: str = ''
 
     def count(self, action):
         # Item desmarcado na previa sai de TODOS os contadores: para quem
-        # desmarcou, ele simplesmente nao faz parte deste envio.
-        return sum(1 for i in self.items if i.send and i.action == action)
+        # desmarcou, ele simplesmente nao faz parte deste envio. Conflito e a excecao:
+        # ele NASCE desmarcado, e escondê-lo do resumo esconderia o problema.
+        return sum(1 for i in self.items
+                   if (i.send or i.action == 'conflict') and i.action == action)
 
     def summary(self):
         parts = [tr('{n} novos').format(n=self.count('new')),
@@ -122,8 +154,9 @@ class PushPlan:
         return ', '.join(parts)
 
     def writable_items(self):
+        # 'conflict' só chega aqui MARCADO na prévia: o usuário mandou gravar o QGIS por cima.
         return [i for i in self.items
-                if i.send and i.action in ('new', 'update', 'delete')]
+                if i.send and i.action in ('new', 'update', 'delete', 'conflict')]
 
 
 @dataclass
@@ -522,6 +555,70 @@ def _feature_symbol_argbs(layer, feature, spec_key):
     return _first_defined(field_fg, _layer_symbol_argb(layer)), field_bg
 
 
+# O que o QGIS sorteia no símbolo padrão (Projeto → Estilo → cores aleatórias).
+_RANDOM_SYMBOL_KEYS = ('color', 'line_color')
+
+
+def _renderer_is_qgis_default(layer):
+    """A camada desenha com o símbolo único que o QGIS criou ao abri-la, cor à parte?
+
+    Sem estilo salvo, o QGIS sorteia a cor desse símbolo a cada vez que a camada é aberta.
+    Reabrir a camada num projeto novo e reenviar recoloria todos os registros — e, com a
+    cor no hash, fazia todos virarem 'update'. Então, nesse símbolo, vale a cor gravada na
+    feição pelo último envio (feature_to_record).
+    """
+    # ponytail: trocar SÓ a cor do símbolo padrão, de propósito, numa camada já enviada
+    # também não sobe (é indistinguível do sorteio); mudar tamanho, forma, traço ou
+    # categorizar faz a cor do QGIS voltar a valer.
+    try:
+        renderer = layer.renderer()
+        if renderer is None or renderer.type() != 'singleSymbol':
+            return False
+        mine = renderer.symbol()
+        default = QgsSymbol.defaultSymbol(layer.geometryType())
+        if mine is None or default is None or mine.opacity() != default.opacity():
+            return False
+
+        def props(symbol_layer):
+            return {k: v for k, v in symbol_layer.properties().items() if k not in _RANDOM_SYMBOL_KEYS}
+
+        return len(mine.symbolLayers()) == len(default.symbolLayers()) and all(
+            a.layerType() == b.layerType() and props(a) == props(b)
+            and not a.dataDefinedProperties().hasActiveProperties()
+            for a, b in zip(mine.symbolLayers(), default.symbolLayers()))
+    except Exception:
+        return False
+
+
+def _in_catch_all_category(layer, record_id):
+    """O registro caiu na categoria coringa da pasta (record_convert.apply_record_legend)?
+
+    É o que acontece com o registro que mudou de Grupo pela coluna: a pasta de destino ainda
+    não tem categoria para ele, e o cinza de espera subia como a cor escolhida no QGIS.
+    """
+    try:
+        renderer = layer.renderer()
+        return (renderer is not None and renderer.type() == 'categorizedSymbol'
+                and renderer.classAttribute() == 'recordId'
+                and renderer.categoryIndexForValue(str(record_id)) < 0)
+    except Exception:
+        return False
+
+
+def _stroke_not_rendered(layer):
+    """Camada do recebimento com símbolo único: o traço dele não é o de cada registro.
+
+    Acima de MAX_RECORD_CATEGORIES registros o recebimento desenha tudo com um símbolo só,
+    de traço contínuo (record_convert.style_layer), e o tracejado do app sumia da nuvem na
+    1ª atualização de qualquer campo do registro.
+    """
+    try:
+        return (bool(layer.customProperty(_FOLDER_PROPERTY, ''))
+                and layer.renderer() is not None and layer.renderer().type() == 'singleSymbol')
+    except Exception:
+        return False
+
+
 def _rule_symbols_for_feature(renderer, feature, context):
     """Best-effort fallback for QgsRuleBasedRenderer layers."""
     try:
@@ -812,23 +909,23 @@ def _geometry_points(feature, transform):
             pt = geom.asPoint()
         return [(pt.y(), pt.x())], 'point', warning
 
+    # Linha e polígono em partes: os pontos são a maior parte, mas a WKB leva todas
+    # (_feature_lossy_wkb, _encode_edited_geometry) — nada é descartado, não há o que avisar.
     if type_int == 1:  # line
         if geom.isMultipart():
             lines = geom.asMultiPolyline()
             line = max(lines, key=len) if lines else []
-            if len(lines) > 1:
-                warning = tr('multilinha: usada a maior parte')
         else:
             line = geom.asPolyline()
         return [(p.y(), p.x()) for p in line], 'line', warning
 
     if type_int == 2:  # polygon
+        # O MultiPolygon que o OGR juntou num Polygon: a maior PARTE, como na nuvem — não o 1º anel.
+        geom = _unmerged_parts(geom)
         if geom.isMultipart():
             polys = geom.asMultiPolygon()
             rings = [p[0] for p in polys if p]
             ring = max(rings, key=len) if rings else []
-            if len(polys) > 1:
-                warning = tr('multipolígono: usada a maior parte')
         else:
             poly = geom.asPolygon()
             ring = poly[0] if poly else []
@@ -871,7 +968,6 @@ def _feature_lossy_wkb(feature, transform):
     Record.geometryWkb (holes punched, all parts) just like KML/GPX/GeoPackage
     imports; simple geometry keeps the flat geometryPoints path with no WKB.
     """
-    from qgis.core import QgsGeometry
     geom = feature.geometry()
     if geom is None or geom.isEmpty():
         return None
@@ -882,7 +978,42 @@ def _feature_lossy_wkb(feature, transform):
     # half of the preview's cost, paid twice.
     if not _geometry_is_lossy(geom):
         return None
-    g = QgsGeometry(geom)
+    return _feature_wkb(geom, transform)
+
+
+def _unmerged_parts(geom):
+    """Polygon cujos 'furos' estão fora do contorno volta a MultiPolygon.
+
+    A camada de polígonos do recebimento é Polygon, e o OGR grava nela um MultiPolygon
+    juntando as partes como anéis de um polígono só. Subir isso depois de uma edição punha
+    na nuvem um Polygon inválido, com as outras partes como furos fora do contorno. Cada
+    anel vai para o contorno que o contém (e não para dentro de um furo dele: ilha no lago
+    é parte); o que nenhum contém abre uma parte. Polígono válido (todo furo dentro) nem
+    entra: é por ele que passa toda feição com furo da camada, a cada prévia.
+    """
+    if (geom is None or geom.isEmpty() or geom.isMultipart() or int(geom.type()) != 2
+            or not geom.constGet().numInteriorRings() or geom.isGeosValid()):
+        return geom
+    parts = []   # [[anel, ...], [área de cada anel, ...]]: o 1º anel é o contorno
+
+    def inside(outer, inner):
+        return outer.boundingBox().contains(inner.boundingBox()) and outer.contains(inner)
+
+    for ring in geom.asPolygon():
+        area = QgsGeometry.fromPolygonXY([ring])
+        owner = next((part for part in parts if inside(part[1][0], area)
+                      and not any(inside(hole, area) for hole in part[1][1:])), None)
+        if owner is None:
+            parts.append([[ring], [area]])
+        else:
+            owner[0].append(ring)
+            owner[1].append(area)
+    return geom if len(parts) == 1 else QgsGeometry.fromMultiPolygonXY([rings for rings, _a in parts])
+
+
+def _feature_wkb(geom, transform):
+    """2D WGS84 OGC WKB bytes of the whole geometry (every part and hole), or None."""
+    g = QgsGeometry(_unmerged_parts(geom))
     try:
         g.transform(transform)
     except Exception:
@@ -895,6 +1026,296 @@ def _feature_lossy_wkb(feature, transform):
         return bytes(g.asWkb())
     except Exception:
         return None
+
+
+# Campos que só entram na máscara de um 'update' quando a GEOMETRIA mudou.
+_GEOMETRY_FIELDS = ('geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb')
+# Mínimo de vértices para o app gravar WKB (Record.ensureGeometryWkb); círculo não tem.
+_WKB_MIN_POINTS = {'point': 1, 'line': 2, 'polygon': 3}
+# kMaxCloudGeometryBytes do app: pontos + WKB no mesmo documento, abaixo do 1 MiB do
+# Firestore com folga para os outros campos.
+_MAX_CLOUD_GEOMETRY_BYTES = 1000000
+
+
+def _geometry_key(rec, pts):
+    """(tipo, pontos, raio) normalizados como no tairuSyncHash (sync_record_payload)."""
+    return ((rec.geometry_type or 'none') if pts else 'none', pts,
+            round(float(rec.circle_radius or 0.0), _COORD_PRECISION))
+
+
+def _same_geometry_as_cloud(cloud, candidate, feature, transform):
+    """A geometria da feição é a que o recebimento pôs na camada a partir de `cloud`?
+
+    Refaz o caminho do pull (record_geometry: WKB primeiro para linha e polígono) e
+    compara cada anel e parte (geometry_rings): os geometryPoints levam só o anel externo
+    (ou a maior parte), e um furo ou uma parte editados junto com um atributo passavam
+    por "iguais" — a WKB velha ficava na nuvem e o recebimento seguinte desfazia a
+    edição. Por anel, e não a sequência de vértices: dividir uma linha em partes mantém os
+    vértices e muda a geometria.
+    """
+    if not cloud.geometry_points_json:
+        ensure_points_from_wkb(cloud)  # registro só-WKB, como o pull o monta
+    geom = (geometry_from_wkb(cloud.geometry_wkb)
+            if cloud.geometry_type in ('line', 'polygon') else None)
+    if geom is None:
+        # Sem WKB o pull monta a feição dos pontos, sem furo nem parte: se a camada
+        # agora tem um (Adicionar anel), a geometria mudou.
+        return (not _geometry_is_lossy(feature.geometry())
+                and _geometry_key(cloud, normalized_geometry_points(cloud))
+                == _geometry_key(candidate, normalized_geometry_points(candidate)))
+    if cloud.geometry_type != candidate.geometry_type:
+        return False
+    edited = QgsGeometry(feature.geometry())
+    try:
+        edited.transform(transform)
+    except Exception:
+        return False  # sem como comparar: a geometria vai, como antes
+    return geometry_rings(edited) == geometry_rings(geom)
+
+
+def _track_times(geom):
+    """Horário (ms) de cada vértice de uma trilha, de todas as partes em ordem, lido do M, ou None.
+
+    O app grava a trilha como LineString M (M = horário do ponto) e o recebimento põe
+    essa geometria na camada com o M. Vértice acrescentado no QGIS vem sem M (NaN): herda
+    o horário do anterior, para a trilha nunca voltar no tempo.
+    """
+    if geom is None or geom.isEmpty() or not geom.constGet().isMeasure():
+        return None
+    measures = [vertex.m() for vertex in geom.vertices()]
+    valid = [m for m in measures if math.isfinite(m) and m > 0]
+    if not valid:
+        return None
+    times, last = [], int(valid[0])
+    for m in measures:
+        if math.isfinite(m) and m > 0:
+            last = int(m)
+        times.append(last)
+    return times
+
+
+def _encode_edited_geometry(rec, feature, transform):
+    """Grava no candidato a geometria EDITADA como o app a gravaria (ensureGeometryWkb).
+
+    geometryPoints e geometryWkb sobem juntos e concordando. Com os pontos novos e a WKB
+    velha, o recebimento seguinte (que monta linha e polígono pela WKB) devolvia a forma
+    antiga à camada e o envio seguinte a mandava de volta à nuvem: a edição sumia de
+    todos os aparelhos. Trilha (rastreamento) vira LineString M com o horário de cada
+    vértice, byte a byte o encodeLineStringM do app — ou MultiLineString M, se foi dividida
+    em partes; o resto, a geometria inteira em 2D, furos e partes incluídos.
+    """
+    vertices = json.loads(rec.geometry_points_json or '[]')
+    minimum = _WKB_MIN_POINTS.get(rec.geometry_type)
+    if minimum is None or len(vertices) < minimum:
+        return  # círculo, sem geometria ou curta demais: o app também não grava WKB
+    if rec.geometry_type == 'line' and rec.sub_tipo == 'rastreamento':
+        geom = QgsGeometry(feature.geometry())
+        geom.transform(transform)
+        lines = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
+        times = _track_times(geom)
+        if times:
+            # Os geometryPoints são a maior parte (_geometry_points): os horários dela.
+            biggest = max(range(len(lines)), key=lambda i: len(lines[i]))
+            for vertex, ts in zip(vertices, times[sum(len(line) for line in lines[:biggest]):]):
+                vertex['ts'] = ts
+            rec.geometry_points_json = json.dumps(vertices, separators=(',', ':'))
+        if len(lines) == 1:
+            rec.geometry_wkb = struct.pack('<BII', 1, 2002, len(vertices)) + b''.join(
+                struct.pack('<ddd', v['lo'], v['la'], float(v['ts'])) for v in vertices)
+            return
+        # Trilha dividida (Dividir partes, pico de GPS tirado): TODAS as partes, cada vértice
+        # com o seu horário. Montada dos geometryPoints — só a maior parte —, as outras
+        # eram apagadas da nuvem.
+        stamps = iter(times or [vertices[0]['ts']] * sum(len(line) for line in lines))
+        rec.geometry_wkb = struct.pack('<BII', 1, 2005, len(lines)) + b''.join(
+            struct.pack('<BII', 1, 2002, len(line)) + b''.join(
+                struct.pack('<ddd', p.x(), p.y(), float(next(stamps))) for p in line)
+            for line in lines)
+        return
+    rec.geometry_wkb = _feature_wkb(feature.geometry(), transform)
+
+
+def _encoding_over_budget(rec):
+    """Qual codificação ('geometryWkb' ou 'geometryPoints') NÃO sobe, ou None se cabem as duas.
+
+    Pontos + WKB acima do limite sobem numa só, como no cloudGeometryDecision do app:
+    geometria simples fica com os pontos (cliente antigo lê); com furo ou partes, ou
+    pontos que nem sozinhos cabem, só a WKB (o pull refaz os pontos dela). Sem isso o
+    lote do envio estourava o 1 MiB do Firestore a partir de ~13 mil vértices.
+    """
+    # ponytail: não desconta estilo/atributos/descrição do orçamento, como o app faz; a folga
+    # de ~48 KB até o 1 MiB cobre o registro comum.
+    wkb = rec.geometry_wkb
+    points = len((rec.geometry_points_json or '').encode('utf-8'))
+    if not wkb or points + len(wkb) <= _MAX_CLOUD_GEOMETRY_BYTES:
+        return None
+    if points <= _MAX_CLOUD_GEOMETRY_BYTES and not _geometry_is_lossy(geometry_from_wkb(wkb)):
+        return 'geometryWkb'
+    return 'geometryPoints'
+
+
+# Camada-folha do recebimento: record_convert.FOLDER_PROPERTY, copiado pelo mesmo motivo
+# de _e_camada_de_registros.
+_FOLDER_PROPERTY = 'tairu/folder'
+# Chaves de sync_fields que o QGIS decide no estilo -> subcampo do styleJson que cada uma grava.
+_STYLE_SUBFIELDS = {'geometryColorValue': 'color', 'geometryBackgroundColorValue': 'bgColor',
+                    STYLE_STROKE: 'stroke'}
+# Campos que a feição só tem por coluna própria; o registro NOVO nasce com eles preenchidos.
+# Sem a coluna (o Shapefile corta o nome; o KML não guarda nada), a feição os lê vazios.
+_COLUMN_ONLY = ('eventDateTime', 'geometrySize')
+
+
+def _json_object(raw):
+    try:
+        value = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _style_to_send(candidate_json, cloud_json, keys):
+    """styleJson de um 'update': o da nuvem com SÓ o que o QGIS mudou nele, ou '' se nada.
+
+    Do estilo, o QGIS decide cor, preenchimento, traço e rótulo; ícone e regras são do app, e
+    gravar o estilo inteiro da camada desfazia o ícone mudado no app depois do último recebimento.
+    """
+    candidate = _json_object(candidate_json)
+    changed = [key for key in _STYLE_SUBFIELDS if key in keys]
+    if not candidate or not (changed or STYLE_LABEL in keys):
+        return ''
+    cand_base = candidate['base'] if isinstance(candidate.get('base'), dict) else {}
+    style = _json_object(cloud_json) or {'v': 1}
+    base = dict(style['base']) if isinstance(style.get('base'), dict) else {}
+    for key in changed:
+        name = _STYLE_SUBFIELDS[key]
+        if name in cand_base:
+            base[name] = cand_base[name]
+        else:
+            base.pop(name, None)
+    style['base'] = base
+    if STYLE_LABEL in keys:
+        if 'label' in candidate:
+            style['label'] = candidate['label']
+        else:
+            style.pop('label', None)
+    return json.dumps(style, separators=(',', ':'))
+
+
+def _mask_for(keys):
+    """Campos do documento que gravam as chaves de sync_fields (o estilo vai por style_json)."""
+    mask = [k for k in _DIFF_SCALARS if k in keys]
+    mask.extend(k for k in ('attributes', 'groupId') if k in keys)
+    if 'geometry' in keys:
+        mask.extend(_GEOMETRY_FIELDS)
+    return mask
+
+
+def _blind_keys(layer, rec):
+    """Chaves que a feição não tem como mudar: valem as da base (o QGIS não mexeu nelas)."""
+    names = layer.fields().names()
+    blind = {STYLE_REST}   # ícone e regras: só o app
+    if 'groupId' not in names:
+        blind.add('groupId')
+    if 'style' not in names:
+        blind.update((STYLE_STROKE, STYLE_LABEL))
+    if not rec.attributes:
+        blind.add('attributes')   # camada sem colunas próprias (a do recebimento)
+    blind.update(k for k in _COLUMN_ONLY if k not in names)
+    return blind
+
+
+def _against_baseline(pending, layer, transform, cache, map_id, update_fields, progress=None):
+    """Classifica cada registro existente contra a linha de base desta camada.
+
+    Só o QGIS mudou: 'update' que grava SÓ esses campos. Só a nuvem (o cache local, o documento
+    como o último recebimento ou envio o deixou): fica com ela. Os dois, para o mesmo valor:
+    nada. Valores diferentes: 'conflict', desmarcado, e o aviso diz em quais campos; marcado,
+    grava a versão do QGIS neles (e no que só o QGIS mudou). Registro fora do cache, ou apagado
+    no Tairu com edição aqui, também é conflito. Sem base guardada (camada de versão anterior),
+    ela sai do carimbo da feição e do cache (baseline_from_stamp); campo que não se sabe e
+    difere da nuvem é conflito.
+    """
+    if not pending:
+        return
+    key = layer_key(layer)
+    stamps = {entry[0].record.record_id: entry[2] for entry in pending}
+    bases = {}
+    with contextlib.suppress(Exception):
+        bases = matching_baselines(cache.load_baselines(map_id, key, list(stamps)), stamps.get)
+    compare = []
+    for done, (item, feature, stamp, stamp_last_modified) in enumerate(pending, start=1):
+        if progress is not None and done % _PROGRESS_EVERY == 0:
+            progress(done, len(pending), _PHASE_COMPARE)
+        mine = sync_fields(item.record)
+        blind = _blind_keys(layer, item.record)
+        base = bases.get(item.record.record_id)
+        if base is not None:
+            mine.update({k: base.get(k) for k in blind})
+            if mine == base:
+                item.action, item.changed_fields = 'unchanged', []
+                continue
+        compare.append((item, feature, stamp, stamp_last_modified, mine, base, blind))
+    docs = {}
+    with contextlib.suppress(Exception):
+        docs = cache.load_records_by_id(map_id, [entry[0].record.record_id for entry in compare])
+    for item, feature, stamp, stamp_last_modified, mine, base, blind in compare:
+        doc = docs.get(item.record.record_id)
+        remote = None
+        if doc is not None:
+            remote = TairuRecord.from_fields(item.record.record_id, doc)
+            ensure_points_from_wkb(remote)   # como o recebimento o monta
+        if remote is None:
+            item.action, item.send = 'conflict', False
+            item.warning = _append_warning(item.warning, tr(
+                'o QGIS não tem a cópia deste registro para saber o que mudou aqui: use '
+                'Receber Registros e refaça a prévia, ou marque Enviar para gravar a '
+                'versão do QGIS por cima da do Tairu'))
+            _encode_edited_geometry(item.record, feature, transform)
+            continue
+        theirs = sync_fields(remote)
+        derived = base is None
+        if derived:
+            mine.update({k: theirs.get(k) for k in blind})
+            base = baseline_from_stamp(stamp, stamp_last_modified, [(remote, True), (item.record, False)],
+                                       mine, mine) or dict.fromkeys(set(mine) | set(theirs), UNKNOWN)
+        mine.update({k: theirs.get(k) if base.get(k) == UNKNOWN else base.get(k) for k in blind})
+        qgis, conflicts = classify_fields(mine, base, theirs)
+        # Anel por anel igual ao da nuvem: é a geometria que a camada não reproduz (MultiPolygon
+        # juntado pelo OGR, GeometryCollection), não edição — subir trocaria a da nuvem pela dela.
+        if 'geometry' in qgis + conflicts and _same_geometry_as_cloud(remote, item.record, feature, transform):
+            qgis, conflicts = [k for k in qgis if k != 'geometry'], [k for k in conflicts if k != 'geometry']
+        if doc.get('isDeleted') and (qgis or conflicts):
+            # O 'update' põe isDeleted=False: editar aqui um registro apagado no app o ressuscitava.
+            qgis, conflicts = [], qgis + conflicts
+            reason = tr('apagado no Tairu desde o último recebimento: marque Enviar para '
+                        'restaurá-lo com a versão do QGIS')
+        elif any(base.get(k) == UNKNOWN for k in conflicts):
+            reason = tr('a camada foi sincronizada por uma versão anterior do complemento (ou noutro '
+                        'computador) e não há como saber de que lado mudou: {campos}. Marque Enviar '
+                        'para gravar a versão do QGIS nesses campos')
+        else:
+            reason = tr('mudou no QGIS e no Tairu desde o último sincronismo: {campos}. Marque Enviar '
+                        'para gravar a versão do QGIS nesses campos')
+        if conflicts:
+            item.action, item.send = 'conflict', False
+            item.warning = _append_warning(item.warning, reason.format(campos=', '.join(conflicts)))
+        elif not qgis:
+            # Em cada campo a feição é igual à base ou à nuvem: ela é a base nova. Sem andar, o
+            # campo que os dois lados mudaram igual (ou um envio aplicado cuja resposta se
+            # perdeu) virava conflito na próxima edição do app nele.
+            item.action, item.changed_fields = 'unchanged', []
+            item.baseline = stamped(mine, stamp)
+            continue
+        keys = qgis + conflicts
+        item.style_json = _style_to_send(item.record.style, remote.style, keys)
+        item.changed_fields = _mask_for(keys)
+        if 'geometry' in keys:
+            _encode_edited_geometry(item.record, feature, transform)
+            # Geometria que MUDOU e ficou sem WKB (curta demais, falha ao codificar): a WKB
+            # velha da nuvem desfaria a edição. O app também a apaga quando a geometria muda.
+            item.clear_wkb = item.record.geometry_wkb is None and bool(doc.get('geometryWkb'))
+        if item.action == 'update' and not item.changed_fields and not item.style_json:
+            item.action = 'unchanged'
 
 
 def contour_master_modulo(layer):
@@ -1181,6 +1602,8 @@ def feature_export_style_json(layer, feature, spec_key, master_modulo, label_cfg
 # diferença fantasma por registro. Coluna nova do esquema já nasce excluída aqui.
 _NON_ATTRIBUTE_FIELDS = frozenset(
     [name for name, _type in FIELD_DEFS]
+    # Os mesmos, como o Shapefile os corta (10 caracteres): eram "atributos" do registro.
+    + [name[:10] for name, _type in FIELD_DEFS]
     # Chave do GeoPackage + nomes que só existem no documento da nuvem.
     + ['fid', 'attributes', 'geometryColorValue', 'geometryBackgroundColorValue'])
 
@@ -1212,7 +1635,7 @@ def _feature_attributes_json(feature):
 
 
 def feature_to_record(feature, layer, mapping, uid, transform, index, contour_master_modulo=None,
-                      label_cfg=None):
+                      label_cfg=None, stored_colors_win=False, stored_stroke_wins=False):
     """Build the candidate TairuRecord for one feature. Returns (rec, warning).
 
     contour_master_modulo (5 * vertical interval) styles contour lines: master
@@ -1220,6 +1643,12 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
 
     label_cfg (layer_label_config) is the layer's QGIS label settings, folded into
     the record's styleJson once per layer.
+
+    stored_colors_win (_renderer_is_qgis_default, uma vez por camada): a cor do símbolo
+    foi sorteada pelo QGIS, e a feição já enviada fica com a cor gravada nela.
+
+    stored_stroke_wins (_stroke_not_rendered, uma vez por camada): o símbolo não desenha o
+    traço de cada registro, e ele fica o guardado no estilo.
     """
     points, spec_key, warning = _geometry_points(feature, transform)
     record_id = _attr(feature, 'recordId')
@@ -1251,6 +1680,10 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     # For pulled Tairu layers this may come from data-defined geometryColor fields;
     # for regular layers it comes from the layer renderer/category/rule symbol.
     symbol_fg_argb, symbol_bg_argb = _feature_symbol_argbs(layer, feature, spec_key)
+    catch_all = bool(record_id) and _in_catch_all_category(layer, record_id)
+    if record_id and (stored_colors_win or catch_all):
+        symbol_fg_argb = _first_defined(_field_argb(feature, 'geometryColor'), symbol_fg_argb)
+        symbol_bg_argb = _first_defined(_field_argb(feature, 'geometryBackgroundColor'), symbol_bg_argb)
     color_argb = _first_defined(mapping.get('color_argb'), symbol_fg_argb)
     # Feicao DESENHADA numa camada de registros: ela ainda nao tem recordId, entao casa
     # com a categoria coringa do renderizador — um cinza de ESPERA, que existe so para o
@@ -1351,7 +1784,7 @@ def feature_to_record(feature, layer, mapping, uid, transform, index, contour_ma
     # Contour lines keep their built-in app styling (as in the .tairudb export).
     is_contour = contour_elev is not None and spec_key == 'line'
     if not is_contour:
-        stroke = _feature_stroke_pattern(layer, feature)
+        stroke = None if stored_stroke_wins or catch_all else _feature_stroke_pattern(layer, feature)
         rec.style = build_feature_style_json(
             color_argb, bg_argb, spec_key, stroke, label_cfg,
             stored_json=_attr(feature, 'style'))
@@ -1376,9 +1809,7 @@ _DIFF_SCALARS = [
 # A partir dai, todo envio da sessao, de qualquer camada, mandava groupId='' na mascara e
 # tirava do grupo registros que estavam organizados no aplicativo. Sendo tupla, um append
 # estoura no teste em vez de corromper a sessao em silencio.
-_ALL_UPDATE_FIELDS = tuple(_DIFF_SCALARS) + (
-    'geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius', 'geometryWkb',
-)
+_ALL_UPDATE_FIELDS = tuple(_DIFF_SCALARS) + _GEOMETRY_FIELDS
 
 
 def _update_fields_for(layer):
@@ -1402,6 +1833,13 @@ def _baseline_hash(feature, fallback=None):
     if value:
         return str(value)
     return str((fallback or {}).get('hash') or '')
+
+
+def _baseline_last_modified(feature, fallback=None):
+    """O tairuSyncLastModified gravado junto com o hash (mesma origem)."""
+    if _attr(feature, SYNC_HASH_FIELD):
+        return str(_attr(feature, SYNC_LAST_MODIFIED_FIELD) or '')
+    return str((fallback or {}).get('lastModified') or '')
 
 
 def _append_warning(existing, warning):
@@ -1439,7 +1877,8 @@ def _duplicate_record_id_clones(entries_by_record_id):
     return clones
 
 
-def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progress=None):
+def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progress=None,
+                    cache=None):
     """Compare source layer features against the pull-time baseline (tairuSyncHash).
 
     No Firestore or GeoPackage snapshot read is performed. For round-trip layers
@@ -1447,6 +1886,14 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
     stored hash is the sole baseline: if sync_record_hash(candidate) == tairuSyncHash
     the record is unchanged; otherwise it needs an update. Detection of remote
     changes or conflicts requires a fresh 'Receber Registros' pull.
+
+    cache (FirestoreCache) holds the field-by-field baseline of this layer and the cloud
+    copy: an update writes only what changed in QGIS, and a field changed on both sides
+    makes the record an unticked 'conflict'. See _against_baseline. Without a cache the
+    tairuSyncHash alone decides and every update carries every field (tests only).
+
+    Raises ValueError, with the reason, when the layer's coordinates cannot be
+    brought to WGS84 degrees (no CRS, no transform, or a wrongly declared CRS).
 
     progress(done, total, phase), when given, is called once up front and then every
     _PROGRESS_EVERY features of BOTH passes — the scan AND the classification, where
@@ -1481,12 +1928,29 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             total = layer.featureCount()
         progress(0, total, _PHASE_SCAN)
 
-    transform = QgsCoordinateTransform(
-        layer.crs(), QgsCoordinateReferenceSystem('EPSG:4326'),
-        QgsProject.instance().transformContext())
+    wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
+    # A operação de datum do app (ver datum_context): o registro enviado cai onde o
+    # app o poria, não onde a escolha do QGIS o poria.
+    datum_warnings = []
+    context = datum_context(QgsProject.instance().transformContext(), [layer],
+                            warn=datum_warnings.append)
+    if layer.isSpatial():
+        # Com SRC inválido (shapefile sem .prj) a transformação nasce inválida e
+        # transform() devolve a geometria intacta: metros UTM iam para a nuvem como
+        # latitude/longitude, sem aviso. A faixa em graus da extensão reprojetada
+        # (to_wgs84) pega também o SRC declarado errado, que dá transformação válida.
+        if not layer.crs().isValid():
+            raise ValueError(tr(
+                'A camada não tem sistema de coordenadas (SRC) definido — um shapefile '
+                'sem o arquivo .prj, por exemplo — e as coordenadas iriam para o Tairu '
+                'sem conversão para latitude e longitude. Defina o SRC da camada (botão '
+                'direito na camada → SRC da camada → Definir SRC da camada) e tente de novo.'))
+        to_wgs84(QgsGeometry.fromRect(layer.extent()), layer.crs(), wgs84, context)
+    transform = QgsCoordinateTransform(layer.crs(), wgs84, context)
 
     plan = PushPlan(map_id=tmap.map_id, layer_name=layer.name(),
-                    copied_from_map_id=origin_map_id if copying_from_other_map else '')
+                    copied_from_map_id=origin_map_id if copying_from_other_map else '',
+                    datum_warning=' '.join(datum_warnings))
     seen_ids = set()
     sync_snapshot = layer_sync_snapshot(layer)
     # Identidade de reserva para camadas cujo provedor nao guarda recordId (KML).
@@ -1496,6 +1960,8 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
     contour_master_modulo = _contour_master_modulo(layer)
     # Layer label settings resolved once and folded into every record's styleJson.
     label_cfg = layer_label_config(layer)
+    stored_colors_win = _renderer_is_qgis_default(layer)
+    stored_stroke_wins = _stroke_not_rendered(layer)
     update_fields = _update_fields_for(layer)
     # A camada carrega o styleJson que veio do recebimento? Numa camada de uma versao
     # anterior a coluna nao existe, e a ausencia dela e indistinguivel de "o registro nao
@@ -1513,7 +1979,8 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
     with layer_render_session(layer):
         for index, feature in enumerate(layer.getFeatures(), start=1):
             candidate, warning = feature_to_record(
-                feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg)
+                feature, layer, mapping, uid, transform, index, contour_master_modulo, label_cfg,
+                stored_colors_win, stored_stroke_wins)
             if not candidate.record_id:
                 candidate.record_id = str(
                     fallback_ids.get(str(feature.id()), {}).get('id') or '')
@@ -1525,6 +1992,7 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
                 progress(index, total, _PHASE_SCAN)
 
     duplicate_clones = _duplicate_record_id_clones(entries_by_record_id)
+    update_pending = []
 
     for position, entry in enumerate(feature_entries, start=1):
         if progress is not None and position % _PROGRESS_EVERY == 0:
@@ -1579,15 +2047,22 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             candidate.created_at = _attr_millis(feature, 'createdAt') or candidate.created_at
             candidate.is_deleted = False
 
-            base_hash = _baseline_hash(feature, fallback_ids.get(str(feature.id())))
-            if base_hash and sync_record_hash(candidate) == base_hash:
-                plan.items.append(PushItem('unchanged', candidate, feature.id(), [], warning))
+            reserve = fallback_ids.get(str(feature.id()))
+            stamp = _baseline_hash(feature, reserve)
+            if cache is None:
+                # Sem cache (testes): só o carimbo decide, e o 'update' leva tudo.
+                unchanged = bool(stamp) and sync_record_hash(candidate) == stamp
+                plan.items.append(PushItem('unchanged' if unchanged else 'update', candidate,
+                                           feature.id(), [] if unchanged else update_fields, warning))
             else:
-                plan.items.append(PushItem('update', candidate, feature.id(),
-                                           update_fields, warning))
+                item = PushItem('update', candidate, feature.id(), update_fields, warning)
+                plan.items.append(item)
+                update_pending.append((item, feature, stamp, _baseline_last_modified(feature, reserve)))
         else:
             candidate.record_id = TairuRecord.new_id()
             plan.items.append(PushItem('new', candidate, feature.id(), [], warning))
+
+    _against_baseline(update_pending, layer, transform, cache, tmap.map_id, update_fields, progress)
 
     if propagate_deletions:
         # Records present at last sync (sync_snapshot) but no longer in the layer
@@ -1608,6 +2083,29 @@ def build_push_plan(layer, mapping, tmap, uid, propagate_deletions=False, progre
             plan.items.append(PushItem('delete', TairuRecord(record_id=record_id)))
 
     return plan
+
+
+# Colunas do registro valem por feição na camada do recebimento; isto só cobre o NULL.
+_PULLED_MAPPING = {'nome_field': None, 'descricao_field': None, 'tipo': 'local',
+                   'sub_tipo': 'outroLocal', 'situation': ''}
+
+
+def pulled_layer_records(layer, fids):
+    """{fid: (registro, mesma_geometria)} das feições da camada do recebimento como o envio as lê,
+    para o recebimento (record_convert.apply_pull) saber o que o QGIS mudou. Cor, traço e rótulo
+    vêm das colunas: o recebimento abre a tabela, sem o desenho do projeto. mesma_geometria(nuvem)
+    compara a feição anel por anel com a de um registro (_same_geometry_as_cloud)."""
+    transform = QgsCoordinateTransform(layer.crs(), QgsCoordinateReferenceSystem('EPSG:4326'),
+                                       QgsProject.instance())
+    found = {}
+    with layer_render_session(layer):
+        request = QgsFeatureRequest().setFilterFids(list(fids))
+        for index, feature in enumerate(layer.getFeatures(request), start=1):
+            rec = feature_to_record(feature, layer, _PULLED_MAPPING, '', transform, index,
+                                    None, None, True, True)[0]
+            found[feature.id()] = (rec, lambda cloud, rec=rec, feature=feature: _same_geometry_as_cloud(
+                cloud, rec, feature, transform))
+    return found
 
 
 # ----------------------------------------------------------------- execute
@@ -1669,7 +2167,8 @@ def build_group_write(fs, map_id, group_id, name, uid):
 
 def _entra_no_grupo(item):
     """Uma definicao so do que o grupo alcanca — usada para contar e para aplicar."""
-    return (item.send and item.action in ('new', 'update') and not item.record.group_id)
+    # Conflito só está marcado quando o usuário mandou gravar a versão do QGIS.
+    return (item.send and item.action in ('new', 'update', 'conflict') and not item.record.group_id)
 
 
 def group_candidate_count(plan):
@@ -1696,7 +2195,7 @@ def apply_group_to_plan(plan, group_id):
         if not _entra_no_grupo(item):
             continue
         item.record.group_id = group_id
-        if item.action == 'update' and 'groupId' not in item.changed_fields:
+        if item.action in ('update', 'conflict') and 'groupId' not in item.changed_fields:
             # Lista NOVA: changed_fields pode ser a colecao compartilhada por todos os
             # itens — mutar no lugar vazaria para os outros e para a constante do modulo.
             item.changed_fields = list(item.changed_fields) + ['groupId']
@@ -1740,7 +2239,9 @@ def build_writes(fs, plan, uid):
                     path, fields, list(fields.keys()), require_existing=False))
             else:
                 writes.append(fs.build_create_write(path, fields))
-        elif item.action == 'update':
+            item.written = fields
+        elif item.action in ('update', 'conflict'):
+            # Conflito so chega aqui marcado na previa: grava a versao do QGIS.
             # Always assert the record is live. A feature present in the source
             # layer must clear any prior soft-delete (isDeleted=True) on the
             # remote record; otherwise re-pushing a feature whose record was
@@ -1755,7 +2256,9 @@ def build_writes(fs, plan, uid):
             # coluna CHEGA aqui como 'update'; é esta linha que a faz subir.
             # Only ever ADD: a pulled layer carries no user columns, so an empty
             # candidate means "not seen", never "clear what the app has".
-            if rec.attributes and 'attributes' not in mask:
+            # Com linha de base (style_json resolvido), só se o QGIS os mudou: aí eles já vêm
+            # em changed_fields, e os que outro escritor gravou depois do envio ficam.
+            if rec.attributes and 'attributes' not in mask and item.style_json is None:
                 mask.append('attributes')
             # `style` tambem nao e diferenca de coluna e nunca chega por changed_fields.
             # Sem esta linha, mudar a cor de um registro ESTILIZADO no QGIS nao aparece no
@@ -1763,16 +2266,23 @@ def build_writes(fs, plan, uid):
             # continuaria intacto. Como build_feature_style_json mescla no estilo que veio
             # do recebimento, gravar aqui atualiza a aparencia sem apagar icone nem rotulo.
             # So ADICIONA: candidato sem estilo significa "nada a dizer", nunca "limpar".
-            if rec.style and 'style' not in mask:
+            # Com linha de base, item.style_json ja diz se o QGIS mudou o estilo e o que
+            # gravar ('' = nada); sem ela (None), vale o do candidato.
+            style = rec.style if item.style_json is None else item.style_json
+            if style and 'style' not in mask:
                 mask.append('style')
             rec.last_modified = now_millis()
             rec.is_deleted = False
-            # The plugin cannot read cloud geometryWkb on pull, so `geometry_wkb is
-            # None` means "not seen", NOT "should be cleared". Never null it — only
-            # ever write a WKB we actually derived from the QGIS feature. This
-            # preserves holed/multipart geometry the app authored (and cloud WKB that
-            # got coerced away in a single-part layer) across an attribute-only edit.
-            if rec.geometry_wkb is None:
+            # Geometry fields reach the mask only when the geometry changed, or when no
+            # cached baseline can tell (see _against_baseline), and then
+            # geometry_wkb is the WKB derived from the edited feature — the pull builds
+            # lines/polygons from the cloud WKB, so points alone would be undone. It is
+            # None only where the app writes no WKB either (circle, too few vertices),
+            # the encode failed, or points+WKB would not fit the document: never null
+            # the cloud blob for that — only ever write a WKB we actually derived —
+            # unless item.clear_wkb says the geometry changed and the stale blob would
+            # undo the edit on the next pull.
+            if rec.geometry_wkb is None and not item.clear_wkb:
                 mask = [k for k in mask if k != 'geometryWkb']
             # A candidate with no geometry at all may be a WKB-only cloud record that
             # pulled without geometry (pre-fix data, or geometry the plugin can't
@@ -1782,23 +2292,30 @@ def build_writes(fs, plan, uid):
                         ('geometryType', 'geometryPoints', 'geometryBounds', 'circleRadius')]
             all_fields = rec.to_fields()
             fields = {k: all_fields[k] for k in mask if k in all_fields}
+            if style:
+                fields['style'] = style
             # circleRadius may be in the mask but absent (circle -> other type)
             for key in mask:
                 if key not in fields:
                     fields[key] = None
+            # Geometria densa: a codificação que não cabe vai nula (as duas estão na
+            # máscara), não fica velha. O candidato não muda: o hash gravado na camada
+            # continua batendo com a feição.
+            if 'geometryPoints' in mask:
+                dropped = _encoding_over_budget(rec)
+                if dropped:
+                    fields[dropped] = None
             fields['lastModified'] = rec.last_modified
             # Set after the None-fill loop above: lastModifiedBy is in the mask
             # but never in to_fields(), so the loop would blank it.
             fields['lastModifiedBy'] = uid
             writes.append(fs.build_update_write(path, fields, mask))
+            item.written = {k: fields.get(k) for k in mask}
         elif item.action == 'delete':
             rec.is_deleted = True
             rec.last_modified = now_millis()
-            writes.append(fs.build_update_write(
-                path,
-                {'isDeleted': True, 'lastModified': rec.last_modified,
-                 'lastModifiedBy': uid},
-                ['isDeleted', 'lastModified', 'lastModifiedBy']))
+            item.written = {'isDeleted': True, 'lastModified': rec.last_modified, 'lastModifiedBy': uid}
+            writes.append(fs.build_update_write(path, item.written, list(item.written)))
     return writes
 
 
@@ -1808,6 +2325,30 @@ def batch_summary(plans):
     for plan in plans:
         merged.items.extend(plan.items)
     return merged.summary()
+
+
+def _store_pushed_records(cache, map_id, items):
+    """Cópia local, depois do envio, de cada documento como o Firestore o deixou.
+
+    Um 'update' grava só a máscara: o resto do documento — o que o app mudou e o QGIS não,
+    inclusive — continua o da nuvem. Guardar o candidato inteiro punha no cache valores do
+    QGIS que não subiram, e se o recebimento automático seguinte falhasse, o envio seguinte
+    tomava a edição do app por uma do QGIS e a sobrescrevia. Então: o documento anterior do
+    cache com SÓ o que foi gravado por cima. Sem documento anterior entra só o 'new' (foi
+    gravado inteiro); os outros esperam o recebimento.
+    """
+    previous = cache.load_records_by_id(map_id, [item.record.record_id for item in items])
+    rows = []
+    for item in items:
+        doc = previous.get(item.record.record_id)
+        if doc is None and item.action != 'new':
+            continue
+        doc = dict(doc or {})
+        for key, value in (item.written or {}).items():
+            # Blob (geometryWkb) em base64, como o recebimento o guarda.
+            doc[key] = base64.b64encode(value).decode('ascii') if isinstance(value, bytes) else value
+        rows.append((item.record.record_id, doc))
+    cache.store_records(map_id, rows, now_millis())
 
 
 def execute_push(dock, tmap, entries, group=None):
@@ -1825,6 +2366,13 @@ def execute_push(dock, tmap, entries, group=None):
     for plan in plans:
         record_writes.extend(build_writes(fs, plan, uid))
     if not record_writes:
+        # A base dos 'unchanged' anda mesmo sem gravar nada (é o caso do envio aplicado cuja
+        # resposta se perdeu: o reenvio sai todo inalterado).
+        with contextlib.suppress(Exception):
+            cache = FirestoreCache(dock.env.key, dock.tokens.uid)
+            for plan, source_layer in entries:
+                if source_layer is not None and not plan.copied_from_map_id:
+                    _store_baselines(plan, source_layer, cache)
         dock.notify(tr('Nada para enviar — tudo já está sincronizado.'))
         return
 
@@ -1853,21 +2401,20 @@ def execute_push(dock, tmap, entries, group=None):
         # envio de volta para a origem virar outra "cópia" — trocando a autoria dos
         # registros originais pela de quem copiou.
         project_only = []
+        cache = FirestoreCache(dock.env.key, dock.tokens.uid)
         for plan, source_layer in entries:
             if plan.copied_from_map_id:
                 continue
-            if not _write_back_records_to_source_layer(plan, source_layer):
+            if not _write_back_records_to_source_layer(plan, source_layer, cache):
                 project_only.append((plan.layer_name, source_layer))
         with contextlib.suppress(Exception):
-            cache = FirestoreCache(dock.env.key, dock.tokens.uid)
-            cache.store_record_models(
-                tmap.map_id,
-                [item.record for plan in plans for item in plan.writable_items()],
-                now_millis(),
-            )
+            _store_pushed_records(cache, tmap.map_id,
+                                  [item for plan in plans for item in plan.writable_items()])
         page.set_busy(False)
         page.set_status(tr('{n} alterações enviadas com sucesso. Atualizando registros…').format(n=total))
-        dock.notify(tr('{expedicao}: {resumo} — enviado.').format(expedicao=tmap.nome, resumo=batch_summary(plans)))
+        # Sem os conflitos desmarcados: o aviso não pode dizer "enviado" do que não subiu.
+        sent = [PushPlan(map_id=plan.map_id, items=[i for i in plan.items if i.send]) for plan in plans]
+        dock.notify(tr('{expedicao}: {resumo} — enviado.').format(expedicao=tmap.nome, resumo=batch_summary(sent)))
         if project_only:
             dock.notify(_aviso_identidade_no_projeto(project_only), error=True)
         try:
@@ -1937,7 +2484,7 @@ def _aviso_identidade_no_projeto(camadas):
             + conselho)
 
 
-def _write_back_records_to_source_layer(plan, layer):
+def _write_back_records_to_source_layer(plan, layer, cache=None):
     """Persist approved record attributes into the source layer when possible.
 
     Devolve False so quando ACABAMOS de descobrir que o provedor recusa guardar o
@@ -1945,6 +2492,8 @@ def _write_back_records_to_source_layer(plan, layer):
     a identidade foi para o PROJETO e precisa ser salva. Camada que ja vinha usando a
     reserva devolve True: o aviso ja foi dado, e sem essa identidade cada envio
     reclassificava as mesmas feicoes como registros novos, duplicando tudo em silencio.
+
+    cache: onde fica a linha de base (FirestoreCache.store_baselines) de cada registro gravado.
     """
     if layer is None:
         return True
@@ -1965,7 +2514,7 @@ def _write_back_records_to_source_layer(plan, layer):
     changes = {}
     fallback = {}
     for item in plan.items:
-        if item.action not in ('new', 'update') or item.feature_id is None:
+        if item.action not in ('new', 'update', 'conflict') or item.feature_id is None:
             continue
         # Item desmarcado na previa nao foi gravado: carimbar recordId +
         # tairuSyncHash nele faria o proximo envio classifica-lo como 'update' de
@@ -1987,7 +2536,10 @@ def _write_back_records_to_source_layer(plan, layer):
     if changes and not known_unwritable:
         # source may be read-only; remote commit has already succeeded
         with contextlib.suppress(Exception):
-            if layer.isEditable():
+            # Em edição SEM nada pendente (a prévia recusa camada com edição não salva), grava
+            # no arquivo: no buffer o carimbo sumia num "Descartar", e a camada ficava
+            # modificada, o que barra o recebimento automático logo depois.
+            if layer.isEditable() and layer.isModified():
                 for fid, attrs in changes.items():
                     for idx, value in attrs.items():
                         layer.changeAttributeValue(fid, idx, value)
@@ -2004,9 +2556,23 @@ def _write_back_records_to_source_layer(plan, layer):
         persisted = _record_id_persisted(layer, changes)
     if not persisted:
         set_layer_feature_record_ids(layer, fallback)
+    if cache is not None:
+        _store_baselines(plan, layer, cache)
     with contextlib.suppress(Exception):
         configure_record_layer_fields(layer)
     return persisted or known_unwritable
+
+
+def _store_baselines(plan, layer, cache):
+    """A linha de base desta camada é a feição como ela está: o que subiu (com o carimbo que o
+    write-back gravou) e, nos 'unchanged', a que _against_baseline montou."""
+    rows = [(item.record.record_id, stamped(sync_fields(item.record), sync_record_hash(item.record)))
+            for item in plan.writable_items() if item.action != 'delete']
+    rows += [(item.record.record_id, item.baseline) for item in plan.items
+             if item.action == 'unchanged' and item.baseline]
+    if rows:
+        with contextlib.suppress(Exception):
+            cache.store_baselines(plan.map_id, layer_key(layer), rows)
 
 
 def _record_id_persisted(layer, changes):

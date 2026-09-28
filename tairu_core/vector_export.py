@@ -22,11 +22,15 @@ try:
     from .layer_tree import is_tairudb_view
     from .map_identity import feature_uuid_for
     from .i18n import tr
+    from .tile_math import to_wgs84
+    from .datum_context import datum_context
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.vector_types import tairudb_type_for_fields
     from tairu_core.layer_tree import is_tairudb_view
     from tairu_core.map_identity import feature_uuid_for
     from tairu_core.i18n import tr
+    from tairu_core.tile_math import to_wgs84
+    from tairu_core.datum_context import datum_context
 
 
 # Categorias que nao puderam ser lidas; inspecionavel em depuracao.
@@ -290,10 +294,13 @@ def export_vector_layers(writer, layers, transform_context, feedback,
         # Layer label settings resolved once and folded into each feature's styleJson.
         label_cfg = label_cfg_fn(layer) if label_cfg_fn is not None else None
 
-        # Prepare transformation to WGS84
+        # Prepare transformation to WGS84 — pela operação de datum do app (ver
+        # datum_context), para a feição cair no .tairudb onde o app a poria.
         layer_crs = layer.crs()
+        layer_context = datum_context(
+            transform_context, [layer], warn=lambda text: feedback.push_info(f'⚠ {text}'))
         transform = QgsCoordinateTransform(
-            layer_crs, QgsCoordinateReferenceSystem("EPSG:4326"), transform_context)
+            layer_crs, QgsCoordinateReferenceSystem("EPSG:4326"), layer_context)
         # Validado UMA vez, antes do laco: se a transformacao e invalida, toda
         # feicao seria gravada no .tairudb em metros — geometria no lugar errado,
         # sem erro nenhum. O retorno de transform() era ignorado abaixo.
@@ -302,6 +309,17 @@ def export_vector_layers(writer, layers, transform_context, feedback,
             feedback.report_error(tr(
                 'Camada "{name}" não pôde ser reprojetada de {origin} '
                 'para WGS84 (EPSG:4326) — não foi exportada.').format(name=layer.name(), origin=origem))
+            continue
+        # Transformacao valida nao basta: camada declarada EPSG:4326 com dados em metros
+        # tem transformacao identidade, valida, e gravaria metros como graus — feicao que
+        # o app descarta por estar fora de ±180/±90. A faixa em graus da extensao
+        # reprojetada e o guarda que pega isso.
+        try:
+            to_wgs84(QgsGeometry.fromRect(layer.extent()), layer_crs,
+                     QgsCoordinateReferenceSystem("EPSG:4326"), layer_context)
+        except ValueError as e:
+            feedback.report_error(tr('Camada "{name}" não foi exportada: {erro}').format(
+                name=layer.name(), erro=e))
             continue
 
         feature_count = 0

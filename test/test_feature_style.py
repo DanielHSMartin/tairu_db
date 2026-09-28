@@ -9,7 +9,6 @@ test_firestore_cache's approach) so the module imports standalone.
 """
 
 import json
-import math
 import sys
 import types
 import unittest
@@ -47,6 +46,8 @@ def _install_stubs():
     _stub('tairu_core')
     _stub('tairu_core.i18n', tr=lambda text: text)
     _stub('tairu_core.firestore_cache', FirestoreCache=type('FirestoreCache', (), {}))
+    _stub('tairu_core.tile_math', to_wgs84=_dummy)
+    _stub('tairu_core.datum_context', datum_context=_dummy)
     _stub('tairu_firebase')
     _stub('tairu_firebase.models',
           TairuRecord=type('TairuRecord', (), {}),
@@ -57,12 +58,16 @@ def _install_stubs():
           ensure_record_layer_fields=_dummy, layer_sync_snapshot=_dummy,
           normalized_geometry_points=_dummy, record_to_attribute_map=_dummy,
           resolved_background_argb=_dummy, resolved_color_argb=_dummy,
-          sync_record_hash=_dummy, SYNC_HASH_FIELD='tairuSyncHash',
+          sync_record_hash=_dummy, sync_record_payload=_dummy, SYNC_HASH_FIELD='tairuSyncHash',
           SYNC_LAST_MODIFIED_FIELD='tairuSyncLastModified',
           layer_origin_map_id=lambda _layer: '',
           SYNC_MAP_ID_PROPERTY='tairu/syncMapId',
           layer_feature_record_ids=lambda _layer: {},
           set_layer_feature_record_ids=_dummy,
+          ensure_points_from_wkb=_dummy, geometry_from_wkb=_dummy, geometry_rings=_dummy,
+          sync_fields=_dummy, classify_fields=_dummy, baseline_from_stamp=_dummy, layer_key=_dummy,
+          stamped=_dummy, matching_baselines=_dummy,
+          STYLE_LABEL='label', STYLE_REST='rest', STYLE_STROKE='stroke', UNKNOWN=object(),
           # push deriva _NON_ATTRIBUTE_FIELDS daqui; dois nomes bastam para o stub.
           FIELD_DEFS=[('recordId', 'string'), ('nome', 'string')])
     _stub('tairu_sync.tasks', run_task=_dummy)

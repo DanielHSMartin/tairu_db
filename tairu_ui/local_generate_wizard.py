@@ -31,7 +31,7 @@ from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     Qgis, QgsMessageLog,
     QgsCoordinateReferenceSystem, QgsGeometry, QgsProject,
-    QgsVectorLayer,
+    QgsReferencedRectangle, QgsVectorLayer,
 )
 from qgis.gui import QgsMapLayerComboBox
 
@@ -593,10 +593,8 @@ class ExtentPage(QWizardPage):
     def _draw_hint_text(self, wgs84, ctx):
         if self.drawn_rect is None or self.drawn_rect.isEmpty():
             return tr('nenhum definido ainda')
-        crs = QgsProject.instance().crs()
         return _regions_text(1, to_wgs84(
-            QgsGeometry.fromRect(self.drawn_rect),
-            crs if crs.isValid() else self._canvas_crs(), wgs84, ctx).boundingBox())
+            QgsGeometry.fromRect(self.drawn_rect), self.drawn_rect.crs(), wgs84, ctx).boundingBox())
 
     def _layer_hint_text(self, wgs84, ctx):
         layer = self.layer_combo.currentLayer()
@@ -752,11 +750,16 @@ class ExtentPage(QWizardPage):
         self._picker.start()
 
     def _on_extent_picked(self, rect):
-        self.drawn_rect = rect
+        # Os números só valem na SRC em que foram desenhados. O assistente não é
+        # modal: com o projeto trocado de SRC depois do desenho, ler o retângulo
+        # na SRC do momento do cálculo movia a área sem aviso (642 km de UTM 23S
+        # para 22S) — e to_wgs84 aceitava, porque o resultado seguia em graus.
+        self.drawn_rect = QgsReferencedRectangle(rect, self._canvas_crs())
         self.draw_btn.setText(tr('Desenhar outro retângulo'))
         self.draw_btn.setToolTip(
-            tr('{x0:.5f}, {y0:.5f} — {x1:.5f}, {y1:.5f} (CRS do projeto)').format(
-                x0=rect.xMinimum(), y0=rect.yMinimum(), x1=rect.xMaximum(), y1=rect.yMaximum()))
+            tr('{x0:.5f}, {y0:.5f} — {x1:.5f}, {y1:.5f} ({crs})').format(
+                x0=rect.xMinimum(), y0=rect.yMinimum(), x1=rect.xMaximum(), y1=rect.yMaximum(),
+                crs=self.drawn_rect.crs().authid()))
         self._restore_wizard()
 
     def _on_pick_canceled(self):
@@ -786,8 +789,8 @@ class ExtentPage(QWizardPage):
         """Qual opção de área está marcada e com que CRS — para o log."""
         try:
             if self.draw_radio.isChecked():
-                crs = QgsProject.instance().crs()
-                return f'retângulo desenhado (CRS do projeto {crs.authid() or "?"})'
+                crs = self.drawn_rect.crs() if self.drawn_rect is not None else QgsProject.instance().crs()
+                return f'retângulo desenhado (CRS do desenho {crs.authid() or "?"})'
             if self.canvas_radio.isChecked():
                 bruta = self._wizard.iface.mapCanvas().mapSettings().destinationCrs()
                 usada = self._canvas_crs()
@@ -823,11 +826,9 @@ class ExtentPage(QWizardPage):
         ctx = QgsProject.instance().transformContext()
         polygons = []
         if self.draw_radio.isChecked():
-            # O retângulo é desenhado SOBRE o canvas, então vem na CRS dele.
-            crs = QgsProject.instance().crs()
+            # Na SRC do canvas NO MOMENTO DO DESENHO, guardada com o retângulo.
             polygons.append(to_wgs84(
-                QgsGeometry.fromRect(self.drawn_rect),
-                crs if crs.isValid() else self._canvas_crs(), wgs84, ctx))
+                QgsGeometry.fromRect(self.drawn_rect), self.drawn_rect.crs(), wgs84, ctx))
         elif self.canvas_radio.isChecked():
             canvas = self._wizard.iface.mapCanvas()
             polygons.append(to_wgs84(
