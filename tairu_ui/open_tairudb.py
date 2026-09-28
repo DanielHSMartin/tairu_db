@@ -84,7 +84,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
 
 # Sobe quando a conversao muda: a pasta em cache e chaveada por ele, entao uma conversao
 # feita por versao anterior do plugin nao e reaproveitada.
-_FORMAT = 1
+_FORMAT = 2   # 2: curvas de nivel (contourLine) passaram a abrir
 _CACHE_DIR = 'arquivos'
 _GPKG = 'vetores.gpkg'
 _MANIFEST = 'manifesto.json'
@@ -100,6 +100,9 @@ _TECH_FIELDS = (_UUID_FIELD, _STYLE_FIELD)
 
 _KINDS = ('point', 'line', 'polygon')   # tambem a ordem no painel: pontos por cima
 _KIND_LABEL = {'point': 'pontos', 'line': 'linhas', 'polygon': 'polígonos'}
+# Curvas de nivel sao gravadas como 'contourLine'; o app as desenha como linha
+# (layer_feature_to_record.dart). Sem isto a camada de curvas sumia inteira.
+_KIND_ALIAS = {'contourLine': 'line'}
 _MEMORY_GEOM = {'point': 'MultiPoint', 'line': 'MultiLineString', 'polygon': 'MultiPolygon'}
 _DEFAULT_SIZE = {'point': 40.0, 'line': 3.0, 'polygon': 3.0}
 _FALLBACK_COLOR = '#FF9E9E9E'
@@ -175,10 +178,11 @@ def _convert_into(path, work, report, canceled):
             for values in cursor:
                 row = dict(zip(columns, values))
                 # O GRG e identificado pelo iconType, como no app, e nao pelo nome da camada.
+                kind = _KIND_ALIAS.get(row.get('type'), row.get('type'))
                 if str(row.get('iconType') or '').startswith(_GRG_PREFIX):
                     grg_rows.append(row)
-                elif row.get('type') in _KINDS:
-                    buckets.setdefault((row.get('layer_id'), row['type']), []).append(row)
+                elif kind in _KINDS:
+                    buckets.setdefault((row.get('layer_id'), kind), []).append(row)
     finally:
         conn.close()
 

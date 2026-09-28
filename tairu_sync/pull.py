@@ -18,7 +18,6 @@ try:
     from ..tairu_core.firestore_cache import (
         FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from ..tairu_core.reentrancy_guard import run_or_defer
-    from ..tairu_core.mbtiles import tairudb_to_mbtiles
     from ..tairu_core.workspace import (
         map_workspace, mark_record_schema_generation,
         record_schema_generation, save_last_pull_ts)
@@ -27,7 +26,7 @@ try:
         TairuRecord, TairuRecordGroup, now_millis, parse_millis)
     from .record_convert import (
         RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
-        add_raster_to_project, layers_with_pending_edits)
+        layers_with_pending_edits)
     from .tasks import run_task
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import _MSG_WARNING
@@ -35,7 +34,6 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.firestore_cache import (
         FirestoreCache, RECORDS_COLLECTION, RECORD_GROUPS_COLLECTION)
     from tairu_core.reentrancy_guard import run_or_defer
-    from tairu_core.mbtiles import tairudb_to_mbtiles
     from tairu_core.workspace import (
         map_workspace, mark_record_schema_generation,
         record_schema_generation, save_last_pull_ts)
@@ -44,7 +42,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         TairuRecord, TairuRecordGroup, now_millis, parse_millis)
     from tairu_sync.record_convert import (
         RECORD_SCHEMA_GENERATION, apply_pull, add_record_layers_to_project,
-        add_raster_to_project, layers_with_pending_edits)
+        layers_with_pending_edits)
     from tairu_sync.tasks import run_task
 
 # Safety margin subtracted from the Firestore serverTimestamp cursor to absorb
@@ -281,7 +279,15 @@ def start_pull(dock, tmap):
 
 
 def start_tairudb_download(dock, tmap, file_name):
-    """Download a tairudb file, convert to MBTiles and add as raster layers."""
+    """Baixa um .tairudb da expedicao e o abre como no "Abrir arquivo .tairudb…".
+
+    Raster, vetores, curvas de nivel e GRG: a mesma conversao do arquivo local. So o
+    raster (MBTiles) deixava a expedicao aberta sem GRG nem curvas.
+    """
+    try:
+        from ..tairu_ui.open_tairudb import add_to_project, cache_dir_for, convert
+    except ImportError:
+        from tairu_ui.open_tairudb import add_to_project, cache_dir_for, convert
     storage = dock.storage
     page = dock.detail_page
     paths = map_workspace(dock.env.key, tmap.map_id)
@@ -298,26 +304,18 @@ def start_tairudb_download(dock, tmap, file_name):
 
         storage.download(object_path, local_path,
                          progress_cb=dl_progress, cancel_cb=task.isCanceled)
-        task.report(0.75, tr('Convertendo para MBTiles…'))
-        results = tairudb_to_mbtiles(
-            local_path, paths['mbtiles'],
-            progress_cb=lambda f: task.report(0.75 + 0.25 * f))
-        return results
+        out_dir = cache_dir_for(local_path)
+        manifest = convert(local_path, out_dir,
+                           lambda f, m='': task.report(0.7 + 0.3 * f, m), task.isCanceled)
+        return out_dir, manifest
 
-    def on_success(results):
-        # Same re-entrancy guard as the records pull: adding raster layers to the
-        # project while a generation pumps its nested loop can crash QGIS.
-        def add_layers():
-            added = 0
-            for mbtiles_path, region_label in results:
-                name = f'{os.path.splitext(file_name)[0]} — {region_label}'
-                if add_raster_to_project(mbtiles_path, name,
-                                         tmap.nome or tmap.map_id, tmap.map_id):
-                    added += 1
-            page.set_status(tr('{arquivo}: {n} camada(s) raster adicionada(s).').format(arquivo=file_name, n=added))
+    def on_success(result):
+        out_dir, manifest = result
         page.set_busy(False)
-        run_or_defer(add_layers)
-        dock.notify(tr('{arquivo} adicionado ao projeto.').format(arquivo=file_name))
+        page.set_status(tr('{arquivo} adicionado ao projeto.').format(arquivo=file_name))
+        # Same re-entrancy guard as the records pull: adding layers to the project
+        # while a generation pumps its nested loop can crash QGIS.
+        run_or_defer(lambda: add_to_project(dock.iface, local_path, out_dir, manifest))
 
     def on_error(message):
         page.set_busy(False)

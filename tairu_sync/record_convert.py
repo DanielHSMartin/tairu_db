@@ -2416,21 +2416,6 @@ def add_record_layers_to_project(gpkg_path, map_name, map_id='', groups=()):
     return sync_record_layers(gpkg_path, map_name, map_id, groups)
 
 
-def add_raster_to_project(mbtiles_path, display_name, map_name, map_id=''):
-    from qgis.core import QgsRasterLayer
-    group = _find_or_create_group(map_name, map_id)
-    project = QgsProject.instance()
-    for lyr in project.mapLayers().values():
-        if lyr.source() == mbtiles_path:
-            return lyr
-    layer = QgsRasterLayer(mbtiles_path, display_name, 'gdal')
-    if not layer.isValid():
-        return None
-    project.addMapLayer(layer, False)
-    group.addLayer(layer)
-    return layer
-
-
 def _log_style_failed(exc):
     """Registra falha ao aplicar estilo numa camada puxada (nunca propaga)."""
     try:

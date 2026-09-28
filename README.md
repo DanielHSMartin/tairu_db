@@ -25,8 +25,9 @@ criptografado do QGIS. **Recursos de nuvem exigem plano Online ou Tempo Real.**
   Repetir o pull atualiza as camadas pela chave `recordId`, sem duplicar. Feição editada no
   QGIS e ainda não enviada não é regravada nem apagada, e o que foi desenhado e não enviado
   fica: o envio seguinte junta a edição com o que mudou no app (ou mostra o conflito).
-- *Arquivos TairuDB*: baixe qualquer arquivo do mapa; cada região vira uma camada raster
-  (MBTiles) georreferenciada no grupo `Tairu/{mapa}`.
+- *Arquivos TairuDB*: baixe qualquer arquivo do mapa; ele abre como no menu *Abrir arquivo
+  .tairudb* — raster (MBTiles), vetores, GRG e curvas de nível, somente leitura, num grupo
+  com o nome do arquivo.
 
 **Enviar para o Tairu Maps (Push)**
 - *Camada → registros*: converte feições de qualquer camada vetorial **visível** em

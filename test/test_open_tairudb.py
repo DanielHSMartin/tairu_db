@@ -74,7 +74,8 @@ def _build(path):
         ('name', 'Mapa de teste'), ('format', 'png'), ('icon:0', _ICON_URI),
         ('grg_config', json.dumps(grg_config))])
     conn.executemany('INSERT INTO vector_layers (uuid, type, name, description) VALUES (?, ?, ?, ?)', [
-        ('L1', 'vector', 'Importado', ''), ('L2', 'polygon', 'Áreas', ''), ('G', 'line', '__grg__', '')])
+        ('L1', 'vector', 'Importado', ''), ('L2', 'polygon', 'Áreas', ''), ('G', 'line', '__grg__', ''),
+        ('C', 'line', 'Curvas De Nivel', '')])
 
     def feature(uuid, layer, kind, name, points, attributes=None, color='#FF00FF00', size=None,
                 style=None, wkb=None, icon='locationOn'):
@@ -111,6 +112,10 @@ def _build(path):
             icon='grg_label_col')
     feature('gl1', 'G', 'point', 'grg_row_1', '1 0.5', attributes=dict(grg, label='1'),
             icon='grg_label_row')
+
+    # Curva de nivel: o gerador grava type 'contourLine', que o app desenha como linha.
+    feature('c1', 'C', 'contourLine', 'Curva 1180m', '-47.9 -15.8, -47.8 -15.7',
+            attributes={'ELEV': 1180.0}, color='#0000FF', size=3, icon='line')
 
     conn.execute("INSERT INTO regions (uuid, name, minzoom, maxzoom, bounds) VALUES "
                  "('R1', 'Satélite', 0, 0, '-180 -85, 180 -85, 180 85, -180 85')")
@@ -164,8 +169,14 @@ class OpenTairuDBTest(unittest.TestCase):
     def test_entries_in_panel_order(self):
         self.assertEqual(self.manifest['title'], 'Mapa de teste')
         self.assertEqual([e['name'] for e in self.manifest['entries']], [
-            'GRG (rótulos)', 'GRG', 'Importado (pontos)', 'Importado (linhas)',
+            'GRG (rótulos)', 'GRG', 'Importado (pontos)', 'Importado (linhas)', 'Curvas De Nivel',
             'Importado (polígonos)', 'Áreas', 'Satélite'])
+
+    def test_contour_lines_open_as_lines(self):
+        contours = self._layer('Curvas De Nivel')
+        self.assertEqual(contours.featureCount(), 1)
+        self.assertEqual(next(contours.getFeatures())['ELEV'], 1180.0)
+        self.assertEqual(self._entry('Curvas De Nivel')['styles'][0]['fg'], '#FF0000FF')   # azul opaco (#AARRGGBB)
 
     def test_mixed_layer_split_by_geometry(self):
         self.assertEqual(self._layer('Importado (pontos)').featureCount(), 2)
@@ -222,7 +233,7 @@ class OpenTairuDBTest(unittest.TestCase):
         group = QgsProject.instance().layerTreeRoot().children()[0]
         self.assertEqual(group.name(), 'Mapa de teste')
         layers = {node.name(): node.layer() for node in group.findLayers()}
-        self.assertEqual(len(layers), 7, iface.bar.messages)
+        self.assertEqual(len(layers), 8, iface.bar.messages)
         self.assertTrue(layers['Satélite'].isValid())
         self.assertIsInstance(layers['Importado (pontos)'].renderer(), QgsCategorizedSymbolRenderer)
         self.assertIsInstance(layers['Áreas'].renderer(), QgsSingleSymbolRenderer)
@@ -252,7 +263,7 @@ class OpenTairuDBTest(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         sources = {node.layer().source() for node in groups[0].findLayers()}
         self.assertTrue(all(newer in s for s in sources), sources)
-        self.assertEqual(len(QgsProject.instance().mapLayers()), 7)   # as velhas saíram
+        self.assertEqual(len(QgsProject.instance().mapLayers()), 8)   # as velhas saíram
 
     def test_open_layers_never_feed_the_next_generation(self):
         """O resultado aberto no projeto nao e fonte: nem na lista, nem no export."""
