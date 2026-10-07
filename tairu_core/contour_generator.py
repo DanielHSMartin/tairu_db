@@ -353,26 +353,44 @@ def _fetch_inpe_tile(lat_norte, lon_oeste, cache_dir, feedback, progress_base=0.
     return tif_path if os.path.exists(tif_path) else None
 
 
+# Folga da seleção de tiles: o tile vem deslocado meio pixel do grau (S16_W048 vai de
+# -15,9999 a -14,9999 e de -48,0001 a -47,0001) e o recorte encaixa a área na grade, que
+# anda até um pixel. Em latitude o pixel é 1" em todas as faixas; em longitude chega a
+# 10" perto dos polos. Os 10" também em latitude pegavam, a até 300 m de 50°S, 60°S…,
+# o tile da faixa vizinha — de pixel mais largo, sem tocar a área.
+_COPERNICUS_MARGIN_LAT = 2.0 / 3600.0
+_COPERNICUS_MARGIN_LON = 10.0 / 3600.0
+
+
+def _copernicus_tiles(bbox_wgs84):
+    """(lat, lon) dos tiles Copernicus GLO-30 que cobrem a bbox.
+
+    O nome do tile é o seu canto SUDOESTE: S16_W048 cobre 16°S–15°S e 48°W–47°W
+    (medido nos GeoTIFF). A faixa ia de floor a ceil INCLUSIVE, e uma área dentro de
+    um só tile (a ANP) baixava 4 — ~165 MB onde 1, de ~41 MB, bastava.
+
+    O tile do CENTRO da área vem primeiro: é a grade dele que o recorte usa
+    (_clip_tiles), e a de um tile de outra faixa de latitude tem o pixel de
+    longitude mais largo.
+    """
+    m_lat, m_lon = _COPERNICUS_MARGIN_LAT, _COPERNICUS_MARGIN_LON
+    lats = range(math.floor(bbox_wgs84.yMinimum() - m_lat), math.ceil(bbox_wgs84.yMaximum() + m_lat))
+    lons = range(math.floor(bbox_wgs84.xMinimum() - m_lon), math.ceil(bbox_wgs84.xMaximum() + m_lon))
+    centro = (math.floor(bbox_wgs84.center().y()), math.floor(bbox_wgs84.center().x()))
+    return sorted(((lat, lon) for lat in lats for lon in lons), key=lambda tile: tile != centro)
+
+
 def _download_copernicus_tiles(bbox_wgs84, temp_dir, feedback):
     """
     Download Copernicus GLO-30 tiles covering the bbox (global, 1°×1° grid).
 
-    Filename: Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM.tif
-    Example: Copernicus_DSM_COG_10_S06_00_W041_00_DEM.tif → 6°–7°S, 41°–42°W
+    Filename: Copernicus_DSM_COG_10_{lat_str}_00_{lon_str}_00_DEM.tif, named by the
+    tile's south-west corner: S06_00_W041 → 6°S–5°S, 41°W–40°W.
     """
     cache_dir = os.path.join(tempfile.gettempdir(), 'CurvaDeNivel', 'copernicus')
     os.makedirs(cache_dir, exist_ok=True)
 
-    lat_start = int(math.floor(bbox_wgs84.yMinimum()))
-    lat_end = int(math.ceil(bbox_wgs84.yMaximum()))
-    lon_start = int(math.floor(bbox_wgs84.xMinimum()))
-    lon_end = int(math.ceil(bbox_wgs84.xMaximum()))
-
-    tiles_to_fetch = [
-        (lat, lon)
-        for lat in range(lat_start, lat_end + 1)
-        for lon in range(lon_start, lon_end + 1)
-    ]
+    tiles_to_fetch = _copernicus_tiles(bbox_wgs84)
     n_total = len(tiles_to_fetch)
     feedback.push_info(tr('  {n} tile(s) Copernicus GLO-30 necessário(s).').format(n=n_total))
 

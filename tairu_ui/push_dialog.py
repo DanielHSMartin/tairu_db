@@ -12,7 +12,6 @@ from qgis.core import QgsProject, QgsVectorLayer
 
 try:
     from ..tairu_core.i18n import tr
-    from ..tairu_core.layer_tree import layer_is_visible
     from ..tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from ..tairu_sync.record_convert import has_pending_edits, layer_origin_map_id
     from ..tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
@@ -20,14 +19,15 @@ try:
         apply_group_to_plan, batch_summary, build_push_plan, execute_push,
         group_candidate_count, record_group_id,
     )
+    from ..tairu_core.layer_tree import is_tairudb_view
     from ..tairu_core.vector_types import has_elevation_attribute
+    from .layer_table import CHECK_COL, NAME_COL, fill_layer_table, new_layer_table, visible_vector_layers
     from .style import (
         apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
         set_info_banner, set_muted, set_plain_button, set_primary_button, set_section_title,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from tairu_core.i18n import tr
-    from tairu_core.layer_tree import layer_is_visible
     from tairu_sync.record_convert import FOLDER_PROPERTY as _FOLDER_PROPERTY
     from tairu_sync.record_convert import has_pending_edits, layer_origin_map_id
     from tairu_firebase.models import RECORD_TYPES, RECORD_SUBTYPES, SUBTYPES_BY_TYPE, SITUATIONS_BY_TYPE
@@ -35,7 +35,9 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         apply_group_to_plan, batch_summary, build_push_plan, execute_push,
         group_candidate_count, record_group_id,
     )
+    from tairu_core.layer_tree import is_tairudb_view
     from tairu_core.vector_types import has_elevation_attribute
+    from tairu_ui.layer_table import CHECK_COL, NAME_COL, fill_layer_table, new_layer_table, visible_vector_layers
     from tairu_ui.style import (
         apply_cell_combo_style, apply_table_style, apply_tairu_style, set_control_enabled,
         set_info_banner, set_muted, set_plain_button, set_primary_button, set_section_title,
@@ -116,14 +118,10 @@ _EDIT_TRIGGERS = (
     QTableWidget.EditTrigger.AnyKeyPressed
 )
 
-# Etapa 1 — Enviar (caixa) | Camada | Geometria | Feições | SRC | Origem
-_LAYER_HEADERS = [tr('Enviar'), tr('Camada'), tr('Geometria'), tr('Feições'), tr('SRC'), tr('Origem')]
-_LAYER_SEND_COL = 0
-_LAYER_NAME_COL = 1
-# QgsVectorLayer.geometryType() -> Qgis.GeometryType (Point/Line/Polygon/Unknown/Null).
-_LAYER_GEOMETRY_LABELS = {
-    0: tr('Ponto'), 1: tr('Linha'), 2: tr('Polígono'), 3: tr('Desconhecida'), 4: tr('Sem geometria'),
-}
+# Etapa 1 — Enviar (caixa) | Camada | Geometria | Feições | SRC | Origem (layer_table.py,
+# a mesma tabela da etapa de camadas vetoriais do assistente de geração)
+_LAYER_SEND_COL = CHECK_COL
+_LAYER_NAME_COL = NAME_COL
 
 _STEP_LAYERS, _STEP_FEATURES, _STEP_GROUP = 0, 1, 2
 _STEP_TITLES = [
@@ -131,23 +129,6 @@ _STEP_TITLES = [
     tr('Etapa 2 de 3 · Feições'),
     tr('Etapa 3 de 3 · Grupo de registros'),
 ]
-
-
-def _layer_display_name(layer):
-    """Nome da camada com a pasta em que ela esta.
-
-    Com a arvore de grupos a mesma expedicao tem varias camadas chamadas "Pontos": sem
-    o nome da pasta a tabela de escolha vira uma lista de repetidos e nao ha como saber
-    o que se esta enviando.
-    """
-    name = layer.name()
-    try:
-        node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
-        parent = node.parent() if node is not None else None
-        parent_name = parent.name() if parent is not None else ''
-    except Exception:
-        parent_name = ''
-    return f'{parent_name} / {name}' if parent_name else name
 
 
 class _PreviewAborted(Exception):
@@ -234,17 +215,11 @@ class PushDialog(QDialog):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        # Mesma tabela da etapa de feições: a camada também tem dados que decidem
-        # a escolha (geometria, quantidade de feições, SRC, de onde ela veio).
+        # A camada também tem dados que decidem a escolha (geometria, quantidade de
+        # feições, SRC, de onde ela veio) — a mesma tabela do assistente de geração.
         self._layer_ids = []
-        self.layer_table = QTableWidget(0, len(_LAYER_HEADERS))
-        self.layer_table.setHorizontalHeaderLabels(_LAYER_HEADERS)
-        self.layer_table.setAlternatingRowColors(True)
-        self.layer_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.layer_table.verticalHeader().setVisible(False)
-        apply_table_style(self.layer_table)
+        self.layer_table = new_layer_table(tr('Enviar'))
         self.layer_table.itemChanged.connect(self._update_buttons)
-        self.layer_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.layer_table, 1)
 
         self.hidden_label = set_muted(QLabel(''))
@@ -258,32 +233,13 @@ class PushDialog(QDialog):
 
         O diálogo é modal, então a lista não muda enquanto ele está aberto — basta
         montá-la na abertura. Camada desmarcada no painel de camadas não é
-        desenhada no mapa e não é oferecida aqui.
+        desenhada no mapa e não é oferecida aqui. Nem a camada aberta de um .tairudb:
+        ela é o RESULTADO de uma geração, e marcada (como tudo aqui) subiria de volta
+        como registros novos — o assistente de geração já a deixava de fora.
         """
-        project = QgsProject.instance()
-        hidden = 0
-        rows = []
-        self._layer_ids = []
-        for layer in project.layerTreeRoot().layerOrder():
-            if not isinstance(layer, QgsVectorLayer) or not layer.isValid():
-                continue
-            if not layer_is_visible(layer, project):
-                hidden += 1
-                continue
-            rows.append(layer)
-
-        self.layer_table.blockSignals(True)
-        self.layer_table.setRowCount(len(rows))
-        for row, layer in enumerate(rows):
-            self._layer_ids.append(layer.id())
-            send = QTableWidgetItem('')
-            send.setFlags((send.flags() & ~_ITEM_IS_EDITABLE) | _ITEM_IS_CHECKABLE)
-            send.setCheckState(_CHECKED)
-            self.layer_table.setItem(row, _LAYER_SEND_COL, send)
-            for col, text in enumerate(self._layer_row_values(layer), start=_LAYER_NAME_COL):
-                self.layer_table.setItem(row, col, self._readonly_item(text))
-        self.layer_table.blockSignals(False)
-        self.layer_table.resizeColumnsToContents()
+        rows, hidden = visible_vector_layers(QgsProject.instance(), skip=is_tairudb_view)
+        self._layer_ids = [layer.id() for layer in rows]
+        fill_layer_table(self.layer_table, rows, map_id=self.tmap.map_id)
 
         if not rows and hidden:
             self.hidden_label.setText(tr(
@@ -292,32 +248,22 @@ class PushDialog(QDialog):
                 'janela de novo.'))
             self.hidden_label.show()
         elif not rows:
-            self.hidden_label.setText(tr('Nenhuma camada vetorial neste projeto.'))
+            # "nenhuma neste projeto" só quando é verdade: camada aberta de um .tairudb e
+            # tabela sem geometria estão no painel e ficam de fora daqui.
+            if any(isinstance(layer, QgsVectorLayer)
+                   for layer in QgsProject.instance().mapLayers().values()):
+                self.hidden_label.setText(tr(
+                    'Nenhuma camada para enviar: camadas abertas de um .tairudb e tabelas sem '
+                    'geometria não são enviadas. Para enviar uma delas, salve uma cópia '
+                    '(Exportar → Salvar feições como).'))
+            else:
+                self.hidden_label.setText(tr('Nenhuma camada vetorial neste projeto.'))
             self.hidden_label.show()
         elif hidden:
             text = (tr('{n} camadas ocultas no painel de camadas não são listadas.') if hidden > 1
                     else tr('{n} camada oculta no painel de camadas não é listada.'))
             self.hidden_label.setText(text.format(n=hidden))
             self.hidden_label.show()
-
-    def _layer_row_values(self, layer):
-        """Camada | Geometria | Feições | SRC | Origem."""
-        try:
-            geometry = _LAYER_GEOMETRY_LABELS.get(int(layer.geometryType()), '—')
-        except (TypeError, ValueError):
-            geometry = '—'
-        # featureCount() devolve -1 quando o provedor não sabe contar sem varrer.
-        count = layer.featureCount()
-        count_text = str(count) if count is not None and count >= 0 else '—'
-        crs = layer.crs().authid() or '—'
-        return [_layer_display_name(layer), geometry, count_text, crs,
-                self._layer_origin_label(layer)]
-
-    def _layer_origin_label(self, layer):
-        if layer.fields().indexOf('recordId') < 0:
-            return 'QGIS'
-        origin = layer_origin_map_id(layer)
-        return tr('Outra expedição') if origin and origin != self.tmap.map_id else 'Tairu Maps'
 
     def selected_layers(self):
         """Camadas marcadas aqui E ainda válidas no projeto, na ordem da tabela."""

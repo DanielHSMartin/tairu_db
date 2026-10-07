@@ -543,6 +543,12 @@ QTableWidget::item {{
     padding: 3px;
 }}
 
+/* Mesma razão do QCheckBox:disabled: sem isto a linha desligada (a camada de registros
+   do Tairu na etapa de camadas vetoriais) fica com a mesma cor das outras. */
+QTableWidget::item:disabled {{
+    color: {OUTLINE};
+}}
+
 QHeaderView::section {{
     background-color: {SURFACE_CONTAINER};
     color: {ON_SURFACE_VARIANT};

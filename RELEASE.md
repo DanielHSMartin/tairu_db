@@ -53,15 +53,16 @@ bash QGIS/tairu_db/build_release.sh
 python3 QGIS/tairu_db/tools/qgis_preflight.py QGIS/tairu_db-<versão>.zip
 ```
 
-O `qgis_preflight.py` faz cinco coisas:
+O `qgis_preflight.py` faz seis coisas:
 
 | Etapa | O que verifica |
 |---|---|
-| 1 | Baixa `security_scanner.py`, `validator.py` e `tasks/run_security_scan.py` e compara com os hashes fixados em `tools/qgis_upstream_rules.json`. **Se mudaram, ele reprova**: as exigências podem ter mudado e o arquivo precisa ser relido antes de publicar. Depois de ler, `--update-pins` fixa a nova referência. |
+| 1 | Baixa `security_scanner.py`, `validator.py`, `safe_http.py` (a política de rede com que o `validator.py` testa as URLs, desde o `d3a91d9`) e `tasks/run_security_scan.py` e compara com os hashes fixados em `tools/qgis_upstream_rules.json`. **Se mudaram, ele reprova**: as exigências podem ter mudado e o arquivo precisa ser relido antes de publicar. Depois de ler, `--update-pins` fixa a nova referência. |
 | 2 | Roda o `PluginSecurityScanner` **do próprio servidor** sobre o zip, nos dois modos (com as regras configuradas, e sem regra alguma — em que o servidor cai para `bandit -ll` e flake8 sem filtro). Antes disso confere que `bandit`, `detect-secrets` e `flake8` estão no PATH: o scanner os chama pelo nome e **cada check vira "passou" em silêncio quando a ferramenta falta**. |
-| 3 | `metadata.txt`: os 9 campos obrigatórios do `validator.py`, interpolação do ConfigParser (`%` cru quebra o upload) e a flag `supportsQt6`, hoje **deprecada** — o servidor avisa e pede para remover. |
-| 4 | `tracker`, `repository` e `homepage` respondendo: o `validator.py` testa essas URLs no envio. |
+| 3 | `metadata.txt`: os 9 campos obrigatórios do `validator.py`, interpolação do ConfigParser (`%` cru quebra o upload) e a flag `supportsQt6=True`, **obrigatória**. O servidor a chama de deprecada e mostra um aviso no envio (não bloqueia), mas o instalador do QGIS 3.x compilado com Qt6 lê a metadata baixada e recusa o plugin sem ela ("Plugin does not support Qt6 versions of QGIS"). Sem a flag, nenhuma versão até a 2.0.28 instalava nesses QGIS. |
+| 4 | `tracker`, `repository` e `homepage` respondendo: o `validator.py` testa essas URLs no envio. Desde 01/10/2026 (commit `d3a91d9`, contra SSRF) ele **não aceita certificado inválido** — antes tentava de novo sem verificar — nem link que resolva ou redirecione para endereço interno, e a mensagem de recusa não diz mais o motivo. Certificado inválido aqui reprova; outra falha de rede (handshake derrubado por proxy) só avisa. |
 | 5 | Grafias Qt5 sem escopo e `exec_` no pacote — o relatório Qt6, que precisa ser zero. |
+| 6 | O zip é o da pasta: cada arquivo do zip tem de ser igual ao da pasta do plugin, e cada arquivo que o `build_release.sh` empacota tem de estar no zip (a lista é lida do próprio script). As etapas 2 e 5 olham o zip e a 3 olha a metadata da pasta, então um zip gerado antes da última mudança passava em tudo e subia sem ela (aconteceu com a 2.0.30 em 07/10/2026, pega na revisão). |
 
 Não substitui julgamento: o conjunto de regras ativo é configuração do servidor
 (`enabled_bandit_rules` etc. vêm do admin), então um preflight limpo significa

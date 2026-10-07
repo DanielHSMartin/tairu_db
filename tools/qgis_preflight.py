@@ -21,6 +21,7 @@ import os
 import re
 import http.client
 import shutil
+import ssl
 import sys
 import tempfile
 import types
@@ -34,10 +35,13 @@ PINS_PATH = os.path.join(HERE, "qgis_upstream_rules.json")
 RAW = "https://raw.githubusercontent.com/qgis/QGIS-Plugins-Website/master/qgis-app/plugins"
 
 # Os arquivos que SAO o contrato das regras. views.py/forms.py mudam por motivos
-# nao relacionados o tempo todo; estes tres carregam as verificacoes em si.
+# nao relacionados o tempo todo; estes carregam as verificacoes em si. safe_http.py
+# entrou com o d3a91d9 (01/10/2026): e onde mora a politica de rede com que o
+# validator.py testa as URLs da metadata.
 RULE_SOURCES = {
     "security_scanner.py": f"{RAW}/security_scanner.py",
     "validator.py": f"{RAW}/validator.py",
+    "safe_http.py": f"{RAW}/safe_http.py",
     "tasks/run_security_scan.py": f"{RAW}/tasks/run_security_scan.py",
 }
 
@@ -244,10 +248,13 @@ def check_metadata(plugin_dir):
     else:
         ok(f"os {len(REQUIRED_METADATA)} campos obrigatorios estao presentes")
 
-    if "supportsqt6" in values:
-        fail("supportsQt6 esta DEPRECADO: o servidor avisa e pede para remover")
+    # O servidor chama a flag de deprecada (pensa no QGIS 4, que a ignora), mas o
+    # instalador do QGIS 3.x Qt6 le a metadata BAIXADA e recusa o plugin sem ela
+    # (pyplugin_installer/installer_data.py, getInstalledPlugin, 3.40 e 3.44).
+    if values.get("supportsqt6", "").strip().upper() in ("TRUE", "YES"):
+        ok("supportsQt6=True (exigido pelo QGIS 3.x Qt6; o aviso do servidor e esperado)")
     else:
-        ok("sem supportsQt6 (a flag foi deprecada)")
+        fail("falta supportsQt6=True: o QGIS 3.x Qt6 recusa instalar o plugin")
 
     # Valores multilinha chegam desindentados pelo ConfigParser, entao a entrada
     # do changelog e uma linha que COMECA com a versao.
@@ -274,7 +281,14 @@ def check_urls(values):
         except urllib.error.HTTPError as exc:
             fail(f"{field}: HTTP {exc.code} em {url}")
         except NET_ERRORS as exc:
-            note(f"{field}: nao deu para checar ({exc}) — {url}")
+            # Desde 01/10/2026 (validator.py d3a91d9, anti-SSRF) o servidor nao tenta
+            # de novo sem verificar o certificado: certificado invalido reprova o envio.
+            # So a falha de CERTIFICADO: um handshake derrubado pela rede (SSLEOFError)
+            # tambem e SSLError, e reprovava culpando um certificado que esta bom.
+            if isinstance(getattr(exc, "reason", exc), ssl.SSLCertVerificationError):
+                fail(f"{field}: certificado nao verificavel em {url} ({exc}) — o servidor recusa o envio")
+            else:
+                note(f"{field}: nao deu para checar ({exc}) — {url}")
 
 
 # ---------------------------------------------------------------- etapa 5
@@ -296,6 +310,67 @@ def check_qt6_spellings(zip_path):
             print(f"            {h}")
     else:
         ok("nenhuma grafia antiga nem exec_ no pacote")
+
+
+# ---------------------------------------------------------------- etapa 6
+def staged_files(plugin_dir):
+    """O que build_release.sh empacota, lido do proprio script: a lista mora la.
+
+    Mesmas exclusoes do rsync dele (__pycache__, *.pyc, *.pyo, ocultos, *.example), e
+    help/build/html/ vira help/.
+    """
+    with open(os.path.join(plugin_dir, "build_release.sh"), encoding="utf-8") as fh:
+        script = fh.read()
+
+    def words(var):
+        match = re.search(var + r'="([^"]*)"', script)
+        return match.group(1).split() if match else []
+
+    files = set(words("flat_files"))
+    roots = [(d, d) for d in words("package_dirs")] + [("help", os.path.join("help", "build", "html"))]
+    for top, base in roots:
+        root = os.path.join(plugin_dir, base)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__" and not d.startswith(".")]
+            for f in filenames:
+                if f.startswith(".") or f.endswith((".pyc", ".pyo", ".example")):
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, f), root)
+                files.add("/".join([top] + rel.split(os.sep)))
+    return files
+
+
+def check_zip_matches_tree(zip_path, plugin_dir):
+    """O zip tem de ser o da pasta. As etapas 2 e 5 olham o zip e a 3 olha a metadata da
+    pasta: um zip gerado antes da ultima mudanca passava em tudo e subia sem ela — e um
+    zip gerado antes de um arquivo NOVO passava ate aqui, se so se comparasse o que ele
+    tem (a 2.0.30 trouxe tairu_ui/layer_table.py, importado por duas telas)."""
+    print("\n[6] O zip e o da pasta do plugin")
+    stale = []
+    with zipfile.ZipFile(zip_path) as zf:
+        in_zip = {name.partition("/")[2] for name in zf.namelist() if not name.endswith("/")}
+        missing = sorted(staged_files(plugin_dir) - in_zip)
+        if missing:
+            fail(f"zip sem {len(missing)} arquivo(s) que a pasta empacota ({', '.join(missing[:4])}"
+                 f"{', ...' if len(missing) > 4 else ''}) — rode build_release.sh de novo")
+        for name in zf.namelist():
+            top, _, rel = name.partition("/")
+            if not rel or name.endswith("/"):
+                continue
+            # build_release.sh empacota help/build/html/ como help/
+            src = (os.path.join(plugin_dir, "help", "build", "html", rel[len("help/"):])
+                   if rel.startswith("help/") else os.path.join(plugin_dir, rel))
+            if not os.path.isfile(src):
+                stale.append(rel)
+                continue
+            with open(src, "rb") as fh:
+                if fh.read() != zf.read(name):
+                    stale.append(rel)
+    if stale:
+        fail(f"zip desatualizado: {len(stale)} arquivo(s) diferem da pasta ({', '.join(stale[:4])}"
+             f"{', ...' if len(stale) > 4 else ''}) — rode build_release.sh de novo")
+    else:
+        ok("todo arquivo do zip e igual ao da pasta")
 
 
 def main():
@@ -320,6 +395,7 @@ def main():
         if values:
             check_urls(values)
         check_qt6_spellings(zip_path)
+        check_zip_matches_tree(zip_path, plugin_dir)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

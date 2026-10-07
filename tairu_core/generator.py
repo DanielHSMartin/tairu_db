@@ -72,10 +72,35 @@ class GenerationSpec:
     region_edge_tiles: dict = field(default_factory=dict)  # region index -> set[(tx, ty)]
     region_rings: dict = field(default_factory=dict)       # region index -> [[(lon, lat), ...]]
     clip_to_region: bool = True                            # recortar o tile de borda pelo poligono
+    # region index -> camadas SÓ daquela região (ausente = `layers`). É o que deixa
+    # o mapa de fundo virar região à parte em vez de sumir por baixo da imagem.
+    region_layers: dict = field(default_factory=dict)
+    region_names: dict = field(default_factory=dict)       # region index -> nome (ausente = "Região N")
     antialias: bool = True
     include_attribution: bool = False
     attribution_text: str = "© TairuDB contributors"
     name: Optional[str] = None         # metadata name; defaults to output file basename
+
+
+def render_groups(region_tiles, region_layers, layers):
+    """[(camadas, regiões, tiles)] — o que renderizar, uma vez por grupo.
+
+    Regiões que desenham as MESMAS camadas renderizam juntas: o tile repetido
+    entre elas sai uma vez só e é gravado em cada uma. Região com camadas
+    próprias renderiza à parte, mesmo no tile que divide com outra.
+    """
+    groups = {}
+    for rid in sorted(region_tiles):
+        lyrs = (region_layers or {}).get(rid, layers) or []
+        _l, regions, tiles = groups.setdefault(tuple(lyr.id() for lyr in lyrs), (lyrs, set(), set()))
+        regions.add(rid)
+        tiles.update(region_tiles[rid])
+    return list(groups.values())
+
+
+def _region_name(spec, idx):
+    """O nome gravado na tabela de regiões — e o que o app mostra."""
+    return spec.region_names.get(idx) or f"Região {idx + 1}"
 
 
 def encode_tile_bytes(image, fmt, quality=90):
@@ -128,7 +153,9 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
 
     ordered = sorted(tiles)
     step = max(1, len(ordered) // max(1, samples))
-    picked = ordered[::step][:samples]
+    # do meio de cada faixa: começar no primeiro tile pegava sempre o canto noroeste,
+    # que numa imagem girada é moldura vazia
+    picked = ordered[step // 2::step][:samples]
 
     wgs84 = QgsCoordinateReferenceSystem("EPSG:4326")
     mercator = QgsCoordinateReferenceSystem("EPSG:3857")
@@ -204,6 +231,32 @@ def sample_tile_sizes(layers, tiles, max_zoom, tile_format, jpg_quality,
         sd_kb=math.sqrt(variancia),
         secs=(sum(times) / len(times)) if times else 0.15,
         count=len(fmt_sizes),
+    )
+
+
+def _merge_samples(parts):
+    """Uma medida para o arquivo inteiro: a de cada grupo pesada pelos tiles dele.
+
+    `parts` e [(tiles do grupo, TileSample ou None)]. Com um grupo so devolve a
+    medida dele, tal qual — o caso de todas as opcoes de area menos "Cada imagem".
+    """
+    if len(parts) == 1:
+        return parts[0][1]
+    blank = sum(part.blank for _n, part in parts if part is not None)
+    valid = [(n, part) for n, part in parts if part is not None and part.count]
+    if not valid:
+        return TileSample(blank=blank) if blank else None
+    total = sum(n for n, _p in valid)
+    fmt_kb = sum(n * p.fmt_kb for n, p in valid) / total
+    # desvio da mistura: o de dentro de cada grupo mais a distancia entre as medias
+    var = sum(n * (p.sd_kb ** 2 + (p.fmt_kb - fmt_kb) ** 2) for n, p in valid) / total
+    return TileSample(
+        fmt_kb=fmt_kb,
+        png_kb=sum(n * p.png_kb for n, p in valid) / total,
+        sd_kb=math.sqrt(var),
+        secs=sum(n * p.secs for n, p in valid) / total,
+        count=sum(p.count for _n, p in valid),
+        blank=blank,
     )
 
 
@@ -334,7 +387,8 @@ def mask_tile_to_rings(tile_image, tx, ty, n, rings):
 
 
 def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
-             layers=None, transform_context=None, sample=None, dpi=96, tile_size=256):
+             layers=None, transform_context=None, sample=None, dpi=96, tile_size=256,
+             region_layers=None):
     """Estimate tile count, file size and processing time without rendering.
 
     Com `layers`, alguns tiles sao renderizados de verdade para medir peso e
@@ -342,7 +396,10 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
     que e so uma ordem de grandeza.
     """
     est = EstimateResult()
-    est.total_tiles = region_result.total_tiles
+    # Tiles RENDERIZADOS: a regiao com camadas proprias desenha de novo o tile que
+    # divide com outra (ver render_groups).
+    groups = render_groups(region_result.region_tiles, region_layers, layers)
+    est.total_tiles = sum(len(tiles) for _l, _r, tiles in groups)
     est.region_tile_counts = {rid: len(tiles) for rid, tiles in region_result.region_tiles.items()}
     # Um tile que cai em duas regioes e GRAVADO nas duas: o arquivo tem uma
     # linha por regiao, nao uma por tile. No RJ4 foram 10.191 linhas para 7.918
@@ -360,10 +417,26 @@ def estimate(region_result, max_zoom, tile_format, jpg_quality, threads_number,
     if sample is None and layers:
         # O mesmo contexto que o motor vai usar (ver TileRenderEngine), e o aviso de
         # grade ausente já aqui, na prévia.
-        sample = sample_tile_sizes(
-            layers, region_result.filtered_tiles, max_zoom, fmt, jpg_quality,
-            datum_context(transform_context, layers, warn=est.warnings.append),
-            dpi=dpi, tile_size=tile_size)
+        context = datum_context(transform_context, layers, warn=est.warnings.append)
+        # Cada grupo medido com as PROPRIAS camadas, como o motor desenha: composto,
+        # o fundo da internet que nao baixou sumia por baixo de uma imagem opaca e
+        # nada avisava — e o tempo saia medido com todas as camadas por tile.
+        parts = [(len(tiles), lyrs, sample_tile_sizes(
+            lyrs, tiles, max_zoom, fmt, jpg_quality, context, dpi=dpi, tile_size=tile_size,
+            samples=max(2, 6 // len(groups)))) for lyrs, _r, tiles in groups]
+        if any(part is not None and part.count for _n, _l, part in parts):
+            for _n, lyrs, part in parts:
+                # Só mapa de fundo (XYZ, WMS, mbtiles, tiles vetoriais — nada que seja
+                # imagem de arquivo): a imagem cobre a própria região, e as duas amostras
+                # de um grupo podem cair na moldura transparente dela.
+                basemap = any(lyr.providerType() != 'gdal' for lyr in lyrs)
+                if basemap and part is not None and part.blank and not part.count:
+                    est.warnings.append(tr(
+                        'As amostras de {camadas} saíram sem imagem nenhuma: a camada não '
+                        'cobre a área ou não baixou (sem internet?). Se for assim na geração, '
+                        'a região dela fica fora do arquivo.').format(
+                            camadas=', '.join(lyr.name() for lyr in lyrs)))
+        sample = _merge_samples([(n, part) for n, _l, part in parts])
 
     est.blank_samples = sample.blank if sample is not None else 0
     if est.blank_samples and (sample is None or sample.count == 0):
@@ -468,8 +541,9 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
                            contour_smoothing='Médio',
                            grg_enabled=False, grg_type_label='',
                            elevation_enabled=False, elevation_tiles=0,
-                           elevation_mb=0.0):
+                           elevation_mb=0.0, region_names=None):
     """Push the dry-run report through a feedback adapter."""
+    region_names = region_names or {}
     num_regions = len(est.region_tile_counts)
     quality_str = tr(" (qualidade {q})").format(q=est.quality) if est.fmt in ('JPG', 'WEBP') else ""
     sep = "─" * 34
@@ -514,7 +588,12 @@ def format_estimate_report(est, feedback, num_vector_layers=0, vector_feature_co
     line(sep)
     line(thousands(tr("  Total de tiles : {n:,}").format(n=est.total_tiles)))
     for rid, count in sorted(est.region_tile_counts.items()):
-        line(thousands(tr("    Região {region}: {n:,} tiles").format(region=rid + 1, n=count)))
+        if region_names.get(rid):
+            # thousands() troca TODA vírgula: o nome da camada entra depois dele.
+            line(tr("    Região {region} ({name}): {n} tiles").format(
+                region=rid + 1, name=region_names[rid], n=thousands(f"{count:,}")))
+        else:
+            line(thousands(tr("    Região {region}: {n:,} tiles").format(region=rid + 1, n=count)))
     if est.stored_tiles > est.total_tiles:
         # Regiões que se sobrepõem gravam o mesmo tile em cada uma delas.
         line(thousands(tr("  Gravados       : {n:,} "
@@ -614,6 +693,7 @@ class TileRenderEngine:
         self.failed_tiles = 0
         self.retried_tiles = 0
         self.skipped_blank_tiles = 0
+        self.saved_per_region = {}   # region index -> tiles gravados
         self.meta_tiles = []
         self.renderer_jobs = {}
         self.max_retries = 3
@@ -654,19 +734,24 @@ class TileRenderEngine:
 
         self._write_metadata_and_regions()
 
+        jobs = [(lyrs, regions, tile)
+                for lyrs, regions, tiles in render_groups(spec.region_tiles, spec.region_layers, spec.layers)
+                for tile in tiles]
+        self.total_tiles = len(jobs)
         self.feedback.set_progress_text(
-            tr("Preparando para renderizar {n} tiles...").format(n=len(spec.filtered_tiles))
+            tr("Preparando para renderizar {n} tiles...").format(n=len(jobs))
         )
 
         self.meta_tiles = []
         self.processed_tiles = 0
         self.skipped_blank_tiles = 0
+        self.saved_per_region = {}
 
         z = spec.max_zoom
         n = 2.0 ** spec.max_zoom
 
         prep_t0 = time.time()
-        for i, (tx, ty) in enumerate(spec.filtered_tiles):
+        for i, (lyrs, regions, (tx, ty)) in enumerate(jobs):
             if self.feedback.is_canceled():
                 self.cleanup_resources()
                 self.canceled = True
@@ -674,9 +759,11 @@ class TileRenderEngine:
 
             # Update progress during meta tile creation
             if i % 50 == 0:
-                self.feedback.set_progress(10 + (20 * i / len(spec.filtered_tiles)))
+                self.feedback.set_progress(10 + (20 * i / len(jobs)))
 
-            self.meta_tiles.append(self.create_individual_metatile(z, tx, ty, n))
+            meta_tile = self.create_individual_metatile(z, tx, ty, n)
+            meta_tile.layers, meta_tile.regions = lyrs, regions
+            self.meta_tiles.append(meta_tile)
 
         self.debug_log(
             f"{len(self.meta_tiles)} metatiles preparados em {time.time() - prep_t0:.1f}s")
@@ -710,6 +797,7 @@ class TileRenderEngine:
             self.feedback.push_info(tr("Operação cancelada pelo usuário"))
             return False
 
+        self._drop_empty_regions()
         self._report_summary()
         return True
 
@@ -767,7 +855,7 @@ class TileRenderEngine:
         writer.setMetadataValue("maxzoom", str(spec.max_zoom))
 
         for idx, bound_str in enumerate(spec.bounds_list):
-            region_name = f"Região {idx + 1}"
+            region_name = _region_name(spec, idx)
             writer.insertRegion(
                 region_name,
                 spec.max_zoom,  # minzoom
@@ -788,9 +876,30 @@ class TileRenderEngine:
         writer.setMetadataValue("generator", "GeoPDB Generator")
         writer.setMetadataValue("created", datetime.now().isoformat())
 
+    def _drop_empty_regions(self):
+        """Região que terminou sem NENHUM tile sai do arquivo.
+
+        O app casa a região N com tiles_region_N pela posição e confere que toda região
+        tem tile no zoom de checagem: uma vazia, sem tabela, aparecia como camada vazia e
+        fazia ele refazer a pirâmide ("Renderizando Mapa") a cada abertura. Acontece com o
+        mapa de fundo da internet que não baixou (sem rede, proxy) quando ele é região
+        própria, e com polígono fora da imagem. Arquivo inteiro vazio continua sendo o
+        erro do relatório.
+        """
+        spec = self.spec
+        empty = [rid for rid in range(len(spec.bounds_list)) if not self.saved_per_region.get(rid)]
+        if not empty or len(empty) == len(spec.bounds_list) or not self.writer.removeRegions(empty):
+            return
+        self.feedback.report_error(tr(
+            'Sem nenhum tile, ficou fora do arquivo: {regioes}. Se for um mapa de fundo da '
+            'internet, confira a conexão e gere de novo.').format(regioes=', '.join(
+                dict.fromkeys(_region_name(spec, rid) for rid in empty))), False)
+
     def _report_summary(self):
         self.feedback.set_progress(100)
-        total_expected = len(self.spec.filtered_tiles)
+        # Renderizados, não os distintos: com o fundo em região própria o mesmo
+        # tile desenha duas vezes, e "todos vazios" seria dito com metade deles.
+        total_expected = self.total_tiles
 
         # Tile sem imagem nenhuma não é gravado. Até aqui isso era mudo e ainda
         # entrava na conta dos renderizados: desde que o fundo virou
@@ -973,11 +1082,12 @@ class TileRenderEngine:
                 # Create map settings with error checking
                 map_settings = QgsMapSettings()
 
-                if not spec.layers:
+                layers = meta_tile.layers or spec.layers
+                if not layers:
                     self.feedback.push_info(tr("Nenhuma camada disponível para renderização"))
                     continue
 
-                map_settings.setLayers(spec.layers)
+                map_settings.setLayers(layers)
                 map_settings.setOutputDpi(spec.dpi)
                 map_settings.setOutputSize(QSize(actual_tile_width, actual_tile_height))
                 map_settings.setExtent(meta_tile.extent)
@@ -1222,17 +1332,19 @@ class TileRenderEngine:
             tile_coord = (tile_x, tile_y)
             saved_to_regions = 0
 
-            # Check which regions should contain this tile
-            containing_regions = []
-            for region_id, region_tiles in spec.region_tiles.items():
-                if tile_coord in region_tiles:
-                    containing_regions.append(region_id)
+            # Check which regions should contain this tile — só as que desenham
+            # estas camadas: a região com camadas próprias tem o seu render.
+            regions = getattr(meta_tile, 'regions', None)
+            containing_regions = [
+                region_id for region_id, region_tiles in sorted(spec.region_tiles.items())
+                if (regions is None or region_id in regions) and tile_coord in region_tiles]
 
             if not containing_regions:
                 self.feedback.push_info(
                     tr("Aviso: Tile {x},{y} não foi encontrado em nenhuma região").format(x=tile_x, y=tile_y))
 
             interior_data = None
+            emptied = 0
             for region_id in containing_regions:
                 tile_data = None
                 # Tile de borda: recorta pelo poligono da regiao, para o arquivo
@@ -1245,6 +1357,12 @@ class TileRenderEngine:
                     if rings:
                         masked = mask_tile_to_rings(
                             tile_image, tile_x, tile_y, max_tile_index, rings)
+                        if masked is not None and is_blank(masked):
+                            # Nada da imagem dentro desta região: gravado, era um tile
+                            # transparente que mantinha viva uma região sem imagem — e o
+                            # app refazia a pirâmide dela a cada abertura.
+                            emptied += 1
+                            continue
                         if masked is not None:
                             tile_data = self._encode_tile(
                                 masked, self._format_for(masked))
@@ -1259,6 +1377,7 @@ class TileRenderEngine:
 
                 if self.writer and self.writer.saveTile(meta_tile.zoom, tile_x, tms_y, tile_data, region_id):
                     saved_to_regions += 1
+                    self.saved_per_region[region_id] = self.saved_per_region.get(region_id, 0) + 1
                 else:
                     self.feedback.push_info(tr("Falha ao salvar tile {x},{y} na região {region}").format(
                         x=tile_x, y=tile_y, region=region_id))
@@ -1268,6 +1387,9 @@ class TileRenderEngine:
                 if self.writer:
                     self.writer.periodicCommit()
 
+            if not saved_to_regions and emptied == len(containing_regions) > 0:
+                self.skipped_blank_tiles += 1   # vazio em toda região que o contém
+                return True
             return saved_to_regions > 0
 
         except Exception as e:

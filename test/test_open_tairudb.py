@@ -248,6 +248,27 @@ class OpenTairuDBTest(unittest.TestCase):
         self.assertEqual(titles.count('Mapa de teste'), 1)
         self.assertIn('já está aberto', iface.bar.messages[-1])
 
+    def test_last_region_is_drawn_on_top_like_in_the_app(self):
+        """O mapa de fundo é gravado antes da imagem; aberto no QGIS, não pode tapá-la."""
+        import shutil
+        from tairu_ui.open_tairudb import add_to_project, convert
+        source = os.path.join(self.tmp.name, 'duas regioes.tairudb')
+        shutil.copy(self.source, source)
+        conn = sqlite3.connect(source)
+        conn.execute("INSERT INTO regions (uuid, name, minzoom, maxzoom, bounds) VALUES "
+                     "('R2', 'Imagem', 0, 0, '-180 -85, 180 -85, 180 85, -180 85')")
+        conn.execute('CREATE TABLE tiles_region_1 (zoom_level INTEGER, tile_column INTEGER, '
+                     'tile_row INTEGER, tile_data BLOB)')
+        conn.execute('INSERT INTO tiles_region_1 VALUES (0, 0, 0, ?)', (_png_tile(),))
+        conn.commit()
+        conn.close()
+        QgsProject.instance().clear()
+        out_dir = os.path.join(self.tmp.name, 'conv-duas')
+        add_to_project(_Iface(), source, out_dir, convert(source, out_dir))
+        group = QgsProject.instance().layerTreeRoot().children()[0]
+        rasters = [n.name() for n in group.findLayers() if n.name() in ('Satélite', 'Imagem')]
+        self.assertEqual(rasters, ['Imagem', 'Satélite'])
+
     def test_regenerated_file_replaces_the_open_group(self):
         """O arquivo regravado ganha outra pasta de conversao; o grupo velho sai."""
         import shutil
@@ -278,7 +299,8 @@ class OpenTairuDBTest(unittest.TestCase):
 
         page = VectorLayersPage(None)
         page.initializePage()
-        self.assertEqual(page._vector_checkboxes, {})
+        self.assertEqual(page._layer_ids, [])
+        self.assertEqual(page.layer_table.rowCount(), 0)
 
         class _Writer:
             conn = None

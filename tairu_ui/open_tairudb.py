@@ -698,8 +698,13 @@ def add_to_project(iface, path, out_dir, manifest):
         project.removeMapLayers([node.layerId() for node in group.findLayers()])
         group.parent().removeChildNode(group)
 
+    # O app desenha a ÚLTIMA região por cima; no painel, por cima fica a primeira
+    # camada. Na ordem do arquivo, o mapa de fundo gravado antes da imagem a tapava.
+    entries = manifest['entries']
+    entries = ([e for e in entries if e['kind'] != 'raster']
+               + [e for e in reversed(entries) if e['kind'] == 'raster'])
     layers, failed = [], []
-    for entry in manifest['entries']:
+    for entry in entries:
         layer = _make_layer(entry, out_dir, manifest.get('icons', {}))
         if layer is None:
             failed.append(entry['name'])

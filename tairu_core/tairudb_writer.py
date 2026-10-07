@@ -26,6 +26,8 @@ class MetaTile:
         self.actual_size_y = 1  # Ensure non-zero default
         self.extent: Optional[QgsRectangle] = None  # Will be set later
         self.retry_count = 0  # Track retry attempts
+        self.layers = None    # camadas deste render (None = as da geração)
+        self.regions = None   # regiões que recebem o tile (None = todas que o contêm)
 
     def is_valid(self):
         """Check if the MetaTile has valid values"""
@@ -313,6 +315,40 @@ class TairuDBWriter:
                 return False
         except sqlite3.Error as e:
             print(f"SQLite error inserting feature: {e}")
+            return False
+
+    def removeRegions(self, indexes):
+        """Tira as regiões `indexes` (posição, a partir de 0) e desce as tabelas seguintes.
+
+        O app e o abridor do QGIS casam a região N com tiles_region_N pela POSIÇÃO na
+        tabela de regiões: apagar a linha sem renumerar as tabelas de depois daria a
+        cada região os tiles da vizinha.
+        """
+        if not self.cursor:
+            return False
+        try:
+            ids = [row[0] for row in self.cursor.execute("SELECT id FROM regions ORDER BY id;")]
+            gone = {int(i) for i in indexes if 0 <= int(i) < len(ids)}
+            for index in sorted(gone):
+                self.cursor.execute("DELETE FROM regions WHERE id = ?;", (ids[index],))
+                self.cursor.execute(f"DROP TABLE IF EXISTS tiles_region_{index};")
+            tables = {}
+            for new, old in enumerate(i for i in range(len(ids)) if i not in gone):
+                if old not in self.region_tables:
+                    continue
+                if new != old:
+                    # O índice leva o número no nome: refeito, para não ficar
+                    # tiles_region_1_index na tabela tiles_region_0.
+                    self.cursor.execute(f"DROP INDEX IF EXISTS tiles_region_{old}_index;")
+                    self.cursor.execute(f"ALTER TABLE tiles_region_{old} RENAME TO tiles_region_{new};")
+                    self.cursor.execute(
+                        f"CREATE UNIQUE INDEX IF NOT EXISTS tiles_region_{new}_index "
+                        f"ON tiles_region_{new} (zoom_level, tile_column, tile_row);")
+                tables[new] = f"tiles_region_{new}"
+            self.region_tables = tables
+            return True
+        except sqlite3.Error as e:
+            print(f"SQLite error removing regions {sorted(indexes)}: {e}")
             return False
 
     def insertRegion(self, name, minzoom, maxzoom, bounds, region_id=None):

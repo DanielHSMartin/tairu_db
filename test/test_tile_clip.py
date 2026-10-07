@@ -295,6 +295,30 @@ class ConvertAndSaveTileTest(unittest.TestCase):
         self.assertTrue(engine.writer.saved[0].startswith(b'\x89PNG'))
 
 
+class RegionGroupSaveTest(unittest.TestCase):
+    """O render de um grupo de camadas só grava nas regiões daquele grupo."""
+
+    TX, TY, ZOOM = 85148, 125559, 18
+
+    def setUp(self):
+        if QImage is None:
+            raise unittest.SkipTest('QGIS Python bindings not available')
+
+    def test_tile_dividido_vai_so_para_a_regiao_do_render(self):
+        tile = (self.TX, self.TY)
+        spec = GenerationSpec(
+            output_file='', layers=[], region_tiles={0: [tile], 1: [tile]},
+            filtered_tiles=[tile], bounds_list=[], wgs84_extent=QgsRectangle(),
+            max_zoom=self.ZOOM, transform_context=QgsCoordinateTransformContext())
+        engine = TileRenderEngine(spec, _SilentFeedback())
+        engine.writer = _FakeWriter()
+        meta = _MetaTile(self.ZOOM)
+        meta.regions = {1}   # o fundo não pode sobrescrever a região da imagem
+        self.assertTrue(engine.convert_and_save_tile(
+            _opaque_tile(), meta, self.TX, self.TY, 2 ** self.ZOOM))
+        self.assertEqual(set(engine.writer.saved), {1})
+
+
 class BlankTileTest(unittest.TestCase):
     """O tile descartado por estar vazio — e o que NÃO pode ser confundido com ele.
 
@@ -346,7 +370,7 @@ class BlankTileTest(unittest.TestCase):
                 registro.append(text)
 
         self.engine.feedback = _Feedback()
-        self.engine.spec.filtered_tiles = [(1, 1), (1, 2), (1, 3), (1, 4)]
+        self.engine.total_tiles = 4
         self.engine.processed_tiles = 4
         self.engine.skipped_blank_tiles = 3
         self.engine._report_summary()
@@ -363,11 +387,25 @@ class BlankTileTest(unittest.TestCase):
                 registro.append('ERRO: ' + text)
 
         self.engine.feedback = _Feedback()
-        self.engine.spec.filtered_tiles = [(1, 1), (1, 2)]
+        self.engine.total_tiles = 2
         self.engine.processed_tiles = 2
         self.engine.skipped_blank_tiles = 2
         self.engine._report_summary()
         self.assertTrue(any(t.startswith('ERRO:') and 'sem mapa' in t for t in registro), registro)
+
+
+class EmptyExtentTest(unittest.TestCase):
+
+    def test_extensao_de_camada_vazia_nao_vira_erro_de_src(self):
+        # QGIS 3.28: extent() de camada vazia e o retangulo invertido (±DBL_MAX). Enviar
+        # a camada depois de apagar tudo acusava "valores fora de graus" — SRC errado.
+        import sys
+        from qgis.core import QgsCoordinateReferenceSystem
+        from tairu_core.tile_math import to_wgs84
+        big = sys.float_info.max
+        wgs84 = QgsCoordinateReferenceSystem('EPSG:4326')
+        vazia = QgsGeometry.fromRect(QgsRectangle(-big, -big, big, big))
+        self.assertTrue(to_wgs84(vazia, wgs84, wgs84, QgsCoordinateTransformContext()).isEmpty())
 
 
 if __name__ == '__main__':

@@ -78,18 +78,20 @@ class TestLayerIsVisible(unittest.TestCase):
 class TestWizardVectorPage(unittest.TestCase):
 
     def test_hidden_layers_are_not_listed_nor_exported(self):
+        from qgis.PyQt.QtCore import Qt
+        from tairu_ui.layer_table import CHECK_COL
         from tairu_ui.local_generate_wizard import VectorLayersPage
 
         visivel, oculta, no_grupo = _build_project()
         page = VectorLayersPage(None)
         page.initializePage()
 
-        listed = set(page._vector_checkboxes)
-        self.assertEqual(listed, {visivel.id()})
+        self.assertEqual(page._layer_ids, [visivel.id()])
         self.assertTrue(page.hidden_label.text())
+        # nada vem marcado: as camadas vetoriais são opcionais no arquivo
+        self.assertEqual(page.selected_vector_layers(), [])
 
-        for checkbox in page._vector_checkboxes.values():
-            checkbox.setChecked(True)
+        page.layer_table.item(0, CHECK_COL).setCheckState(Qt.CheckState.Checked)
         self.assertEqual(page.selected_vector_layers(), [visivel])
 
         # o assistente não é modal: esconder DEPOIS de marcar também tem de valer
@@ -99,8 +101,178 @@ class TestWizardVectorPage(unittest.TestCase):
         # e o que caiu tem de ser dito, não descartado em silêncio
         self.assertEqual(page.dropped_hidden, [visivel.name()])
 
+    def test_same_table_as_the_push_dialog(self):
+        """Colunas, nome com a pasta e ordem do painel, como no envio de camadas; a
+        camada de registros do Tairu aparece desligada (a exportação a descarta) e a
+        aberta de um .tairudb fica fora (é resultado, não fonte)."""
+        from qgis.PyQt.QtCore import Qt
+        from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
+        from tairu_ui.layer_table import CHECK_COL, NAME_COL
+        from tairu_ui.local_generate_wizard import VectorLayersPage
+
+        project = QgsProject.instance()
+        project.clear()
+        root = project.layerTreeRoot()
+        avulsa = _layer('avulsa')
+        pontos = _layer('Pontos')
+        registros = QgsVectorLayer(
+            'Point?crs=EPSG:4326&field=recordId:string&field=tairuSyncHash:string', 'registros', 'memory')
+        project.addMapLayer(registros, False)
+        aberta = _layer('aberta')
+        aberta.setCustomProperty(TAIRUDB_VIEW_PROPERTY, '/tmp/x.tairudb')
+        root.addLayer(avulsa)
+        root.addGroup('Expedição').addLayer(pontos)
+        root.addLayer(registros)
+        root.addLayer(aberta)
+
+        page = VectorLayersPage(None)
+        page.initializePage()
+        table = page.layer_table
+
+        self.assertEqual([table.horizontalHeaderItem(c).text() for c in range(table.columnCount())],
+                         ['Incluir', 'Camada', 'Geometria', 'Feições', 'SRC', 'Origem'])
+        self.assertEqual(page._layer_ids, [avulsa.id(), pontos.id(), registros.id()])
+        self.assertEqual([table.item(r, NAME_COL).text() for r in range(table.rowCount())],
+                         ['avulsa', 'Expedição / Pontos', 'registros'])
+        self.assertEqual([table.item(r, table.columnCount() - 1).text() for r in range(table.rowCount())],
+                         ['QGIS', 'QGIS', 'Tairu Maps'])
+
+        caixa = table.item(2, CHECK_COL)
+        self.assertFalse(caixa.flags() & Qt.ItemFlag.ItemIsEnabled, 'registros do Tairu não se marcam')
+        self.assertTrue(caixa.toolTip())
+        self.assertFalse(page.records_label.isHidden())
+        caixa.setCheckState(Qt.CheckState.Checked)  # nem à força
+        self.assertEqual(page.selected_vector_layers(), [])
+
+        # a escolha sobrevive a voltar e avançar (initializePage roda a cada visita)
+        table.item(1, CHECK_COL).setCheckState(Qt.CheckState.Checked)
+        page.initializePage()
+        self.assertEqual(page.selected_vector_layers(), [pontos])
+
+
+class TestWizardVectorPageEdges(unittest.TestCase):
+    """Casos achados na revisão de 07/10/2026."""
+
+    def test_one_row_per_layer_records_dropped_and_honest_empty_message(self):
+        from qgis.core import QgsField
+        from qgis.PyQt.QtCore import Qt, QVariant
+        from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
+        from tairu_ui.layer_table import CHECK_COL
+        from tairu_ui.local_generate_wizard import VectorLayersPage
+
+        project = QgsProject.instance()
+        project.clear()
+        root = project.layerTreeRoot()
+        # a mesma camada em dois nós do painel: uma linha só (senão entraria duas vezes)
+        dupla = _layer('dupla')
+        root.addLayer(dupla)
+        root.addGroup('outro grupo').addLayer(dupla)
+        page = VectorLayersPage(None)
+        page.initializePage()
+        self.assertEqual(page._layer_ids, [dupla.id()])
+
+        # marcada e DEPOIS virou camada de registros (enviada com o assistente aberto): cai
+        page.layer_table.item(0, CHECK_COL).setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(page.selected_vector_layers(), [dupla])
+        dupla.dataProvider().addAttributes([QgsField('recordId', QVariant.String),
+                                            QgsField('tairuSyncHash', QVariant.String)])
+        dupla.updateFields()
+        self.assertEqual(page.selected_vector_layers(), [])
+        self.assertEqual(page.dropped_records, ['dupla'])   # e a geração diz por quê
+
+        # só camadas abertas de um .tairudb: nada listado, e não é "nenhuma neste projeto"
+        project.clear()
+        aberta = _layer('aberta')
+        aberta.setCustomProperty(TAIRUDB_VIEW_PROPERTY, '/tmp/x.tairudb')
+        project.layerTreeRoot().addLayer(aberta)
+        page.initializePage()
+        self.assertEqual(page._layer_ids, [])
+        self.assertTrue(page.hidden_label.isHidden())
+
+        # e o projeto vazio de verdade diz isso
+        project.clear()
+        page.initializePage()
+        self.assertFalse(page.hidden_label.isHidden())
+        self.assertTrue(page.hidden_label.text())
+
+
+    def test_layer_inside_a_group_rendered_as_a_layer_is_listed(self):
+        # layerOrder() é a ordem de DESENHO: devolve o grupo "renderizado como camada" no
+        # lugar das camadas de dentro dele, e elas sumiam da lista sem aviso.
+        from qgis.core import QgsGroupLayer
+        from tairu_ui.local_generate_wizard import VectorLayersPage
+
+        project = QgsProject.instance()
+        project.clear()
+        root = project.layerTreeRoot()
+        solta, no_grupo = _layer('solta'), _layer('no_grupo')
+        root.addLayer(solta)
+        grupo = root.addGroup('Grupo')
+        grupo.addLayer(no_grupo)
+        # o que o QGIS faz em "Renderizar camadas como grupo": converte e registra a camada
+        project.addMapLayer(grupo.convertToGroupLayer(
+            QgsGroupLayer.LayerOptions(project.transformContext())), False)
+        self.assertNotIn(no_grupo, root.layerOrder())
+        # tabela sem geometria (um CSV de apoio) não entra: no envio viria marcada
+        tabela = QgsVectorLayer('None?field=id:integer', 'tabela', 'memory')
+        project.addMapLayer(tabela)
+        page = VectorLayersPage(None)
+        page.initializePage()
+        self.assertEqual(page._layer_ids, [solta.id(), no_grupo.id()])
+
+    def test_disabled_row_still_names_its_layer(self):
+        from qgis.core import QgsField
+        from qgis.PyQt.QtCore import QVariant
+        from tairu_ui.layer_table import NAME_COL
+        from tairu_ui.local_generate_wizard import VectorLayersPage
+
+        project = QgsProject.instance()
+        project.clear()
+        registros = _layer('registros_ponto')
+        registros.dataProvider().addAttributes([QgsField('recordId', QVariant.String),
+                                                QgsField('tairuSyncHash', QVariant.String)])
+        registros.updateFields()
+        project.layerTreeRoot().addLayer(registros)
+        page = VectorLayersPage(None)
+        page.initializePage()
+        dica = page.layer_table.item(0, NAME_COL).toolTip()
+        self.assertIn('registros_ponto', dica)   # o nome com a pasta sai cortado na tela
+        self.assertIn('registros do Tairu', dica)
+
 
 class TestPushDialogLayerStep(unittest.TestCase):
+
+    def test_only_tairudb_views_is_not_called_an_empty_project(self):
+        from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
+        from tairu_ui.push_dialog import PushDialog
+
+        project = QgsProject.instance()
+        project.clear()
+        aberta = _layer('aberta')
+        aberta.setCustomProperty(TAIRUDB_VIEW_PROPERTY, '/tmp/x.tairudb')
+        project.layerTreeRoot().addLayer(aberta)
+
+        class _Tokens:
+            uid = 'uid1'
+
+        class _Dock(QWidget):
+            tokens = _Tokens()
+
+        class _Map:
+            map_id = 'm1'
+            nome = 'mapa'
+
+            def role_for(self, _uid):
+                return 'owner'
+
+        dialog = PushDialog(_Dock(), _Map())
+        try:
+            self.assertEqual(dialog._layer_ids, [])
+            texto = dialog.hidden_label.text()
+            self.assertNotIn('neste projeto', texto)   # o painel mostra a camada
+            self.assertIn('.tairudb', texto)
+        finally:
+            dialog.deleteLater()
 
     def test_step_one_only_offers_visible_layers_and_pre_checks_them(self):
         from tairu_ui.push_dialog import PushDialog
@@ -119,6 +291,13 @@ class TestPushDialogLayerStep(unittest.TestCase):
 
             def role_for(self, _uid):
                 return 'owner'
+
+        # camada aberta de um .tairudb: é resultado de geração, não fonte — marcada como
+        # tudo aqui, subiria de volta como registros novos
+        from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
+        aberta = _layer('aberta')
+        aberta.setCustomProperty(TAIRUDB_VIEW_PROPERTY, '/tmp/x.tairudb')
+        QgsProject.instance().layerTreeRoot().addLayer(aberta)
 
         dialog = PushDialog(_Dock(), _Map())
         try:

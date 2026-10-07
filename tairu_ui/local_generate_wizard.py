@@ -22,7 +22,7 @@ from qgis.PyQt.QtCore import QTimer, QCoreApplication, QSettings
 from qgis.PyQt.QtWidgets import (
     QWizard, QWizardPage, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel,
     QRadioButton, QPushButton, QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit,
-    QPlainTextEdit, QProgressBar, QFileDialog, QScrollArea,
+    QPlainTextEdit, QProgressBar, QFileDialog,
     QCheckBox, QWidget, QColorDialog, QSlider, QMessageBox,
     QTableWidget, QTableWidgetItem, QButtonGroup,
 )
@@ -58,11 +58,14 @@ try:
         estimate_bytes as elevation_estimate_bytes)
     from ..tairu_core.workspace import map_workspace, slugify_filename
     from .extent_tool import ExtentPicker
+    from .layer_table import (
+        checked_rows, fill_layer_table, is_record_sync_layer, new_layer_table, visible_vector_layers,
+    )
     from .open_tairudb import open_tairudb
     from .style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_secondary_button, set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_secondary_button, set_warning_banner, status_style,
     )
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
@@ -87,32 +90,15 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
         estimate_bytes as elevation_estimate_bytes)
     from tairu_core.workspace import map_workspace, slugify_filename
     from tairu_ui.extent_tool import ExtentPicker
+    from tairu_ui.layer_table import (
+        checked_rows, fill_layer_table, is_record_sync_layer, new_layer_table, visible_vector_layers,
+    )
     from tairu_ui.open_tairudb import open_tairudb
     from tairu_ui.style import (
         apply_combo_popup_style, apply_table_style, apply_tairu_style,
         set_control_enabled, set_muted, set_plain_button, set_primary_button,
-        set_secondary_button, set_warning_banner, status_style, SCROLLBAR_STYLE,
+        set_secondary_button, set_warning_banner, status_style,
     )
-
-_VECTOR_LIST_STYLE = """
-QScrollArea {
-    border: none;
-    background: transparent;
-}
-QWidget#VectorScrollContent {
-    background: transparent;
-}
-QCheckBox {
-    padding: 6px 8px;
-    spacing: 8px;
-    border: 1px solid transparent;
-    border-radius: 6px;
-}
-QCheckBox:hover {
-    background: rgba(0, 106, 67, 0.08);
-    border-color: rgba(0, 106, 67, 0.2);
-}
-"""
 
 # Rótulo e valor da grade GRG numa fonte só: o log imprimia o valor cru do enum.
 _GRG_TYPES = [(tr('Alfanumérica'), 'alphanumeric'), (tr('Coordenada Geográfica'), 'geographic')]
@@ -242,6 +228,8 @@ class TairuDBGenerateWizard(QWizard):
 
         # Cross-page state
         self.polygons_wgs84 = []
+        self.region_layer_ids = {}      # região -> ids das camadas só dela (ver area_regions)
+        self.region_names = {}
         self.region_result = None
         self.estimate_result = None
         self.feedback = None
@@ -303,6 +291,50 @@ class TairuDBGenerateWizard(QWizard):
         chosen |= {lyr.id() for lyr in self.params_page.extra_basemap_layers()}
         return [lyr for lyr in QgsProject.instance().layerTreeRoot().layerOrder()
                 if lyr.id() in chosen]
+
+    def region_layers_now(self):
+        """As camadas de cada região, pelos ids guardados na Estimativa, entre as que
+        area_regions() usaria agora — e não pelo layerOrder(), que troca a imagem de um
+        grupo "renderizado como grupo" pela camada do grupo: a geração abortava sempre."""
+        return _resolve_region_layers(
+            self.region_layer_ids,
+            self.extent_page.checked_raster_layers() + self.params_page.extra_basemap_layers())
+
+    def area_regions(self):
+        """(polígonos WGS84, camadas por região, nome por região) do arquivo.
+
+        Na opção "Cada imagem" cada região desenha SÓ a sua imagem e leva o nome dela,
+        da imagem de baixo do painel para a de cima: o app desenha a última região por
+        cima, e cada uma se liga e desliga sozinha. Composta com as outras, a região
+        "orto_2024" mostrava a orto_2023 na sobreposição. O mapa de fundo marcado em
+        Parâmetros vira região própria, na área das imagens, ANTES delas — desenhado
+        junto, por baixo de um TIFF opaco, ele sumia inteiro. Nas outras opções nada
+        muda: imagens e fundo compõem cada região.
+        """
+        polygons = self.extent_page.polygons_wgs84()
+        if not self.extent_page.raster_radio.isChecked():
+            return polygons, {}, {}
+        # Um polígono por imagem marcada, na mesma ordem. O vazio sumiria em
+        # compute_region_tiles e desalinharia as regiões.
+        kept = [(geom, lyr) for geom, lyr
+                in zip(polygons, self.extent_page.checked_raster_layers()) if not geom.isEmpty()]
+        # De baixo para cima na ordem de desenho de AGORA: a tabela de imagens foi montada
+        # quando o assistente abriu, e ele não é modal — reordenar o painel depois deixava
+        # o app empilhando ao contrário do QGIS.
+        rank = {lyr.id(): i for i, lyr in enumerate(QgsProject.instance().layerTreeRoot().layerOrder())}
+        kept.sort(key=lambda item: rank.get(item[1].id(), -1), reverse=True)
+        polygons = [geom for geom, _lyr in kept]
+        layers = {i: [lyr] for i, (_geom, lyr) in enumerate(kept)}
+        names = {i: lyr.name() for i, (_geom, lyr) in enumerate(kept)}
+        basemap = self.params_page.extra_basemap_layers()
+        if not basemap or not polygons:
+            return polygons, layers, names
+        parts = _basemap_parts(polygons, self.params_page.max_zoom())
+        k = len(parts)
+        fundo = ', '.join(lyr.name() for lyr in basemap)
+        layers = {**{i: basemap for i in range(k)}, **{k + i: lyrs for i, lyrs in layers.items()}}
+        names = {**{i: fundo for i in range(k)}, **{k + i: name for i, name in names.items()}}
+        return parts + polygons, layers, names
 
     def _on_rejected(self):
         if self.feedback is not None:
@@ -404,6 +436,56 @@ def _project_basemap_layers(project):
     return layers
 
 
+_MAX_BASEMAP_PIECES = 4   # por imagem; acima disso, o contorno convexo dela
+
+
+def _basemap_parts(polygons, zoom):
+    """A área do mapa de fundo: a das imagens, um pedaço contínuo por região.
+
+    Um pedaço por região porque o app lê UM anel por região — e cada região é uma
+    camada no app, que se liga e desliga sozinha. Então, de cada imagem:
+    - sem os fiapos: o contorno do nodata deixa ilhas de um pixel de imagem, e cada
+      uma virava uma região "Google Satellite" quase transparente (dez numa ortofoto
+      de drone), que o app refazia a cada abertura. Fica o pedaço principal e o que
+      tiver ao menos 1% dele;
+    - frestas de até um tile entre manchas fechadas, e sem os buracos: o nodata dentro
+      da imagem é justamente onde o fundo aparece;
+    - com mais de quatro pedaços ainda, o contorno convexo: uma máscara de
+      desmatamento de 150 manchas virava 139 regiões de fundo.
+    """
+    tile = 360.0 / 2 ** zoom   # um tile do mapa, em graus de longitude
+    areas = []
+    for geom in polygons:
+        parts = geom.asGeometryCollection()
+        if not parts:
+            continue
+        biggest = max(part.area() for part in parts)
+        parts = [part for part in parts if part.area() >= biggest / 100]
+        merged = QgsGeometry.unaryUnion(parts)
+        if merged.isEmpty():   # contorno inválido que o GEOS não une
+            merged = QgsGeometry.collectGeometry(parts)
+        closed = merged.buffer(tile, 4).buffer(-tile, 4).removeInteriorRings()
+        if closed.isEmpty():
+            closed = merged.removeInteriorRings()
+        pieces = closed.asGeometryCollection()
+        areas += pieces if len(pieces) <= _MAX_BASEMAP_PIECES else [closed.convexHull()]
+    return (QgsGeometry.unaryUnion(areas).asGeometryCollection() if areas else []) or areas or polygons
+
+
+def _resolve_region_layers(ids_by_region, layers):
+    """As camadas de cada região, pelos ids, entre as que ainda desenham o mapa.
+
+    None quando alguma saiu do projeto ou foi ocultada depois da Estimativa: o objeto
+    de uma camada removida derrubava a geração ("wrapped C/C++ object has been
+    deleted"), e uma oculta seria baixada sem ninguém pedir.
+    """
+    live = {lyr.id(): lyr for lyr in layers}
+    try:
+        return {rid: [live[lid] for lid in ids] for rid, ids in ids_by_region.items()}
+    except KeyError:
+        return None
+
+
 def _safe_measure(fn, *args):
     """Uma dica que não pôde ser medida vira texto, não uma exceção no assistente."""
     try:
@@ -468,9 +550,12 @@ class ExtentPage(QWizardPage):
         self.raster_radio = QRadioButton(_SOURCE_LABELS['raster'])
         self._raster_box = self._add_option(layout, self.raster_radio, stretch=1)
         self._raster_holder = self._raster_box.parentWidget()
-        self._raster_box.layout().addWidget(set_muted(QLabel(tr(
-            'As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma '
-            'também define uma região.'))))
+        raster_hint = set_muted(QLabel(tr(
+            'As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma também '
+            'define uma região, e o mapa de fundo marcado em "Parâmetros" vira mais uma, '
+            'na mesma área, por baixo delas.')))
+        raster_hint.setWordWrap(True)
+        self._raster_box.layout().addWidget(raster_hint)
         self.raster_table = QTableWidget(0, len(_IMAGE_HEADERS))
         self.raster_table.setHorizontalHeaderLabels(_IMAGE_HEADERS)
         self.raster_table.setAlternatingRowColors(True)
@@ -988,6 +1073,11 @@ class ParamsPage(QWizardPage):
 
 # ------------------------------------------------------------------ page 3 — camadas vetoriais
 
+_RECORDS_NOTE = tr(
+    'Camadas de registros do Tairu não entram no arquivo: os registros já chegam ao app '
+    'pela expedição.')
+
+
 class VectorLayersPage(QWizardPage):
 
     def __init__(self, wizard):
@@ -1000,58 +1090,43 @@ class VectorLayersPage(QWizardPage):
             '(não editáveis no Tairu Maps).'))
 
         layout = QVBoxLayout(self)
-        self._vector_checkboxes = {}
+        # A mesma tabela do envio de camadas (layer_table.py): geometria, feições, SRC e
+        # origem decidem a escolha, e o nome leva a pasta. Aqui nenhuma vem marcada — as
+        # camadas vetoriais são opcionais no arquivo.
+        self._layer_ids = []
         self.dropped_hidden = []
-        self._scroll_content = QWidget()
-        self._scroll_content.setObjectName('VectorScrollContent')
-        self._scroll_inner = QVBoxLayout(self._scroll_content)
-        self._scroll_inner.setContentsMargins(0, 0, 0, 0)
-        self._scroll_inner.setSpacing(2)
+        self.dropped_records = []
+        self.layer_table = new_layer_table(tr('Incluir'))
+        layout.addWidget(self.layer_table, 1)
 
-        self._vector_scroll = QScrollArea()
-        self._vector_scroll.setWidgetResizable(True)
-        self._vector_scroll.setWidget(self._scroll_content)
-        self._vector_scroll.setStyleSheet(_VECTOR_LIST_STYLE)
-        self._vector_scroll.verticalScrollBar().setStyleSheet(SCROLLBAR_STYLE)
-        layout.addWidget(self._vector_scroll, 1)
+        # Camada de registros do Tairu aparece desligada: a exportação a descarta sempre,
+        # e oferecê-la para marcar era prometer o que não acontece.
+        self.records_label = set_muted(QLabel(_RECORDS_NOTE))
+        self.records_label.setWordWrap(True)
+        self.records_label.hide()
+        layout.addWidget(self.records_label)
 
         self.hidden_label = set_muted(QLabel(''))
         self.hidden_label.setWordWrap(True)
         self.hidden_label.hide()
         layout.addWidget(self.hidden_label)
 
-    def initializePage(self):
-        # initializePage runs on EVERY visit (QWizard re-inits when the user goes back
-        # then forward), and it rebuilds the checkbox list from scratch. Remember which
-        # layers were checked and restore them after rebuilding, so the selection
-        # survives navigating back to the quality/params pages and forward again.
-        # (Rebuilding — rather than skipping — keeps the list in sync if project layers
-        # changed; a layer removed meanwhile simply drops, a new one appears unchecked.)
-        previously_checked = {
-            layer_id for layer_id, cb in self._vector_checkboxes.items() if cb.isChecked()
-        }
-        while self._scroll_inner.count():
-            item = self._scroll_inner.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._vector_checkboxes.clear()
+    def _map_id(self):
+        """A expedição de destino no modo de envio — decide a origem "Outra expedição"."""
+        return getattr(getattr(self._wizard, 'tmap', None), 'map_id', None)
 
-        project = QgsProject.instance()
-        hidden = 0
-        for layer in project.mapLayers().values():
-            if not isinstance(layer, QgsVectorLayer) or not layer.isValid() or is_tairudb_view(layer):
-                continue
-            # Camada desmarcada no painel de camadas não é desenhada no mapa e não entra
-            # no .tairudb — não faz sentido oferecê-la aqui.
-            if not layer_is_visible(layer, project):
-                hidden += 1
-                continue
-            cb = QCheckBox(layer.name())
-            if layer.id() in previously_checked:
-                cb.setChecked(True)
-            self._vector_checkboxes[layer.id()] = cb
-            self._scroll_inner.addWidget(cb)
-        self._scroll_inner.addStretch(1)
+    def initializePage(self):
+        # initializePage roda a CADA visita (o QWizard reinicia a página quando o usuário
+        # volta e avança) e remonta a tabela do zero. A escolha é guardada e restaurada, e
+        # a lista acompanha o projeto: camada removida some, camada nova entra desmarcada.
+        previously_checked = set(self._checked_ids())
+        layers, hidden = visible_vector_layers(QgsProject.instance(), skip=is_tairudb_view)
+        self._layer_ids = [layer.id() for layer in layers]
+        fill_layer_table(
+            self.layer_table, layers, map_id=self._map_id(),
+            checked=lambda layer: layer.id() in previously_checked,
+            blocked=lambda layer: _RECORDS_NOTE if is_record_sync_layer(layer) else '')
+        self.records_label.setVisible(any(is_record_sync_layer(layer) for layer in layers))
         # Sem esta linha, "cadê minha camada?" vira chamado de suporte.
         if hidden:
             self.hidden_label.setText(
@@ -1059,8 +1134,17 @@ class VectorLayersPage(QWizardPage):
                 if hidden > 1 else
                 tr('1 camada oculta no painel de camadas não é listada.'))
             self.hidden_label.show()
+        elif not layers and not any(isinstance(layer, QgsVectorLayer)
+                                    for layer in QgsProject.instance().mapLayers().values()):
+            # Só quando é verdade: camadas abertas de um .tairudb ficam fora da lista, mas
+            # estão no painel, e "nenhuma neste projeto" seria falso.
+            self.hidden_label.setText(tr('Nenhuma camada vetorial neste projeto.'))
+            self.hidden_label.show()
         else:
             self.hidden_label.hide()
+
+    def _checked_ids(self):
+        return [self._layer_ids[row] for row in checked_rows(self.layer_table) if row < len(self._layer_ids)]
 
     def selected_vector_layers(self):
         """Camadas marcadas aqui E ainda visíveis no painel de camadas.
@@ -1068,16 +1152,20 @@ class VectorLayersPage(QWizardPage):
         A visibilidade é re-checada porque o assistente não é modal: dá tempo de o usuário
         desmarcar a camada no painel depois de tê-la marcado aqui. O que cai fica nomeado em
         `dropped_hidden` — descartar em silêncio uma camada que o usuário marcou é o tipo de
-        coisa que vira "a exportação não funcionou".
+        coisa que vira "a exportação não funcionou". Pelo mesmo motivo cai, nomeada em
+        `dropped_records`, a camada que virou de registros do Tairu (enviada pelo painel com o
+        assistente aberto): a exportação a descartaria, e a Estimativa a contaria.
         """
         project = QgsProject.instance()
         layers = []
         self.dropped_hidden = []
-        for layer_id, cb in self._vector_checkboxes.items():
-            if not cb.isChecked():
-                continue
+        self.dropped_records = []
+        for layer_id in self._checked_ids():
             layer = project.mapLayer(layer_id)
             if layer is None or not layer.isValid():
+                continue
+            if is_record_sync_layer(layer):
+                self.dropped_records.append(layer.name())
                 continue
             if not layer_is_visible(layer, project):
                 self.dropped_hidden.append(layer.name())
@@ -1547,7 +1635,10 @@ class EstimatePage(QWizardPage):
             'Estimativa: origem=' + wizard.extent_page.source_description()
             + f', zoom={wizard.params_page.max_zoom()}', 'TairuDB', Qgis.MessageLevel.Info)
         try:
-            wizard.polygons_wgs84 = wizard.extent_page.polygons_wgs84()
+            wizard.polygons_wgs84, region_layers, wizard.region_names = wizard.area_regions()
+            # Por id, nunca por objeto: o assistente não é modal (ver ParamsPage).
+            wizard.region_layer_ids = {rid: [lyr.id() for lyr in lyrs]
+                                       for rid, lyrs in region_layers.items()}
             wizard.region_result = compute_region_tiles(
                 wizard.polygons_wgs84, wizard.params_page.max_zoom(), FeedbackAdapter())
         except Exception as e:
@@ -1598,7 +1689,8 @@ class EstimatePage(QWizardPage):
             wizard.params_page.tile_format(), wizard.params_page.quality_spin.value(),
             threads_number=min(os.cpu_count() or 4, 4),
             layers=wizard.visible_basemap_layers(),
-            transform_context=QgsProject.instance().transformContext())
+            transform_context=QgsProject.instance().transformContext(),
+            region_layers=region_layers)
 
         lines = []
 
@@ -1630,7 +1722,8 @@ class EstimatePage(QWizardPage):
             grg_type_label=gp.grg_type_label(),
             elevation_enabled=elev_enabled,
             elevation_tiles=elev_tiles,
-            elevation_mb=elev_bytes / (1024 * 1024))
+            elevation_mb=elev_bytes / (1024 * 1024),
+            region_names=wizard.region_names)
         self.report.setPlainText('\n'.join(lines))
 
         # The size gates weigh EVERYTHING that lands in the file, elevation
@@ -1744,19 +1837,46 @@ class RunPage(QWizardPage):
         for nome in wizard.vector_page.dropped_hidden:
             self._append(tr('Camada "{nome}" foi desmarcada no painel de camadas '
                             'depois de escolhida — não será incluída.').format(nome=nome))
+        for nome in wizard.vector_page.dropped_records:
+            self._append(tr('Camada "{nome}" virou camada de registros do Tairu depois de '
+                            'escolhida — não será incluída.').format(nome=nome))
+
+        layers = wizard.visible_basemap_layers()
+        region_layers = wizard.region_layers_now()
+        # Sem camada nenhuma (ocultada nas outras opções de área) o arquivo saía vazio
+        # e a geração dizia "Concluído!".
+        if region_layers is None or not (layers or region_layers):
+            # Refeita AQUI: o QWizard só inicializa uma página indo para a frente, e o
+            # Voltar mostraria a Estimativa velha — Avançar de novo cairia neste mesmo aviso.
+            wizard.estimate_page.initializePage()
+            self._append(tr('Uma camada do mapa foi removida ou ocultada depois da Estimativa. '
+                            'A Estimativa foi refeita: volte a ela para conferir e gere de novo.'))
+            self._running = False
+            self._set_back_enabled(True)
+            return
+        # Imagem dentro de um grupo "renderizado como grupo" não aparece no layerOrder(),
+        # mas desenha a própria região: entra no contexto de datum e no pré-download.
+        seen = {lyr.id() for lyr in layers}
+        for lyrs in region_layers.values():
+            for lyr in lyrs:
+                if lyr.id() not in seen:
+                    seen.add(lyr.id())
+                    layers.append(lyr)
 
         os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
 
         wizard.feedback = WizardFeedback(self.progress, self._append)
         spec = GenerationSpec(
             output_file=output_file,
-            layers=wizard.visible_basemap_layers(),
+            layers=layers,
             region_tiles=wizard.region_result.region_tiles,
             region_edge_tiles=wizard.region_result.region_edge_tiles,
             region_rings=wizard.region_result.region_rings,
             filtered_tiles=wizard.region_result.filtered_tiles,
             bounds_list=wizard.region_result.bounds_list,
             wgs84_extent=wizard.region_result.wgs84_extent,
+            region_layers=region_layers,
+            region_names=wizard.region_names,
             max_zoom=params.max_zoom(),
             tile_format=params.tile_format(),
             jpg_quality=params.quality_spin.value(),
@@ -1765,8 +1885,10 @@ class RunPage(QWizardPage):
             name=os.path.splitext(file_name)[0],
         )
 
+        # Os que vão ser renderizados, o mesmo número da Estimativa e da barra.
+        n_tiles = wizard.estimate_result.total_tiles
         self._append(tr('Gerando {arquivo} ({n} tiles, zoom {zoom})…').format(
-            arquivo=file_name, n=len(spec.filtered_tiles), zoom=spec.max_zoom))
+            arquivo=file_name, n=n_tiles, zoom=spec.max_zoom))
         # Qual camada desenhou o mapa é a primeira pergunta quando o arquivo sai
         # branco ou sem o fundo esperado — e não estava em lugar nenhum do log.
         self._append(tr('Mapa desenhado com: {camadas}').format(camadas=', '.join(
@@ -1774,7 +1896,6 @@ class RunPage(QWizardPage):
 
         # Off-ramp for genuinely large jobs: they hold the GUI thread for minutes and
         # the window can look frozen, so let the user opt in knowingly.
-        n_tiles = len(spec.filtered_tiles)
         est_mb = getattr(getattr(wizard, 'estimate_result', None), 'avg_mb', 0) or 0
         if n_tiles > 10000 or est_mb > 300:
             proceed = QMessageBox.question(

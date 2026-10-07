@@ -1,5 +1,6 @@
 {
   "    Região {region}: {n:,} tiles": "    Region {region}: {n:,} tiles",
+  "    Região {region} ({name}): {n} tiles": "    Region {region} ({name}): {n} tiles",
   "  ({per_tile} s/tile medidos nesta máquina)": "  ({per_tile} s/tile measured on this machine)",
   "  (~0,15 s/tile em hardware típico)": "  (~0.15 s/tile on typical hardware)",
   "  - Tile {x},{y}: {reason}": "  - Tile {x},{y}: {reason}",
@@ -106,7 +107,7 @@
   "Artefato / Sítio": "Artifact / Site",
   "As camadas {nomes} estão sendo lidas de DENTRO DE UM ARQUIVO ZIP, que é somente leitura, então não têm onde guardar os identificadores dos registros.": "The layers {nomes} are being read from INSIDE A ZIP FILE, which is read-only, so they have nowhere to store the record identifiers.",
   "As camadas {nomes} não guardam os identificadores dos registros: o formato é somente leitura.": "The layers {nomes} do not store the record identifiers: the format is read-only.",
-  "As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma também define uma região.": "The checked images are drawn on the map. With this option, each one also defines a region.",
+  "As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma também define uma região, e o mapa de fundo marcado em \"Parâmetros\" vira mais uma, na mesma área, por baixo delas.": "The checked images are drawn on the map. With this option, each one also defines a region, and the base map checked in \"Parameters\" becomes one more, over the same area, underneath them.",
   "Ativa": "Active",
   "Ativo": "Active",
   "Atualizar": "Update",
@@ -745,5 +746,12 @@
   "mudou no QGIS e no Tairu desde o último sincronismo: {campos}. Marque Enviar para gravar a versão do QGIS nesses campos": "changed in QGIS and in Tairu since the last sync: {campos}. Tick Upload to write the QGIS version to these fields",
   "Registros não atualizados: há edições não salvas em {camadas}. Salve ou descarte as edições e use Receber Registros.": "Records not updated: there are unsaved edits in {camadas}. Save or discard the edits and use Receive Records.",
   "Edições não salvas em {camadas}: feche esta janela, salve ou descarte as edições e envie de novo.": "Unsaved edits in {camadas}: close this window, save or discard the edits and upload again.",
-  "trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para gravar todos os pontos com um horário só": "tracking record without point times, in QGIS and in Tairu: tick Send to write every point with a single time"
+  "trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para gravar todos os pontos com um horário só": "tracking record without point times, in QGIS and in Tairu: tick Send to write every point with a single time",
+  "Incluir": "Include",
+  "Camadas de registros do Tairu não entram no arquivo: os registros já chegam ao app pela expedição.": "Tairu record layers are not included in the file: the records already reach the app through the expedition.",
+  "As amostras de {camadas} saíram sem imagem nenhuma: a camada não cobre a área ou não baixou (sem internet?). Se for assim na geração, a região dela fica fora do arquivo.": "The sample tiles of {camadas} came out with no image at all: the layer does not cover the area or did not download (no internet?). If that happens during generation, its region is left out of the file.",
+  "Sem nenhum tile, ficou fora do arquivo: {regioes}. Se for um mapa de fundo da internet, confira a conexão e gere de novo.": "With no tile at all, left out of the file: {regioes}. If it is an online base map, check the connection and generate again.",
+  "Camada \"{nome}\" virou camada de registros do Tairu depois de escolhida — não será incluída.": "Layer \"{nome}\" became a Tairu records layer after being chosen — it will not be included.",
+  "Uma camada do mapa foi removida ou ocultada depois da Estimativa. A Estimativa foi refeita: volte a ela para conferir e gere de novo.": "A map layer was removed or hidden after the Estimate. The Estimate was redone: go back to it to check, then generate again.",
+  "Nenhuma camada para enviar: camadas abertas de um .tairudb e tabelas sem geometria não são enviadas. Para enviar uma delas, salve uma cópia (Exportar → Salvar feições como).": "No layer to send: layers opened from a .tairudb and tables without geometry are not sent. To send one of them, save a copy (Export → Save Features As)."
 }

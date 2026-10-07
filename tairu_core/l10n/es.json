@@ -1,5 +1,6 @@
 {
   "    Região {region}: {n:,} tiles": "    Región {region}: {n:,} teselas",
+  "    Região {region} ({name}): {n} tiles": "    Región {region} ({name}): {n} teselas",
   "  ({per_tile} s/tile medidos nesta máquina)": "  ({per_tile} s/tesela medidos en esta máquina)",
   "  (~0,15 s/tile em hardware típico)": "  (~0,15 s/tesela en hardware típico)",
   "  - Tile {x},{y}: {reason}": "  - Tesela {x},{y}: {reason}",
@@ -106,7 +107,7 @@
   "Artefato / Sítio": "Artefacto / Sitio",
   "As camadas {nomes} estão sendo lidas de DENTRO DE UM ARQUIVO ZIP, que é somente leitura, então não têm onde guardar os identificadores dos registros.": "Las capas {nomes} se están leyendo desde DENTRO DE UN ARCHIVO ZIP, que es de solo lectura, así que no tienen dónde guardar los identificadores de los registros.",
   "As camadas {nomes} não guardam os identificadores dos registros: o formato é somente leitura.": "Las capas {nomes} no guardan los identificadores de los registros: el formato es de solo lectura.",
-  "As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma também define uma região.": "Las imágenes marcadas se dibujan en el mapa. En esta opción, cada una también define una región.",
+  "As imagens marcadas são desenhadas no mapa. Nesta opção, cada uma também define uma região, e o mapa de fundo marcado em \"Parâmetros\" vira mais uma, na mesma área, por baixo delas.": "Las imágenes marcadas se dibujan en el mapa. En esta opción, cada una también define una región, y el mapa base marcado en \"Parámetros\" se convierte en una más, en la misma área, debajo de ellas.",
   "Ativa": "Activa",
   "Ativo": "Activo",
   "Atualizar": "Actualizar",
@@ -745,5 +746,12 @@
   "mudou no QGIS e no Tairu desde o último sincronismo: {campos}. Marque Enviar para gravar a versão do QGIS nesses campos": "cambió en QGIS y en Tairu desde la última sincronización: {campos}. Marque Enviar para grabar la versión de QGIS en esos campos",
   "Registros não atualizados: há edições não salvas em {camadas}. Salve ou descarte as edições e use Receber Registros.": "Registros no actualizados: hay ediciones sin guardar en {camadas}. Guarde o descarte las ediciones y use Recibir registros.",
   "Edições não salvas em {camadas}: feche esta janela, salve ou descarte as edições e envie de novo.": "Ediciones sin guardar en {camadas}: cierre esta ventana, guarde o descarte las ediciones y envíe de nuevo.",
-  "trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para gravar todos os pontos com um horário só": "registro de rastreo sin la hora de los puntos, en QGIS y en Tairu: marque Enviar para grabar todos los puntos con una sola hora"
+  "trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para gravar todos os pontos com um horário só": "registro de rastreo sin la hora de los puntos, en QGIS y en Tairu: marque Enviar para grabar todos los puntos con una sola hora",
+  "Incluir": "Incluir",
+  "Camadas de registros do Tairu não entram no arquivo: os registros já chegam ao app pela expedição.": "Las capas de registros de Tairu no entran en el archivo: los registros ya llegan a la aplicación por la expedición.",
+  "As amostras de {camadas} saíram sem imagem nenhuma: a camada não cobre a área ou não baixou (sem internet?). Se for assim na geração, a região dela fica fora do arquivo.": "Las teselas de muestra de {camadas} salieron sin ninguna imagen: la capa no cubre el área o no se descargó (¿sin internet?). Si así ocurre en la generación, su región queda fuera del archivo.",
+  "Sem nenhum tile, ficou fora do arquivo: {regioes}. Se for um mapa de fundo da internet, confira a conexão e gere de novo.": "Sin ninguna tesela, quedó fuera del archivo: {regioes}. Si es un mapa base de internet, revise la conexión y genere de nuevo.",
+  "Camada \"{nome}\" virou camada de registros do Tairu depois de escolhida — não será incluída.": "La capa \"{nome}\" se convirtió en capa de registros de Tairu después de elegirla — no se incluirá.",
+  "Uma camada do mapa foi removida ou ocultada depois da Estimativa. A Estimativa foi refeita: volte a ela para conferir e gere de novo.": "Una capa del mapa se eliminó u ocultó después de la Estimación. La Estimación se rehízo: vuelva a ella para revisarla y genere de nuevo.",
+  "Nenhuma camada para enviar: camadas abertas de um .tairudb e tabelas sem geometria não são enviadas. Para enviar uma delas, salve uma cópia (Exportar → Salvar feições como).": "Ninguna capa para enviar: las capas abiertas de un .tairudb y las tablas sin geometría no se envían. Para enviar una de ellas, guarde una copia (Exportar → Guardar objetos como)."
 }
