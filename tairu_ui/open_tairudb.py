@@ -54,7 +54,7 @@ from qgis.core import (
 try:
     from ..compat import (
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _LABEL_OVER_POINT, _LABEL_PROP_QUADRANT,
-        _WRITER_NO_ERROR)
+        _RENDER_UNIT_PIXELS, _WRITER_NO_ERROR)
     from ..tairu_core.grg_generator import _col_label, _dms_label
     from ..tairu_core.i18n import tr
     from ..tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
@@ -69,7 +69,7 @@ try:
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _LABEL_OVER_POINT, _LABEL_PROP_QUADRANT,
-        _WRITER_NO_ERROR)
+        _RENDER_UNIT_PIXELS, _WRITER_NO_ERROR)
     from tairu_core.grg_generator import _col_label, _dms_label
     from tairu_core.i18n import tr
     from tairu_core.layer_tree import TAIRUDB_VIEW_PROPERTY
@@ -574,7 +574,7 @@ def _symbol(kind, style, icons):
         if ',' in data:   # data:image/png;base64,....
             marker = QgsRasterMarkerSymbolLayer('base64:' + data.split(',', 1)[1], float(style['size']))
             with contextlib.suppress(Exception):
-                marker.setSizeUnit(Qgis.RenderUnit.Pixels)
+                marker.setSizeUnit(_RENDER_UNIT_PIXELS)
             symbol = QgsMarkerSymbol()
             symbol.changeSymbolLayer(0, marker)
             return symbol
@@ -647,7 +647,7 @@ def _style_grg_labels(layer, grg):
     text_format.setFont(font)
     text_format.setSize(grg['font_size'])
     with contextlib.suppress(Exception):
-        text_format.setSizeUnit(Qgis.RenderUnit.Pixels)
+        text_format.setSizeUnit(_RENDER_UNIT_PIXELS)
     text_format.setColor(_qcolor(grg['font_color'], QColor(255, 255, 255)))
     background = text_format.background()
     background.setEnabled(True)

@@ -97,6 +97,19 @@ class TestOutlineOnlyPolygonKeepsItsColour(unittest.TestCase):
         self.assertEqual(fg_argb, _LINE)
         self.assertIsNone(bg_argb)
 
+    def test_dashed_outline_pushes_dashed(self):
+        # No PyQt6 Qt.PenStyle e enum.Enum: int() dava TypeError e o tracejado subia continuo.
+        from tairu_sync.push import _feature_stroke_pattern
+
+        layer = _polygon_layer('tracejado')
+        symbol_layer = QgsSimpleFillSymbolLayer()
+        symbol_layer.setStrokeStyle(Qt.PenStyle.DashLine)
+        symbol = QgsFillSymbol()
+        symbol.changeSymbolLayer(0, symbol_layer)
+        layer.setRenderer(QgsSingleSymbolRenderer(symbol))
+
+        self.assertEqual(_feature_stroke_pattern(layer, next(layer.getFeatures())), 'dashed')
+
     def test_solid_fill_still_pushes_its_fill(self):
         layer = _polygon_layer('solido')
         symbol_layer = QgsSimpleFillSymbolLayer()

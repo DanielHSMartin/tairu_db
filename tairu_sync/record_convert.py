@@ -5,7 +5,7 @@ Record ⇄ QgsFeature conversion and the per-map records GeoPackage.
 
 Layer layout (one GeoPackage per map, EPSG:4326):
     registros_ponto          Point
-    registros_linha          LineString
+    registros_linha          LineString M (M = horário do ponto da trilha)
     registros_poligono       Polygon
     registros_circulo        Point + circleRadius (rendered as true-scale buffer)
     registros_sem_geometria  attribute-only (geometryType 'none' or unparseable)
@@ -21,6 +21,7 @@ import contextlib
 import hashlib
 import json
 import os
+import sqlite3
 import unicodedata
 from dataclasses import dataclass, field, replace
 
@@ -41,7 +42,6 @@ from qgis.PyQt.QtCore import QDateTime, QVariant
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor, QFont, QFontDatabase, QImage, QPainter
 from qgis.core import (
-    Qgis,
     QgsCategorizedSymbolRenderer,
     QgsFontMarkerSymbolLayer,
     QgsMapLayerLegendUtils,
@@ -73,14 +73,14 @@ except ImportError:  # older/limited test environments
 try:
     from ..compat import (
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _WRITER_NO_ERROR,
-        _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL,
+        _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL, _RENDER_UNIT_PIXELS,
     )
     from ..tairu_core.i18n import tr
     from ..tairu_firebase.models import TairuRecord, points_to_json, now_millis
 except ImportError:  # standalone usage with the plugin dir on sys.path
     from compat import (
         _GPKG_CREATE_FILE, _GPKG_CREATE_LAYER, _WRITER_NO_ERROR,
-        _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL,
+        _PROP_FILL_COLOR, _PROP_STROKE_COLOR, _SYMBOL_TYPE_FILL, _RENDER_UNIT_PIXELS,
     )
     from tairu_core.i18n import tr
     from tairu_firebase.models import TairuRecord, points_to_json, now_millis
@@ -88,7 +88,7 @@ except ImportError:  # standalone usage with the plugin dir on sys.path
 # (layer name, memory-provider geometry, display label)
 LAYER_SPECS = {
     'point': ('registros_ponto', 'Point', 'Pontos'),
-    'line': ('registros_linha', 'LineString', 'Linhas'),
+    'line': ('registros_linha', 'LineStringM', 'Linhas'),
     'polygon': ('registros_poligono', 'Polygon', 'Polígonos'),
     'circle': ('registros_circulo', 'Point', 'Círculos'),
     'none': ('registros_sem_geometria', 'None', 'Sem geometria'),
@@ -1055,6 +1055,15 @@ def ensure_gpkg(gpkg_path):
             raise RuntimeError(tr('Falha ao criar {camada} em {arquivo}: {erro}').format(
                 camada=layer_name, arquivo=gpkg_path, erro=message))
         first = False
+    # A trilha é LineString M (M = horário). Arquivo de versão anterior declara a camada sem M,
+    # e com GDAL >= 3.9 o QGIS joga fora o M de toda trilha em PARTES gravada nela
+    # (QgsOgrProvider::ConvertGeometryIfNecessary força o tipo da camada, e o forceTo do GDAL
+    # passou a respeitar a dimensão). Camada que já estava aberta no projeto só vê o M quando o
+    # QGIS a reabre; até lá o envio tira os horários da nuvem (push._encode_edited_geometry).
+    with contextlib.suppress(sqlite3.Error), \
+            contextlib.closing(sqlite3.connect(gpkg_path, timeout=5)) as db, db:
+        db.execute('UPDATE gpkg_geometry_columns SET m = 1 WHERE table_name = ? AND m = 0',
+                   (LAYER_SPECS['line'][0],))
 
 
 # -------------------------------------------------------------- pull merge
@@ -1732,7 +1741,7 @@ def _icon_marker(icone, tamanho, fg):
         # PIXELS: o mesmo numero que o aplicativo usa. Sem isto o QGIS entende
         # milimetros e o simbolo sai com um tamanho aparente diferente em cada maquina.
         with contextlib.suppress(Exception):
-            camada.setSizeUnit(Qgis.RenderUnit.Pixels)
+            camada.setSizeUnit(_RENDER_UNIT_PIXELS)
         with contextlib.suppress(Exception):
             camada.setStrokeColor(_ICON_HALO)
             camada.setStrokeWidth(_ICON_HALO_WIDTH)
@@ -1762,7 +1771,7 @@ def _record_symbol(spec_key, fg, bg, app_size=None, stroke='solid', icone=''):
         symbol = QgsMarkerSymbol.createSimple({'size': str(size)})
         symbol.setColor(fg)
         with contextlib.suppress(Exception):
-            symbol.symbolLayer(0).setSizeUnit(Qgis.RenderUnit.Pixels)
+            symbol.symbolLayer(0).setSizeUnit(_RENDER_UNIT_PIXELS)
         return symbol
     if spec_key == 'line':
         symbol = QgsLineSymbol.createSimple({'line_width': str(size)})

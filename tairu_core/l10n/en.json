@@ -744,5 +744,6 @@
   "a camada foi sincronizada por uma versão anterior do complemento (ou noutro computador) e não há como saber de que lado mudou: {campos}. Marque Enviar para gravar a versão do QGIS nesses campos": "the layer was synced by an earlier version of the plugin (or on another computer) and there is no way to tell which side changed: {campos}. Tick Upload to write the QGIS version to these fields",
   "mudou no QGIS e no Tairu desde o último sincronismo: {campos}. Marque Enviar para gravar a versão do QGIS nesses campos": "changed in QGIS and in Tairu since the last sync: {campos}. Tick Upload to write the QGIS version to these fields",
   "Registros não atualizados: há edições não salvas em {camadas}. Salve ou descarte as edições e use Receber Registros.": "Records not updated: there are unsaved edits in {camadas}. Save or discard the edits and use Receive Records.",
-  "Edições não salvas em {camadas}: feche esta janela, salve ou descarte as edições e envie de novo.": "Unsaved edits in {camadas}: close this window, save or discard the edits and upload again."
+  "Edições não salvas em {camadas}: feche esta janela, salve ou descarte as edições e envie de novo.": "Unsaved edits in {camadas}: close this window, save or discard the edits and upload again.",
+  "trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para gravar todos os pontos com um horário só": "tracking record without point times, in QGIS and in Tairu: tick Send to write every point with a single time"
 }

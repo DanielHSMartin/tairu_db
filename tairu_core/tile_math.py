@@ -34,7 +34,13 @@ def to_wgs84(geom, src, wgs84, ctx):
 
     A checagem de faixa e o guarda de verdade: nao depende da versao do QGIS nem
     do nome do enum de retorno, e pega qualquer saida que nao esteja em graus.
+
+    Camada vazia nao tem area: devolve geometria vazia. No QGIS 3.28 o extent() dela
+    e o retangulo invertido (±DBL_MAX), cuja largura estoura para infinito, e a faixa
+    em graus acusava um SRC errado — enviar a camada depois de apagar tudo falhava.
     """
+    if geom.isEmpty() or not math.isfinite(geom.boundingBox().width()):
+        return QgsGeometry()
     if not src.isValid():
         raise ValueError(tr(
             'A área selecionada não tem sistema de coordenadas válido — nem o '

@@ -238,6 +238,52 @@ class TestHorarioDaTrilha(unittest.TestCase):
         self.assertEqual(struct.unpack_from('<BII', wkb), (1, 2002, 4))  # encodeLineStringM
         self.assertEqual([struct.unpack_from('<ddd', wkb, 9 + 24 * i)[2] for i in range(4)], esperado)
 
+    def test_trilha_sem_m_na_camada_leva_os_horarios_da_nuvem(self):
+        # Arquivo de versão anterior com GDAL >= 3.9: a trilha em partes chega à camada sem
+        # o M (ensure_gpkg). Editada, subia com um horário só em todos os pontos.
+        h = _HORAS
+        casos = (
+            # vértice movido, mesma contagem: o horário vem da posição
+            ('((-47.9 -15.8, -47.89 -15.79, -47.88 -15.78),(-47.871 -15.771, -47.86 -15.76))',
+             '((-47.9 -15.8 %d, -47.89 -15.79 %d, -47.88 -15.78 %d),(-47.871 -15.771 %d, -47.86 -15.76 %d))'
+             % tuple(h)),
+            # vértice apagado: os outros acham o seu pela coordenada
+            ('((-47.9 -15.8, -47.88 -15.78),(-47.87 -15.77, -47.86 -15.76))',
+             '((-47.9 -15.8 %d, -47.88 -15.78 %d),(-47.87 -15.77 %d, -47.86 -15.76 %d))'
+             % (h[0], h[2], h[3], h[4])),
+            # apagado e movido: o movido herda o horário do anterior
+            ('((-47.9 -15.8, -47.88 -15.78),(-47.871 -15.771, -47.86 -15.76))',
+             '((-47.9 -15.8 %d, -47.88 -15.78 %d),(-47.871 -15.771 %d, -47.86 -15.76 %d))'
+             % (h[0], h[2], h[2], h[4])),
+        )
+        for sem_m, esperada in casos:
+            with self.subTest(sem_m=sem_m):
+                QgsProject.instance().clear()
+                nuvem = _Nuvem({'T1': _doc_de('T1', _TRILHA_EM_PARTES, 'rastreamento', h)})
+                camada = nuvem.receber()
+                camada.startEditing()
+                camada.changeGeometry(next(camada.getFeatures()).id(),
+                                      QgsGeometry.fromWkt('MultiLineString' + sem_m))
+                self.assertTrue(camada.commitChanges())
+                self.assertEqual(nuvem.enviar(camada).action, 'update')
+                self.assertEqual(_na_nuvem(nuvem.docs['T1']).asWkt(6),
+                                 QgsGeometry.fromWkt('MultiLineStringM' + esperada).asWkt(6))
+
+    def test_trilha_sem_horario_em_lugar_nenhum_vira_conflito(self):
+        # Nem M aqui nem horário na nuvem: subir gravaria o mesmo horário em todos os pontos.
+        nuvem = _Nuvem({'T1': _doc_de('T1', 'LineString(-47.9 -15.8, -47.89 -15.79, -47.88 -15.78)',
+                                      'rastreamento', [0, 0, 0])})
+        antes = dict(nuvem.docs['T1'])
+        camada = nuvem.receber()
+        camada.startEditing()
+        camada.changeGeometry(next(camada.getFeatures()).id(), QgsGeometry.fromWkt(
+            'LineString(-47.9 -15.8, -47.885 -15.79, -47.88 -15.78)'))
+        self.assertTrue(camada.commitChanges())
+        item = nuvem.enviar(camada)
+        self.assertEqual((item.action, item.send), ('conflict', False))
+        self.assertIn('horário', item.warning)
+        self.assertEqual(nuvem.docs['T1'], antes)
+
 
 class TestSrcInvalidoERecusado(unittest.TestCase):
 
@@ -719,6 +765,33 @@ class TestGeometriaQueACamadaNaoGuarda(unittest.TestCase):
 
         self.assertEqual(nuvem.enviar(camada).changed_fields, ['descricao'])
         self.assertEqual(json.loads(nuvem.docs['L']['style'])['base'].get('stroke'), 'dashed')
+
+
+class TestCamadaDeLinhasComM(unittest.TestCase):
+
+    def setUp(self):
+        QgsProject.instance().clear()
+
+    def test_arquivo_antigo_ganha_m_e_a_trilha_em_partes_guarda_os_horarios(self):
+        # Até a 2.0.28 a camada era LineString sem M: com GDAL >= 3.9 o QGIS jogava fora o M
+        # de toda trilha em partes gravada nela. Com GDAL anterior o M ficava por acaso.
+        import sqlite3
+        from tairu_sync import record_convert
+
+        nuvem = _Nuvem({'T1': _doc_de('T1', _TRILHA_EM_PARTES, 'rastreamento', _HORAS)})
+        record_convert.ensure_gpkg(nuvem.gpkg)
+        with sqlite3.connect(nuvem.gpkg) as db:   # a camada sem M, como a 2.0.28 a criava
+            db.execute("UPDATE gpkg_geometry_columns SET m = 0 WHERE table_name = 'registros_linha'")
+
+        def m():
+            with sqlite3.connect(nuvem.gpkg) as db:
+                return db.execute("SELECT m FROM gpkg_geometry_columns "
+                                  "WHERE table_name = 'registros_linha'").fetchone()[0]
+
+        camada = nuvem.receber()
+        self.assertEqual(m(), 1)
+        self.assertEqual(next(camada.getFeatures()).geometry().asWkt(6),
+                         QgsGeometry.fromWkt(_TRILHA_EM_PARTES).asWkt(6))
 
 
 if __name__ == '__main__':

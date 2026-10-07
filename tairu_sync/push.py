@@ -364,6 +364,12 @@ _SYMBOL_TYPE_FILL = 2
 _BRUSH_STYLE_NONE = 0
 
 
+def _enum_int(value):
+    """int de um enum. No PyQt6 os do Qt (BrushStyle, PenStyle) sao enum.Enum: int() da
+    TypeError, e o poligono so-contorno subia com fundo opaco, o tracejado como continuo."""
+    return int(getattr(value, 'value', value))
+
+
 def _paints_area_fill(symbol_layer):
     """Se esta camada de simbolo realmente pinta o INTERIOR do poligono.
 
@@ -381,12 +387,12 @@ def _paints_area_fill(symbol_layer):
     layer_type = _call_or_missing(symbol_layer, 'type')
     if layer_type is not _MISSING:
         with contextlib.suppress(TypeError, ValueError):
-            if int(layer_type) != _SYMBOL_TYPE_FILL:
+            if _enum_int(layer_type) != _SYMBOL_TYPE_FILL:
                 return False
     brush = _call_or_missing(symbol_layer, 'brushStyle')
     if brush is not _MISSING:
         with contextlib.suppress(TypeError, ValueError):
-            return int(brush) != _BRUSH_STYLE_NONE
+            return _enum_int(brush) != _BRUSH_STYLE_NONE
     return True
 
 
@@ -1082,19 +1088,47 @@ def _track_times(geom):
     """
     if geom is None or geom.isEmpty() or not geom.constGet().isMeasure():
         return None
-    measures = [vertex.m() for vertex in geom.vertices()]
-    valid = [m for m in measures if math.isfinite(m) and m > 0]
+    return _fill_times([vertex.m() for vertex in geom.vertices()])
+
+
+def _fill_times(values):
+    """Cada horário ausente (None, 0, NaN) herda o anterior — os do começo, o primeiro que
+    houver —, para a trilha nunca voltar no tempo; None se não há horário nenhum."""
+    valid = [int(v) for v in values if v and math.isfinite(v) and v > 0]
     if not valid:
         return None
-    times, last = [], int(valid[0])
-    for m in measures:
-        if math.isfinite(m) and m > 0:
-            last = int(m)
+    times, last = [], valid[0]
+    for v in values:
+        if v and math.isfinite(v) and v > 0:
+            last = int(v)
         times.append(last)
     return times
 
 
-def _encode_edited_geometry(rec, feature, transform):
+def _times_from_cloud(geom, remote):
+    """Horário de cada vértice da trilha pela cópia da nuvem, ou None.
+
+    Para a trilha que chegou à camada sem o M: arquivo de versão anterior com GDAL >= 3.9
+    (ver record_convert.ensure_gpkg). O vértice acha o seu horário pela coordenada; o que não
+    acha (movido), pela posição, se a contagem é a mesma; senão herda o do anterior.
+    """
+    p = _COORD_PRECISION
+    cloud = []
+    wkb = geometry_from_wkb(remote.geometry_wkb) if remote is not None else None
+    if wkb is not None and wkb.constGet().isMeasure():
+        cloud = [(round(v.y(), p), round(v.x(), p), v.m()) for v in wkb.vertices()]
+    elif remote is not None:
+        with contextlib.suppress(ValueError, TypeError, KeyError):
+            cloud = [(round(pt['la'], p), round(pt['lo'], p), float(pt.get('ts') or 0))
+                     for pt in json.loads(remote.geometry_points_json or '[]')]
+    by_coord = {(la, lo): ts for la, lo, ts in cloud}
+    mine = [(round(v.y(), p), round(v.x(), p)) for v in geom.vertices()]
+    same_count = len(mine) == len(cloud)
+    return _fill_times([by_coord.get(xy) or (cloud[i][2] if same_count else None)
+                        for i, xy in enumerate(mine)])
+
+
+def _encode_edited_geometry(rec, feature, transform, remote=None):
     """Grava no candidato a geometria EDITADA como o app a gravaria (ensureGeometryWkb).
 
     geometryPoints e geometryWkb sobem juntos e concordando. Com os pontos novos e a WKB
@@ -1103,16 +1137,21 @@ def _encode_edited_geometry(rec, feature, transform):
     todos os aparelhos. Trilha (rastreamento) vira LineString M com o horário de cada
     vértice, byte a byte o encodeLineStringM do app — ou MultiLineString M, se foi dividida
     em partes; o resto, a geometria inteira em 2D, furos e partes incluídos.
+
+    Trilha sem o M na camada leva os horários da cópia da nuvem (`remote`). False = trilha
+    sem horário nenhum, nem aqui nem lá: ela sai com um horário só em todos os pontos.
     """
     vertices = json.loads(rec.geometry_points_json or '[]')
     minimum = _WKB_MIN_POINTS.get(rec.geometry_type)
     if minimum is None or len(vertices) < minimum:
-        return  # círculo, sem geometria ou curta demais: o app também não grava WKB
+        return True  # círculo, sem geometria ou curta demais: o app também não grava WKB
     if rec.geometry_type == 'line' and rec.sub_tipo == 'rastreamento':
         geom = QgsGeometry(feature.geometry())
         geom.transform(transform)
         lines = geom.asMultiPolyline() if geom.isMultipart() else [geom.asPolyline()]
         times = _track_times(geom)
+        if times is None and remote is not None:
+            times = _times_from_cloud(geom, remote)
         if times:
             # Os geometryPoints são a maior parte (_geometry_points): os horários dela.
             biggest = max(range(len(lines)), key=lambda i: len(lines[i]))
@@ -1122,7 +1161,7 @@ def _encode_edited_geometry(rec, feature, transform):
         if len(lines) == 1:
             rec.geometry_wkb = struct.pack('<BII', 1, 2002, len(vertices)) + b''.join(
                 struct.pack('<ddd', v['lo'], v['la'], float(v['ts'])) for v in vertices)
-            return
+            return times is not None
         # Trilha dividida (Dividir partes, pico de GPS tirado): TODAS as partes, cada vértice
         # com o seu horário. Montada dos geometryPoints — só a maior parte —, as outras
         # eram apagadas da nuvem.
@@ -1131,8 +1170,9 @@ def _encode_edited_geometry(rec, feature, transform):
             struct.pack('<BII', 1, 2002, len(line)) + b''.join(
                 struct.pack('<ddd', p.x(), p.y(), float(next(stamps))) for p in line)
             for line in lines)
-        return
+        return times is not None
     rec.geometry_wkb = _feature_wkb(feature.geometry(), transform)
+    return True
 
 
 def _encoding_over_budget(rec):
@@ -1310,7 +1350,11 @@ def _against_baseline(pending, layer, transform, cache, map_id, update_fields, p
         item.style_json = _style_to_send(item.record.style, remote.style, keys)
         item.changed_fields = _mask_for(keys)
         if 'geometry' in keys:
-            _encode_edited_geometry(item.record, feature, transform)
+            if not _encode_edited_geometry(item.record, feature, transform, remote):
+                item.action, item.send = 'conflict', False
+                item.warning = _append_warning(item.warning, tr(
+                    'trilha sem o horário dos pontos, no QGIS e no Tairu: marque Enviar para '
+                    'gravar todos os pontos com um horário só'))
             # Geometria que MUDOU e ficou sem WKB (curta demais, falha ao codificar): a WKB
             # velha da nuvem desfaria a edição. O app também a apaga quando a geometria muda.
             item.clear_wkb = item.record.geometry_wkb is None and bool(doc.get('geometryWkb'))
@@ -1412,7 +1456,7 @@ def _symbol_layer_pen_style(symbol_layer):
         if style is _MISSING:
             continue
         try:
-            return int(style)
+            return _enum_int(style)
         except (TypeError, ValueError):
             continue
     return None

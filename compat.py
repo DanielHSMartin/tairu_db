@@ -81,6 +81,12 @@ except AttributeError:
 _MSG_WARNING = Qgis.MessageLevel.Warning
 
 try:
+    _RENDER_UNIT_PIXELS = Qgis.RenderUnit.Pixels                                          # QGIS 3.30+/4
+except AttributeError:
+    from qgis.core import QgsUnitTypes as _QgsUnitTypes
+    _RENDER_UNIT_PIXELS = _QgsUnitTypes.RenderPixels                                      # QGIS 3.28
+
+try:
     _LABEL_OVER_POINT = Qgis.LabelPlacement.OverPoint                                     # QGIS 3.26+/4
 except AttributeError:
     _LABEL_OVER_POINT = _QgsPalLayerSettings.OverPoint                                    # QGIS 3.20-3.24

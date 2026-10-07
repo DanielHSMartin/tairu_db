@@ -90,7 +90,9 @@ def _fresh_gpkg(records):
 def _record_symbol_layer(layer, record_id):
     for categoria in layer.renderer().categories():
         if categoria.value() == record_id:
-            return categoria.symbol().symbolLayer(0)
+            # clone(): a lista de categorias e uma copia, liberada na volta; a camada de
+            # simbolo dela vira ponteiro solto (no Qt6 o glifo voltava vazio).
+            return categoria.symbol().symbolLayer(0).clone()
     return None
 
 
@@ -465,7 +467,8 @@ class TestSimbologia(unittest.TestCase):
         self.assertAlmostEqual(tamanhos['r1'], tamanhos['r0'] * 2, places=2)
 
     def test_tamanho_do_icone_e_estatico_para_a_simbologia_funcionar(self):
-        from qgis.core import Qgis, QgsSymbolLayer
+        from qgis.core import QgsSymbolLayer
+        from compat import _RENDER_UNIT_PIXELS
         from tairu_sync.record_convert import (icon_font_family, icon_map_size_px,
                                                sync_record_layers)
 
@@ -492,7 +495,7 @@ class TestSimbologia(unittest.TestCase):
         self.assertAlmostEqual(estatico, icon_map_size_px(), places=2)
         # PIXELS, a unidade do aplicativo: "40" aqui e o mesmo "40" de la, e o tamanho
         # aparente deixa de depender da resolucao do canvas, que muda por maquina.
-        self.assertEqual(unidade, Qgis.RenderUnit.Pixels)
+        self.assertEqual(unidade, _RENDER_UNIT_PIXELS)
         self.assertFalse(tem_expressao, 'expressao de tamanho anula o campo da simbologia')
 
 
